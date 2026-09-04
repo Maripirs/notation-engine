@@ -1,0 +1,35 @@
+{
+	"name": "notation-engine",
+	"version": "0.0.1",
+	"private": true,
+	"description": "A from-scratch, framework-agnostic music notation engraving and rendering engine: an editable score model plus a canvas renderer, built to replace OpenSheetMusicDisplay/VexFlow where instant, region-scoped re-render on edit matters. No UI framework dependency in the core; embeds into any web app.",
+	"type": "module",
+	"license": "UNLICENSED",
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist"
+	],
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build && tsc -p tsconfig.build.json --emitDeclarationOnly",
+		"test": "vitest run",
+		"check": "tsc --noEmit"
+	},
+	"devDependencies": {
+		"jsdom": "^25.0.0",
+		"typescript": "^5.6.0",
+		"vite": "^6.0.0",
+		"vitest": "^2.1.0"
+	},
+	"allowScripts": {
+		"esbuild@0.25.12": true,
+		"esbuild@0.21.5": true
+	}
+}
