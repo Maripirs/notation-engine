@@ -87,4 +87,16 @@ export interface LaidOutScore {
 	/** Font size to draw glyph ops at, i.e. `staffSpacePx * STAFF_SPACES_PER_EM`. */
 	readonly fontSizePx: number;
 	readonly measures: readonly LaidOutMeasure[];
+	/**
+	 * Which measures belong to which system (a staff line), in score order,
+	 * and where each system's staff top landed. `measures` stays a flat list
+	 * for callers like `hit-test.ts` and `renderer.ts` that only care about a
+	 * measure's own region and never needed to know about systems; this is
+	 * the extra index for callers (`relayoutMeasure`, a future page-flow
+	 * layer) that do.
+	 *
+	 * Without `LayoutOptions.systemWidthPx` there is always exactly one system
+	 * holding every measure, matching Phase 0's original single-system layout.
+	 */
+	readonly systems: readonly { readonly measureIndices: readonly number[]; readonly topY: number }[];
 }

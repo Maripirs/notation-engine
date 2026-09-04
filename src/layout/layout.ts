@@ -28,6 +28,19 @@ export interface LayoutOptions {
 	readonly staffSpacePx?: number;
 	/** Blank margin around the system, pixels. */
 	readonly paddingPx?: number;
+	/**
+	 * Maximum pixel width a system's measures may run to before the rest cast
+	 * off onto a new system, stacked below. Omit it and layout keeps Phase 0's
+	 * original behaviour: one system, forever, however wide the score gets.
+	 *
+	 * Casting-off here is greedy (fill a system until the next measure would
+	 * overflow, then start a new one), not the balanced/optimal algorithm real
+	 * engraving software uses to even out how full each line looks. Greedy is
+	 * the naive-but-correct choice consistent with the rest of this file's
+	 * spacing: it produces a system per line and a ragged right edge, which is
+	 * exactly the trade real optical justification (Phase 1+) exists to fix.
+	 */
+	readonly systemWidthPx?: number;
 }
 
 const DEFAULTS = {
@@ -51,7 +64,16 @@ const SPACING = {
 	/** Blank between the last note and the barline. */
 	measureTrailOut: 1.4,
 	/** Gap between the clef, key signature and time signature in the first measure. */
-	headerGap: 0.9
+	headerGap: 0.9,
+	/**
+	 * Blank between one system's lowest ink and the next system's staff top,
+	 * staff spaces. A fixed multiple of `ss` rather than a measured clearance:
+	 * real engraving reserves space per system based on the tallest thing that
+	 * actually lands there (a high ledger line, a beam, a dynamic). Phase 0 has
+	 * none of that yet, so a constant generous enough for stems and a few
+	 * ledger lines on either side is the naive-but-correct stand-in.
+	 */
+	systemGap: 6
 } as const;
 
 /** Stem length measured from the notehead centre, staff spaces. Phase 1 shortens
@@ -112,53 +134,174 @@ const TIME_SIG_DIGITS = [
 ] as const satisfies readonly GlyphName[];
 
 /**
- * Lay a whole score out as one system.
+ * Lay a whole score out, casting measures off into systems (staff lines,
+ * stacked vertically) as needed.
  *
- * Phase 0 never breaks a system: measures run left to right forever and the
- * reported canvas width grows to match. Casting measures into systems and
- * systems into pages is Phase 3, and doing it early would mean the redraw
- * proof is entangled with reflow, which is the harder problem hiding behind
- * incremental layout (an edit that changes a measure's width can push a measure
- * onto the next system, and then "redraw one measure" is no longer true).
+ * Without `options.systemWidthPx` this keeps Phase 0's original behaviour:
+ * one system, forever, however wide the score gets. With it, measures run
+ * left to right until the next one would overflow the budget, then a new
+ * system starts below (see `planSystems`). Either way the result is built the
+ * same way: figure out which measures belong to which system, then lay out
+ * each system's measures left to right with that system's own staff top.
  */
 export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutScore {
 	const ss = options.staffSpacePx ?? DEFAULTS.staffSpacePx;
 	const padding = options.paddingPx ?? DEFAULTS.paddingPx;
 	const fontSizePx = ss * STAFF_SPACES_PER_EM;
 
-	// Lay out against a provisional staff top of 0 and translate afterwards.
-	// Ledger lines, stems and flags can reach well above the staff, and how far
-	// is not known until the notes are placed, so reserving a guessed margin up
-	// front would either waste space or clip.
-	const staffTopY = 0;
-	const measures: LaidOutMeasure[] = [];
-	let x = padding;
+	const systemPlans = planSystems(score, ss, padding, options.systemWidthPx);
 
-	for (const measure of score.measures) {
-		const laid = layoutMeasure(score, measure, {
-			ss,
-			staffTopY,
-			startX: x,
-			isFirst: measure.index === 0,
-			isLast: measure.index === score.measures.length - 1
-		});
-		measures.push(laid);
-		x = laid.region.x + laid.region.width;
+	// Lay out against a provisional first staff top of 0 and translate
+	// everything afterwards. Ledger lines, stems and flags can reach well
+	// above the staff, and how far is not known until the notes are placed,
+	// so reserving a guessed margin up front would either waste space or clip.
+	const measures: LaidOutMeasure[] = [];
+	const systems: { measureIndices: number[]; topY: number }[] = [];
+	let systemTopY = 0;
+	let contentWidth = 0;
+
+	for (const plan of systemPlans) {
+		const staffTopY = systemTopY;
+		let x = padding;
+		for (const measureIndex of plan) {
+			const measure = score.measures[measureIndex]!;
+			const laid = layoutMeasure(score, measure, {
+				ss,
+				staffTopY,
+				startX: x,
+				isSystemFirst: measureIndex === plan[0],
+				isScoreFirst: measureIndex === 0,
+				isLast: measureIndex === score.measures.length - 1
+			});
+			measures.push(laid);
+			x = laid.region.x + laid.region.width;
+		}
+		systems.push({ measureIndices: [...plan], topY: staffTopY });
+		contentWidth = Math.max(contentWidth, x + padding);
+
+		const systemMeasures = measures.slice(-plan.length);
+		const systemBottom = Math.max(
+			staffTopY + 4 * ss,
+			...systemMeasures.map((m) => m.region.y + m.region.height)
+		);
+		systemTopY = systemBottom + SPACING.systemGap * ss;
 	}
 
-	const top = Math.min(staffTopY, ...measures.map((m) => m.region.y));
-	const bottom = Math.max(staffTopY + 4 * ss, ...measures.map((m) => m.region.y + m.region.height));
+	const top = Math.min(0, ...measures.map((m) => m.region.y));
+	const bottom = Math.max(
+		...systems.map((s) => s.topY + 4 * ss),
+		...measures.map((m) => m.region.y + m.region.height)
+	);
 	const shiftY = padding - top;
 
 	return {
-		width: x + padding,
+		width: contentWidth,
 		height: bottom - top + padding * 2,
 		staffSpacePx: ss,
-		// Layout is translation-invariant in y, so shifting a system laid out at
-		// staff top 0 by `shiftY` is the same as having laid it out at `shiftY`.
+		// Layout is translation-invariant in y, so shifting a score laid out
+		// with a first staff top of 0 by `shiftY` is the same as having laid
+		// it out at `shiftY` to begin with.
 		staffTopY: shiftY,
 		fontSizePx,
-		measures: measures.map((m) => translateMeasure(m, shiftY))
+		measures: measures.map((m) => translateMeasure(m, shiftY)),
+		systems: systems.map((s) => ({ measureIndices: s.measureIndices, topY: s.topY + shiftY }))
+	};
+}
+
+/**
+ * Decide which measures belong to which system, without doing the real
+ * layout pass yet.
+ *
+ * Greedy casting-off: keep adding measures to the current system while they
+ * fit, start a new one the moment the next measure would overflow. A system
+ * always gets at least one measure, even an oversized one, because a measure
+ * cannot be split.
+ *
+ * The width a measure needs depends on whether it opens a system (clef + key,
+ * see `layoutMeasure`), which is exactly the thing being decided, so each
+ * candidate measure's width is computed twice, once for each case, and the
+ * one matching where it actually lands is used. Reusing `layoutMeasure` at a
+ * throwaway `startX` of 0 keeps this in one place rather than duplicating the
+ * width arithmetic.
+ */
+function planSystems(
+	score: Score,
+	ss: number,
+	padding: number,
+	systemWidthPx: number | undefined
+): number[][] {
+	if (systemWidthPx === undefined) return [score.measures.map((m) => m.index)];
+
+	const availableWidth = systemWidthPx - 2 * padding;
+	const systems: number[][] = [];
+	let current: number[] = [];
+	let currentWidth = 0;
+
+	for (const measure of score.measures) {
+		const isScoreFirst = measure.index === 0;
+		const isLast = measure.index === score.measures.length - 1;
+		const widthAsSystemFirst = probeMeasureWidth(score, measure, ss, {
+			isSystemFirst: true,
+			isScoreFirst,
+			isLast
+		});
+
+		if (current.length === 0) {
+			current.push(measure.index);
+			currentWidth = widthAsSystemFirst;
+			continue;
+		}
+
+		const widthAsMidSystem = probeMeasureWidth(score, measure, ss, {
+			isSystemFirst: false,
+			isScoreFirst: false,
+			isLast
+		});
+
+		if (currentWidth + widthAsMidSystem > availableWidth) {
+			systems.push(current);
+			current = [measure.index];
+			currentWidth = widthAsSystemFirst;
+		} else {
+			current.push(measure.index);
+			currentWidth += widthAsMidSystem;
+		}
+	}
+	if (current.length > 0) systems.push(current);
+	return systems;
+}
+
+/** A measure's width in isolation, for the casting-off decision in `planSystems`. */
+function probeMeasureWidth(
+	score: Score,
+	measure: Measure,
+	ss: number,
+	flags: { isSystemFirst: boolean; isScoreFirst: boolean; isLast: boolean }
+): number {
+	return layoutMeasure(score, measure, { ss, staffTopY: 0, startX: 0, ...flags }).region.width;
+}
+
+/**
+ * The vertical band a system's own content may occupy without a re-laid-out
+ * measure spilling into a neighbouring system.
+ *
+ * Bounded by the neighbouring systems' *actual* laid-out extent (not their
+ * nominal staff band), so a neighbour with tall ledger lines still leaves the
+ * right amount of room. The score's first and last systems are bounded by the
+ * canvas itself, which is exactly the single-system check this replaces.
+ */
+function systemBounds(layout: LaidOutScore, systemIndex: number): { top: number; bottom: number } {
+	const extent = (measureIndices: readonly number[], pick: 'top' | 'bottom') =>
+		measureIndices.map((i) => {
+			const m = layout.measures.find((mm) => mm.index === i)!;
+			return pick === 'top' ? m.region.y : m.region.y + m.region.height;
+		});
+
+	const prev = layout.systems[systemIndex - 1];
+	const next = layout.systems[systemIndex + 1];
+	return {
+		top: prev ? Math.max(...extent(prev.measureIndices, 'bottom')) : 0,
+		bottom: next ? Math.min(...extent(next.measureIndices, 'top')) : layout.height
 	};
 }
 
@@ -188,20 +331,27 @@ export function relayoutMeasure(
 ): LaidOutScore | null {
 	const measure = score.measures[measureIndex];
 	const previous = layout.measures.find((m) => m.index === measureIndex);
-	if (!measure || !previous) return null;
+	const systemIndex = layout.systems.findIndex((s) => s.measureIndices.includes(measureIndex));
+	const system = layout.systems[systemIndex];
+	if (!measure || !previous || !system) return null;
 
 	const laid = layoutMeasure(score, measure, {
 		ss: options.staffSpacePx ?? DEFAULTS.staffSpacePx,
-		staffTopY: layout.staffTopY,
+		staffTopY: system.topY,
 		startX: previous.region.x,
-		isFirst: measureIndex === 0,
+		isSystemFirst: system.measureIndices[0] === measureIndex,
+		isScoreFirst: measureIndex === 0,
 		isLast: measureIndex === score.measures.length - 1
 	});
 
 	// Sub-pixel tolerance: the same arithmetic run twice should agree exactly,
 	// but a width comparison is not worth making brittle over a float.
 	const widthChanged = Math.abs(laid.region.width - previous.region.width) > 0.001;
-	const overflows = laid.region.y < 0 || laid.region.y + laid.region.height > layout.height;
+	// The band this measure's system may use without spilling into a
+	// neighbouring system. For a single-system score this is exactly the
+	// canvas itself, i.e. the original single-system check.
+	const bounds = systemBounds(layout, systemIndex);
+	const overflows = laid.region.y < bounds.top || laid.region.y + laid.region.height > bounds.bottom;
 	if (widthChanged || overflows) return null;
 
 	return {
@@ -214,7 +364,10 @@ interface MeasureContext {
 	readonly ss: number;
 	readonly staffTopY: number;
 	readonly startX: number;
-	readonly isFirst: boolean;
+	/** Does this measure open its system, so it must draw the clef and key signature. */
+	readonly isSystemFirst: boolean;
+	/** Is this the score's true first measure, so it must also draw the time signature. */
+	readonly isScoreFirst: boolean;
 	readonly isLast: boolean;
 }
 
@@ -223,17 +376,25 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	const ops: DrawOp[] = [];
 	const notes: LaidOutNote[] = [];
 
-	// The clef, key signature and time signature belong to the *first measure's*
-	// ops, not to some separate header object. That is what makes redrawing
-	// measure 0 self-contained: clearing its region wipes the clef, and drawing
-	// its ops puts the clef back. A header owned by nobody would be erased by
-	// the first edit in measure 0 and never repainted.
+	// The clef, key signature and (for the score's true first measure only)
+	// time signature belong to the *system-opening measure's* ops, not to some
+	// separate header object. That is what makes redrawing that measure
+	// self-contained: clearing its region wipes the clef, and drawing its ops
+	// puts the clef back. A header owned by nobody would be erased by the
+	// first edit in that measure and never repainted.
+	//
+	// Every system's first measure repeats the clef and key signature, real
+	// engraving's rule for a new staff line. The time signature is different:
+	// it is not repeated at each system, only stated once at the score's true
+	// first measure (and again if it ever changed, which Phase 0 never does).
 	let cursor = startX;
-	if (ctx.isFirst) {
+	if (ctx.isSystemFirst) {
 		cursor += SPACING.headerGap * ss;
 		cursor = layoutClef(ops, cursor, ctx);
 		cursor = layoutKeySignature(ops, cursor, score.keyFifths, ctx);
-		cursor = layoutTimeSignature(ops, cursor, score.time.beats, score.time.beatType, ctx);
+		if (ctx.isScoreFirst) {
+			cursor = layoutTimeSignature(ops, cursor, score.time.beats, score.time.beatType, ctx);
+		}
 	}
 	cursor += SPACING.measureLeadIn * ss;
 

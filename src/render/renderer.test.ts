@@ -154,6 +154,55 @@ describe('CanvasRenderer region-scoped redraw', () => {
 		expect(renderer.lastRedrawnMeasures).toEqual([0, 2]);
 	});
 
+	it('redraws only the touched measure when the score spans multiple systems', () => {
+		// Same proof as "transposing a note in measure 2 redraws only measure 2"
+		// above, but with the score cast off into systems. This is the case the
+		// horizontal-only `within`/intruder checks above cannot cover: once
+		// measures stop running in one long row, a later system's measures sit
+		// at *overlapping* x ranges with earlier systems (every system starts
+		// back at the left margin), differing only in y, so a real 2D check is
+		// needed to catch a redraw that leaked into another system's band.
+		const withinBox = (rect: Rect, point: Recorded, slack = 0.001) =>
+			point.x >= rect.x - slack &&
+			point.right <= rect.x + rect.width + slack &&
+			point.y >= rect.y - slack &&
+			point.bottom <= rect.y + rect.height + slack;
+
+		const multiSystemScore = createDemoScore();
+		const options = { systemWidthPx: 600 };
+		let multiSystemLayout = layoutScore(multiSystemScore, options);
+		expect(multiSystemLayout.systems.length).toBeGreaterThan(1);
+
+		const multiRecorder = recordingContext();
+		const multiRenderer = new CanvasRenderer(multiRecorder.ctx, multiSystemLayout);
+		multiRenderer.drawAll();
+		multiRecorder.calls.length = 0;
+
+		// Measure 2 (index 2) opens the second system at this width, so this
+		// also exercises re-laying-out a system-first measure incrementally.
+		const target = multiSystemScore.measures[2]!.notes[0]!;
+		const touched = multiSystemScore.transposeNote(target.id, 1);
+		expect(touched).toBe(2);
+
+		const updated = relayoutMeasure(multiSystemScore, multiSystemLayout, touched!, options);
+		expect(updated).not.toBeNull();
+		multiSystemLayout = updated!;
+		multiRenderer.setLayout(multiSystemLayout);
+		multiRenderer.redrawMeasure(touched!);
+
+		expect(multiRenderer.lastRedrawnMeasures).toEqual([2]);
+		const region = multiSystemLayout.measures[2]!.region;
+		expect(multiRecorder.calls.length).toBeGreaterThan(0);
+		for (const call of multiRecorder.calls) {
+			expect(withinBox(region, call)).toBe(true);
+		}
+		for (const other of [0, 1, 3]) {
+			const otherRegion = multiSystemLayout.measures[other]!.region;
+			const intruders = multiRecorder.calls.filter((call) => withinBox(otherRegion, call));
+			expect(intruders).toEqual([]);
+		}
+	});
+
 	it('actually changes what it paints when the model changed', () => {
 		// A guard against the test above passing for the wrong reason: a renderer
 		// that drew nothing at all would also touch no neighbouring measure.

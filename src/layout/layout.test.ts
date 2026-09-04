@@ -141,4 +141,88 @@ describe('relayoutMeasure', () => {
 		for (let i = 0; i < 24; i++) score.transposeNote(score.measures[1]!.notes[0]!.id, 1);
 		expect(relayoutMeasure(score, layout, 1)).toBeNull();
 	});
+
+	it('redraws just one measure in a later system, keeping its clef and key signature', () => {
+		// Measure 2 opens system 2 of the demo score at this width (see the
+		// `layoutScore` multi-system tests below), so it carries a clef and key
+		// signature that a naive re-layout could accidentally drop.
+		const score = createDemoScore();
+		const options = { staffSpacePx: 11, systemWidthPx: 600 };
+		const layout = layoutScore(score, options);
+		expect(layout.systems[1]!.measureIndices).toEqual([2, 3]);
+
+		score.transposeNote(score.measures[2]!.notes[0]!.id, 1);
+		const updated = relayoutMeasure(score, layout, 2, options);
+		expect(updated).not.toBeNull();
+		for (const index of [0, 1, 3]) {
+			expect(updated!.measures[index]).toBe(layout.measures[index]);
+		}
+		const glyphs = updated!.measures[2]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+		expect(glyphs).toContain('gClef');
+		expect(glyphs).toContain('accidentalSharp');
+	});
+});
+
+describe('layoutScore with systemWidthPx (multi-system)', () => {
+	const options = { staffSpacePx: 11, systemWidthPx: 600 };
+
+	it('casts measures off onto a new system once they would overflow the width', () => {
+		const layout = layoutScore(createDemoScore(), options);
+		expect(layout.systems).toEqual([
+			{ measureIndices: [0, 1], topY: layout.systems[0]!.topY },
+			{ measureIndices: [2, 3], topY: layout.systems[1]!.topY }
+		]);
+		// Every measure still appears exactly once, in score order, across systems.
+		expect(layout.systems.flatMap((s) => s.measureIndices)).toEqual([0, 1, 2, 3]);
+	});
+
+	it('starts each system at the same left margin and stacks systems vertically', () => {
+		const layout = layoutScore(createDemoScore(), options);
+		const systemTwoStart = layout.measures[2]!;
+		expect(systemTwoStart.region.x).toBeCloseTo(layout.measures[0]!.region.x, 6);
+		// The second system's staff sits strictly below the first system's.
+		expect(layout.systems[1]!.topY).toBeGreaterThan(layout.systems[0]!.topY);
+	});
+
+	it('never lets a measure exceed the system width budget', () => {
+		const layout = layoutScore(createDemoScore(), options);
+		for (const measure of layout.measures) {
+			expect(measure.region.width).toBeLessThanOrEqual(options.systemWidthPx);
+		}
+	});
+
+	it('draws a clef and key signature, but not a time signature, on a later system-starting measure', () => {
+		const layout = layoutScore(createDemoScore(), options);
+		const systemStart = layout.measures[2]!;
+		const glyphs = systemStart.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+		expect(glyphs).toContain('gClef');
+		expect(glyphs).toContain('accidentalSharp');
+		expect(glyphs).not.toContain('timeSig4');
+
+		// Only the score's true first measure states the time signature.
+		const scoreStart = layout.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+		expect(scoreStart).toContain('timeSig4');
+
+		// A mid-system measure gets neither.
+		const midSystem = layout.measures[1]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+		expect(midSystem).not.toContain('gClef');
+	});
+
+	it('lays out the same as a single system when the score fits within the width', () => {
+		const roomy = layoutScore(createDemoScore(), { staffSpacePx: 11, systemWidthPx: 2000 });
+		const single = layoutScore(createDemoScore(), { staffSpacePx: 11 });
+		expect(roomy.width).toBeCloseTo(single.width, 6);
+		expect(roomy.height).toBeCloseTo(single.height, 6);
+		expect(roomy.systems).toEqual([{ measureIndices: [0, 1, 2, 3], topY: roomy.staffTopY }]);
+		for (let i = 0; i < single.measures.length; i++) {
+			expect(roomy.measures[i]!.region).toEqual(single.measures[i]!.region);
+		}
+	});
+
+	it('keeps single-system layout identical when systemWidthPx is omitted entirely', () => {
+		// The option is opt-in: not passing it at all must behave exactly as
+		// before this feature existed, one system regardless of score width.
+		const layout = layoutScore(createDemoScore(), { staffSpacePx: 11 });
+		expect(layout.systems).toEqual([{ measureIndices: [0, 1, 2, 3], topY: layout.staffTopY }]);
+	});
 });

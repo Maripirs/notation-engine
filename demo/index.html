@@ -83,7 +83,9 @@
 			Own model, own layout, own canvas renderer, Bravura for glyph shapes. Click a notehead or
 			rest to select it, then transpose it with the buttons or <kbd>&uarr;</kbd> /
 			<kbd>&darr;</kbd>. Each edit re-lays-out and repaints only the measure that changed; the
-			timings below compare that against repainting the whole system.
+			timings below compare that against repainting the whole system. The score is capped at a
+			fixed width, so it casts measures off onto a new system (a new staff line) rather than
+			shrinking to fit; each system repeats the clef and key signature, as real engraving does.
 		</p>
 		<canvas id="score"></canvas>
 		<div class="controls">

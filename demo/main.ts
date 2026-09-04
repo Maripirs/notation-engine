@@ -26,8 +26,31 @@ const downButton = document.querySelector<HTMLButtonElement>('#down')!;
 const fullButton = document.querySelector<HTMLButtonElement>('#full')!;
 const flashButton = document.querySelector<HTMLButtonElement>('#flash')!;
 
+// These mirror index.html's own CSS (`body { max-width: 60rem; padding: 2rem
+// 1.5rem; }`, `#score { border: 1px solid #ddd; }`) so `systemWidthForViewport`
+// can work out how much room the canvas actually has without waiting on a
+// layout/paint round trip to measure it.
+const BODY_MAX_WIDTH_PX = 960;
+const BODY_HORIZONTAL_PADDING_PX = 48;
+const CANVAS_BORDER_PX = 2;
+
+/**
+ * How wide a system is allowed to be at the current viewport size.
+ *
+ * This is what makes the demo actually exercise multi-system wrapping instead
+ * of leaving it a knob nothing ever turns: on a wide viewport it comes out
+ * roomy enough that the four-measure demo score fits on one system, same as
+ * before this feature existed; on a narrow one it comes out small enough that
+ * measures cast off onto new systems instead of every one of them being
+ * squeezed to fit, which was the bug this feature exists to close.
+ */
+function systemWidthForViewport(): number {
+	const bodyContentWidth = Math.min(window.innerWidth, BODY_MAX_WIDTH_PX) - BODY_HORIZONTAL_PADDING_PX;
+	return Math.max(200, bodyContentWidth - CANVAS_BORDER_PX);
+}
+
 const score = createDemoScore();
-const layoutOptions = { staffSpacePx: 11 };
+let layoutOptions = { staffSpacePx: 11, systemWidthPx: systemWidthForViewport() };
 let layout: LaidOutScore = layoutScore(score, layoutOptions);
 let selected: NoteId | null = null;
 
@@ -115,9 +138,12 @@ canvas.addEventListener('pointerdown', (event) => {
 	// works in CSS pixels relative to the canvas origin. The engine deliberately
 	// does not do this conversion, because only the host knows what else it has
 	// done to the canvas (zoom, scroll, transforms). Here that "what else": the
-	// `max-width: 100%` on #score can render the canvas smaller than layout.width
-	// on a narrow viewport, so the CSS box and the layout coordinate space are
-	// different sizes and a raw offset alone points at the wrong note (or none).
+	// canvas is now sized to fit its laid-out content (multi-system wrapping
+	// keeps every system within `systemWidthPx`, so this is normally a no-op),
+	// but `max-width: 100%` on #score is kept as a belt-and-suspenders safety
+	// net for a viewport narrower than even one system, which still shrinks
+	// the CSS box below layout.width and would otherwise point at the wrong
+	// note (or none).
 	const rect = canvas.getBoundingClientRect();
 	const scaleX = layout.width / rect.width;
 	const scaleY = layout.height / rect.height;
@@ -165,6 +191,26 @@ flashButton.addEventListener('click', () => {
 	}
 	ctx.restore();
 	window.setTimeout(() => renderer.redrawMeasures(lastScopedMeasures), 450);
+});
+
+// Resizing the window changes how much room a system has, so it can change
+// how measures cast off; debounced because `resize` fires continuously while
+// dragging, and re-laying-out the whole score on every one of those events
+// would be wasteful (and would misleadingly dominate the "whole-score
+// repaint" timing this page reports).
+let resizeTimer: number | undefined;
+window.addEventListener('resize', () => {
+	window.clearTimeout(resizeTimer);
+	resizeTimer = window.setTimeout(() => {
+		layoutOptions = { ...layoutOptions, systemWidthPx: systemWidthForViewport() };
+		layout = layoutScore(score, layoutOptions);
+		renderer.setLayout(layout);
+		sizeCanvas();
+		lastFullDrawMs = drawAll();
+		lastScopedMeasures = [...renderer.lastRedrawnMeasures];
+		status.textContent = `Window resized: re-laid-out across ${layout.systems.length} system(s).`;
+		timings.textContent = `whole-score repaint                ${lastFullDrawMs.toFixed(2)} ms`;
+	}, 150);
 });
 
 async function start(): Promise<void> {
