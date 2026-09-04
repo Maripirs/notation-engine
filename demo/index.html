@@ -2,12 +2,98 @@
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
 		<title>notation-engine demo</title>
+		<style>
+			:root {
+				color-scheme: light;
+				font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+			}
+			body {
+				margin: 0;
+				padding: 2rem 1.5rem;
+				max-width: 60rem;
+				color: #111;
+				background: #fafafa;
+			}
+			h1 {
+				font-size: 1.25rem;
+				margin: 0 0 0.25rem;
+			}
+			p.lede {
+				margin: 0 0 1.5rem;
+				color: #555;
+				max-width: 44rem;
+				line-height: 1.5;
+			}
+			#score {
+				display: block;
+				background: #fff;
+				border: 1px solid #ddd;
+				border-radius: 4px;
+				cursor: pointer;
+				max-width: 100%;
+			}
+			.controls {
+				display: flex;
+				gap: 0.5rem;
+				align-items: center;
+				margin: 1rem 0 0.75rem;
+				flex-wrap: wrap;
+			}
+			button {
+				font: inherit;
+				padding: 0.4rem 0.8rem;
+				border: 1px solid #bbb;
+				border-radius: 4px;
+				background: #fff;
+				cursor: pointer;
+			}
+			button:disabled {
+				opacity: 0.45;
+				cursor: default;
+			}
+			#status {
+				margin: 0;
+				font-size: 0.9rem;
+				color: #444;
+				min-height: 1.4em;
+			}
+			#timings {
+				margin: 0.75rem 0 0;
+				font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+				font-size: 0.82rem;
+				color: #333;
+				white-space: pre-wrap;
+			}
+			kbd {
+				font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+				font-size: 0.85em;
+				border: 1px solid #ccc;
+				border-bottom-width: 2px;
+				border-radius: 3px;
+				padding: 0 0.3em;
+				background: #fff;
+			}
+		</style>
 	</head>
 	<body>
-		<h1>notation-engine</h1>
-		<p>Phase 0 scaffold — nothing rendered yet.</p>
-		<canvas id="score" width="800" height="200" style="border: 1px solid #ccc"></canvas>
+		<h1>notation-engine, Phase 0 spike</h1>
+		<p class="lede">
+			Own model, own layout, own canvas renderer, Bravura for glyph shapes. Click a notehead or
+			rest to select it, then transpose it with the buttons or <kbd>&uarr;</kbd> /
+			<kbd>&darr;</kbd>. Each edit re-lays-out and repaints only the measure that changed; the
+			timings below compare that against repainting the whole system.
+		</p>
+		<canvas id="score"></canvas>
+		<div class="controls">
+			<button id="down" disabled>&darr; semitone</button>
+			<button id="up" disabled>&uarr; semitone</button>
+			<button id="full">Redraw whole score</button>
+			<button id="flash">Flash redrawn region</button>
+		</div>
+		<p id="status">Loading Bravura&hellip;</p>
+		<pre id="timings"></pre>
 		<script type="module" src="./main.ts"></script>
 	</body>
 </html>
