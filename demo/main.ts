@@ -114,9 +114,18 @@ canvas.addEventListener('pointerdown', (event) => {
 	// Pointer coordinates are relative to the viewport and in CSS pixels; layout
 	// works in CSS pixels relative to the canvas origin. The engine deliberately
 	// does not do this conversion, because only the host knows what else it has
-	// done to the canvas (zoom, scroll, transforms).
+	// done to the canvas (zoom, scroll, transforms). Here that "what else": the
+	// `max-width: 100%` on #score can render the canvas smaller than layout.width
+	// on a narrow viewport, so the CSS box and the layout coordinate space are
+	// different sizes and a raw offset alone points at the wrong note (or none).
 	const rect = canvas.getBoundingClientRect();
-	const hit = hitTest(layout, event.clientX - rect.left, event.clientY - rect.top);
+	const scaleX = layout.width / rect.width;
+	const scaleY = layout.height / rect.height;
+	const hit = hitTest(
+		layout,
+		(event.clientX - rect.left) * scaleX,
+		(event.clientY - rect.top) * scaleY
+	);
 	const changed = renderer.setSelection(hit ? hit.noteId : null);
 	selected = hit ? hit.noteId : null;
 	if (changed.length > 0) renderer.redrawMeasures(changed);
