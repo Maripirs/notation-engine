@@ -410,6 +410,55 @@ export function createTwoVoiceShowcaseScore(): Score {
 	);
 }
 
+/**
+ * M2 Slice 2's voice-collision showcase: two measures in G major 4/4,
+ * exercising this slice's two collision-avoidance paths in isolation from
+ * each other.
+ *
+ * Measure 1 is a run of parallel seconds, voice 2 shadowing voice 1 one
+ * diatonic step below at every single beat (E5/D5, D5/C5, C5/B4, D5/C5):
+ * without this slice, all four pairs would print their noteheads directly
+ * on top of each other, since a second apart is exactly the interval two
+ * noteheads cannot both occupy at the same x without visibly merging. Each
+ * pair instead resolves to voice 2 nudged one notehead's width right of
+ * voice 1, the plain "same or adjacent beat" case
+ * `secondIntervalClashShift` exists for; the nudge is deliberately
+ * recomputed fresh at every beat here (not just applied once and left),
+ * showing it holds up across a whole passage, not only a single isolated
+ * clash.
+ *
+ * Measure 2 isolates the other path: voice 1's C4 whole note (no stem, a
+ * whole note never gets one, keeping this measure's ink the ledger line's
+ * alone) against voice 2's C#5 quarter at the very same onset, an octave
+ * and a half away, nowhere near a second, so the notehead nudge above
+ * never engages here. G major already has an F#, but not a C#, so voice
+ * 2's sharp still needs drawing; without this slice's cross-voice
+ * `previousInkRight`, it would check only its own (nonexistent, first-note)
+ * previous ink and land with no clearance from voice 1's ledger line
+ * sharing the same x.
+ */
+export function createVoiceClashShowcaseScore(): Score {
+	return buildScore(
+		[
+			[
+				['E5', 'quarter', { voice: 1 }],
+				['D5', 'quarter', { voice: 1 }],
+				['C5', 'quarter', { voice: 1 }],
+				['D5', 'quarter', { voice: 1 }],
+				['D5', 'quarter', { voice: 2 }],
+				['C5', 'quarter', { voice: 2 }],
+				['B4', 'quarter', { voice: 2 }],
+				['C5', 'quarter', { voice: 2 }]
+			],
+			[
+				['C4', 'whole', { voice: 1 }],
+				['C#5', 'quarter', { voice: 2 }]
+			]
+		],
+		{ keyFifths: 1, time: { beats: 4, beatType: 4 } }
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
@@ -470,9 +519,9 @@ function appendMeasures(score: Score, source: Score): void {
  * What `npm run dev` actually shows: the Phase 0 fixture followed by Slice 1's
  * duration showcase, Slice 4's accidental showcase, Slice 5's tie showcase,
  * Slice 6's slur showcase, Slice 7's key/time-change showcase, Slice 8's
- * barline showcase and M2 Slice 1's two-voice showcase, so a human can see
- * all seven render without disturbing `createDemoScore`'s frozen shape (see
- * the comment on it above).
+ * barline showcase, M2 Slice 1's two-voice showcase and M2 Slice 2's voice-
+ * collision showcase, so a human can see all eight render without disturbing
+ * `createDemoScore`'s frozen shape (see the comment on it above).
  */
 export function createFullDemoScore(): Score {
 	const score = createDemoScore();
@@ -483,5 +532,6 @@ export function createFullDemoScore(): Score {
 	appendMeasures(score, createKeyTimeChangeShowcaseScore());
 	appendMeasures(score, createBarlineShowcaseScore());
 	appendMeasures(score, createTwoVoiceShowcaseScore());
+	appendMeasures(score, createVoiceClashShowcaseScore());
 	return score;
 }

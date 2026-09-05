@@ -7,10 +7,11 @@ import {
 	createKeyTimeChangeShowcaseScore,
 	createSlurShowcaseScore,
 	createTieShowcaseScore,
-	createTwoVoiceShowcaseScore
+	createTwoVoiceShowcaseScore,
+	createVoiceClashShowcaseScore
 } from '../demo-score.js';
 import { buildScore, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
-import { ENGRAVING_DEFAULTS as ED } from '../render/glyph-metrics.js';
+import { ENGRAVING_DEFAULTS as ED, GLYPH_METRICS } from '../render/glyph-metrics.js';
 import type { GlyphName } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
 import type { DrawOp, LaidOutScore } from './types.js';
@@ -1484,18 +1485,30 @@ describe('two voices in one staff (M2 Slice 1)', () => {
 		const xOf = (id: string) => measure.notes.find((n) => n.id === id)!.bounds.x;
 
 		// Voice 1's second half note and voice 2's half note both start at
-		// onset 0.5: the same shared column, therefore the same x.
+		// onset 0.5, the same shared column, but M2 Slice 2 (voice-to-voice
+		// collision avoidance) means they no longer necessarily land at the
+		// exact same x: this fixture's own onset-0 pair (D4 voice 1, C4
+		// voice 2) happens to be a second apart, so voice 2's very first note
+		// gets nudged one notehead's width right there (see the "voice-to-
+		// voice collision avoidance" describe block below), and that nudge
+		// persists through the rest of voice 2's own notes, this half note
+		// included, the same way an accidental's own collision shift already
+		// always propagated forward. The two notes still share the same
+		// column offset from voice 1's first note; they are just offset from
+		// each other by that one persistent nudge on top of it.
 		const v1SecondX = xOf(idOf(1));
 		const v2HalfX = xOf(idOf(6));
-		expect(v1SecondX).toBeCloseTo(v2HalfX, 6);
+		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
+		expect(v2HalfX - v1SecondX).toBeCloseTo(noteheadWidth, 6);
 
 		// The exact offset from voice 1's first note (onset 0): the three
 		// columns in between (7 + 5 + 5 + 5 = 22 staff spaces) scaled to
 		// pixels, not wherever voice 1's own single half-note advance alone
 		// would have put it (which would be 7 staff spaces, i.e. 70px, a
-		// very different, wrong answer this test also rules out).
+		// very different, wrong answer this test also rules out), plus that
+		// same persistent notehead-collision nudge from onset 0.
 		const v1FirstX = xOf(idOf(0));
-		expect(v2HalfX - v1FirstX).toBeCloseTo(22 * ss, 6);
+		expect(v2HalfX - v1FirstX).toBeCloseTo(22 * ss + noteheadWidth, 6);
 	});
 
 	it('does not widen a shared column when the other voice needs no more room than it already has', () => {
@@ -1724,5 +1737,122 @@ describe('two voices in one staff (M2 Slice 1)', () => {
 		// same grouping it would get as the only voice in the measure,
 		// unaffected by voice 1's two much slower half notes sharing it.
 		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(4);
+	});
+});
+
+describe('voice-to-voice collision avoidance (M2 Slice 2)', () => {
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+	const ledgerRects = (ops: readonly DrawOp[]) =>
+		ops
+			.filter((op): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect')
+			.filter((op) => Math.abs(op.height - ED.legerLineThickness * ss) < 0.001);
+	const findGlyph = (ops: readonly DrawOp[], glyph: GlyphName) =>
+		ops.find((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === glyph);
+
+	it("nudges voice 2's notehead a full notehead's width right of voice 1's, when the two land a second apart at the same onset", () => {
+		const score = buildScore([
+			[
+				['E4', 'quarter', { voice: 1 }],
+				['D4', 'quarter', { voice: 2 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const measure = layout.measures[0]!;
+		const xOf = (index: number) => measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
+		const v1x = xOf(0);
+		const v2x = xOf(1);
+		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
+		expect(v2x - v1x).toBeCloseTo(noteheadWidth, 6);
+	});
+
+	it('never moves voice 1, even when voice 2 is written first in the note array', () => {
+		const solo = layoutScore(buildScore([[['E4', 'quarter']]]), options);
+		const soloX = solo.measures[0]!.notes[0]!.bounds.x;
+
+		const score = buildScore([
+			[
+				['D4', 'quarter', { voice: 2 }],
+				['E4', 'quarter', { voice: 1 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const measure = layout.measures[0]!;
+		const xOf = (index: number) => measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
+		const v2x = xOf(0);
+		const v1x = xOf(1);
+		expect(v1x).toBeCloseTo(soloX, 6); // voice 1 unmoved by voice 2's presence
+		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
+		expect(v2x - v1x).toBeCloseTo(noteheadWidth, 6); // voice 2 the one that yields
+	});
+
+	it('does not nudge when the two voices are further apart than a second', () => {
+		const score = buildScore([
+			[
+				['C4', 'quarter', { voice: 1 }],
+				['G4', 'quarter', { voice: 2 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const measure = layout.measures[0]!;
+		const xOf = (index: number) => measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
+		expect(xOf(0)).toBeCloseTo(xOf(1), 6);
+	});
+
+	it('does not nudge a second-apart pair once normal column spacing already clears them', () => {
+		// Voice 1's quarter note is alone at onset 0; voice 2's own note, a
+		// second below it, lands a full quarter-note column later (onset
+		// 0.25), naturally far enough right that the previous-column check
+		// this slice adds finds nothing to close.
+		const score = buildScore([
+			[
+				['C4', 'quarter', { voice: 1 }],
+				[null, 'quarter', { voice: 2 }],
+				['B3', 'quarter', { voice: 2 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const measure = layout.measures[0]!;
+		const c4Id = score.measures[0]!.notes[0]!.id;
+		const b3Id = score.measures[0]!.notes[2]!.id;
+		const c4X = measure.notes.find((n) => n.id === c4Id)!.bounds.x;
+		const b3X = measure.notes.find((n) => n.id === b3Id)!.bounds.x;
+		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
+		expect(b3X - c4X).toBeGreaterThan(noteheadWidth); // natural column gap, not the clash nudge
+	});
+
+	it("shifts an accidental in voice 2 past voice 1's ledger-line ink at the same onset", () => {
+		// Voice 1's C4 whole note draws a ledger line below the staff and has
+		// no stem (a whole note never gets one), keeping its ink here to the
+		// ledger line alone. Voice 2's C#5 quarter, at the very same onset,
+		// is nowhere near a second away from C4 (over an octave), so the
+		// notehead-clash nudge above never engages; this test isolates the
+		// other collision path, an accidental checking the other voice's ink
+		// at the shared column x, not just its own voice's previous note
+		// (which for voice 2's very first note would otherwise be `null`,
+		// giving no clearance at all).
+		const score = buildScore([
+			[
+				['C4', 'whole', { voice: 1 }],
+				['C#5', 'quarter', { voice: 2 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+
+		const ledger = ledgerRects(ops)[0]!;
+		const ledgerRight = ledger.x + ledger.width;
+		const accidental = findGlyph(ops, 'accidentalSharp')!;
+		// The same "close to exactly the minimum" assertion M1 Slice 4's own
+		// single-voice collision test used, extended across voices.
+		expect(accidental.x - ledgerRight).toBeCloseTo(0.9 * ss, 5);
+	});
+
+	it('renders the voice-clash showcase without error, with the expected accidental and no crash', () => {
+		const score = createVoiceClashShowcaseScore();
+		const layout = layoutScore(score);
+		expect(layout.measures).toHaveLength(2);
+		const glyphs = layout.measures[1]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+		expect(glyphs).toContain('accidentalSharp'); // voice 2's C#5
 	});
 });

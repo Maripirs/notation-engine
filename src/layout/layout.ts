@@ -908,27 +908,104 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	}
 	const onsets = noteOnsets(measure.notes);
 
-	// Every voice threads its own accidental carry-over
-	// (`lastStatedAlterForStep`, tracked per voice, not shared: a different
-	// voice's stated accidental on the same step does not excuse this one
-	// from restating its own, the ordinary engraving convention), its own
-	// previous-ink tracking, and its own accidental-collision shift
-	// accumulator, independently: none of the three is a property of the
-	// measure as a whole, only of one voice's own left-to-right reading, the
-	// same reasoning beam grouping above needed its own per-voice split for.
-	// `finalShiftByVoice` records each voice's own accumulated shift after
-	// its last note, so the measure's total width (below) can widen for
-	// whichever voice's collision-avoidance drifted it furthest right; for a
+	// M2 Slice 2 restructures this pass from Slice 1's "finish voice 1
+	// entirely, then voice 2" order into "walk columns left to right, and
+	// within a column, voices in ascending voice-number order". That
+	// restructuring is what gives natural, no-lookahead cross-voice
+	// awareness at all: by the time voice 2's note at a shared onset is laid
+	// out, voice 1's note at that same onset (if it has one) has already
+	// been drawn and its ink extent is already known, which is exactly what
+	// both the cross-voice accidental-clearance check and the notehead
+	// clash-avoidance below need. Per-voice running state (accidental
+	// carry-over, each voice's own previous-ink tracking, each voice's own
+	// collision-shift accumulator) still has to persist *across* columns,
+	// not reset at each one, so every one of these is a map keyed by voice,
+	// initialized once here rather than once per voice's own outer loop
+	// iteration the way Slice 1 had it.
+	const voiceNumbers = [...notesByVoiceGroups.keys()].sort((a, b) => a - b);
+	const voiceNoteIndex = new Map<number, number>();
+	const lastStatedAlterForStepByVoice = new Map<number, Map<Step, number>>();
+	const previousInkRightByVoice = new Map<number, number | null>();
+	// Also serves as `finalShiftByVoice` once every column is processed: each
+	// voice's own accumulated shift after its last note, so the measure's
+	// total width (below) can widen for whichever voice's collision
+	// avoidance (accidental or notehead) drifted it furthest right; for a
 	// single voice this is just that voice's own final value, reproducing
 	// the flat cursor's old behaviour exactly.
-	const finalShiftByVoice = new Map<number, number>();
-	for (const [voice, voiceNotes] of notesByVoiceGroups) {
-		const lastStatedAlterForStep = new Map<Step, number>();
-		let previousInkRight: number | null = null;
-		let shiftAccum = 0;
-		for (const note of voiceNotes) {
-			const cellX = cursor + columnOffsetPx.get(onsetKey(onsets.get(note.id)!))! + shiftAccum;
+	const shiftAccumByVoice = new Map<number, number>();
+	for (const voice of voiceNumbers) {
+		voiceNoteIndex.set(voice, 0);
+		lastStatedAlterForStepByVoice.set(voice, new Map());
+		previousInkRightByVoice.set(voice, null);
+		shiftAccumByVoice.set(voice, 0);
+	}
+
+	// Voice 1's notehead position at the current column and the one
+	// immediately before it, for `secondIntervalClashShift`'s same-onset and
+	// adjacent-onset checks. Only voice 1 is tracked (not a general per-voice
+	// map) because the clash-avoidance convention this slice implements only
+	// ever nudges voice 2 out of voice 1's way; see that function's own
+	// comment on why the scope stops at exactly two voices.
+	let voice1AtPrevColumn: { d: number; noteX: number } | null = null;
+	let voice1AtThisColumn: { d: number; noteX: number } | null = null;
+
+	for (const column of columns) {
+		const key = onsetKey(column.onset);
+		voice1AtThisColumn = null;
+		// Ink deposited so far *in this column* by an earlier-processed
+		// voice: what lets an accidental in one voice check the other
+		// voice's ink at this same x, not just its own voice's last note
+		// (which could be several columns back, or nonexistent yet).
+		let columnInkRightSoFar: number | null = null;
+
+		for (const voice of voiceNumbers) {
+			const voiceNotes = notesByVoiceGroups.get(voice)!;
+			const index = voiceNoteIndex.get(voice)!;
+			const note = voiceNotes[index];
+			if (!note || onsetKey(onsets.get(note.id)!) !== key) continue;
+			voiceNoteIndex.set(voice, index + 1);
+
+			const shiftAccum = shiftAccumByVoice.get(voice)!;
+			const baseCellX = cursor + columnOffsetPx.get(key)! + shiftAccum;
+
+			// Voice-to-voice notehead offset: a second-interval clash against
+			// voice 1, at this same column or the immediately preceding one,
+			// nudges voice 2's note right by whatever shortfall closes the
+			// gap to a full notehead's width. Folded straight into the same
+			// `cellX` the accidental-collision check below already adjusts,
+			// rather than a new parameter threaded into `layoutNote`, so
+			// that function's signature and single-voice behaviour stay
+			// untouched.
+			const clashShift =
+				note.pitch !== null
+					? secondIntervalClashShift(
+							voice,
+							diatonicIndex(note.pitch),
+							NOTEHEAD_GLYPHS[note.value],
+							baseCellX,
+							voice1AtThisColumn,
+							voice1AtPrevColumn,
+							ss
+						)
+					: 0;
+			const cellX = baseCellX + clashShift;
+
 			const beamDirection = beamGroupOfNote.get(note.id)?.direction ?? null;
+			// This voice's own previous-ink-right (from whatever it last
+			// drew, possibly several columns back) combined with whatever
+			// ink an earlier-processed voice already deposited in *this*
+			// column: an accidental needs to clear both, not just its own
+			// voice's, and falls back to `null` only when neither exists
+			// (the measure's true first note, exactly as before this
+			// slice).
+			const ownPreviousInkRight = previousInkRightByVoice.get(voice)!;
+			const previousInkRight =
+				ownPreviousInkRight === null
+					? columnInkRightSoFar
+					: columnInkRightSoFar === null
+						? ownPreviousInkRight
+						: Math.max(ownPreviousInkRight, columnInkRightSoFar);
+
 			const laid = layoutNote(
 				ops,
 				notes,
@@ -937,16 +1014,24 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 				keyFifths,
 				ctx,
 				beamDirection,
-				lastStatedAlterForStep,
+				lastStatedAlterForStepByVoice.get(voice)!,
 				previousInkRight,
 				multiVoice
 			);
-			previousInkRight = laid.inkRight;
-			shiftAccum += laid.collisionShift;
-			if (laid.placement) placements.set(note.id, laid.placement);
+
+			shiftAccumByVoice.set(voice, shiftAccum + clashShift + laid.collisionShift);
+			previousInkRightByVoice.set(voice, laid.inkRight);
+			columnInkRightSoFar =
+				columnInkRightSoFar === null ? laid.inkRight : Math.max(columnInkRightSoFar, laid.inkRight);
+			if (laid.placement) {
+				placements.set(note.id, laid.placement);
+				if (voice === 1) voice1AtThisColumn = { d: laid.placement.d, noteX: laid.placement.noteX };
+			}
 		}
-		finalShiftByVoice.set(voice, shiftAccum);
+
+		voice1AtPrevColumn = voice1AtThisColumn;
 	}
+	const finalShiftByVoice = shiftAccumByVoice;
 	for (const group of beamGroups) layoutBeamGroup(ops, group, placements, ctx);
 	// The measure's note area ends at the shared columns' own total width,
 	// plus whichever voice's own collision-avoidance shift (above) reached
@@ -1529,6 +1614,57 @@ function layoutNote(
 		inkRight: noteInkRight(noteX, headGlyph, d, up, ss),
 		collisionShift
 	};
+}
+
+/**
+ * The rightward nudge voice 2's notehead needs, in pixels, to clear a
+ * second-interval (adjacent line/space, `Math.abs(d1 - d2) === 1`) clash
+ * against voice 1's notehead at the same column or the one immediately
+ * before it, or `0` when there is nothing to clear.
+ *
+ * Scoped to exactly the two-voice case, voice 1 against voice 2, matching
+ * the existing `voiceStemOverride`/`restVoiceOffsetSpaces` precedent of
+ * leaving voices 3+ a documented gap rather than a crash or an arbitrary
+ * convention: this only ever fires for `voice === 2`, and only ever checks
+ * against voice 1's own notehead, never the other way around. That
+ * asymmetry is deliberate, not an oversight: real engraving's own
+ * convention is "one nudged right", and this file already has a one-sided
+ * relationship between the two voices to hang that on (`voiceStemOverride`'s
+ * fixed voice-1-up/voice-2-down assignment), so voice 1 keeps its ordinary
+ * position and voice 2 is always the one that yields.
+ *
+ * The check is genuinely geometric, not a blind interval match: a second
+ * apart is necessary but not sufficient, since two notes a second apart at
+ * columns already far enough separated in x clear each other with room to
+ * spare (a half note against a much later eighth, say). The real test is
+ * the actual pixel gap between the two noteheads' positions against one
+ * notehead's own width, the standard convention's target clearance ("shifts
+ * the clashing note so its head sits immediately to the right of the
+ * other").
+ *
+ * Only the immediately preceding column is ever checked, not every earlier
+ * one: `layoutMeasure`'s column loop only ever has the previous column's
+ * result on hand by the time this runs, the same no-lookahead constraint
+ * that keeps the whole restructured pass a single left-to-right walk.
+ */
+function secondIntervalClashShift(
+	voice: number,
+	d: number,
+	headGlyph: GlyphName,
+	candidateCellX: number,
+	voice1AtThisColumn: { readonly d: number; readonly noteX: number } | null,
+	voice1AtPrevColumn: { readonly d: number; readonly noteX: number } | null,
+	ss: number
+): number {
+	if (voice !== 2) return 0;
+	const requiredGap = GLYPH_METRICS[headGlyph].advance * ss;
+	let shift = 0;
+	for (const voice1Note of [voice1AtThisColumn, voice1AtPrevColumn]) {
+		if (!voice1Note || Math.abs(voice1Note.d - d) !== 1) continue;
+		const gap = candidateCellX - voice1Note.noteX;
+		if (gap < requiredGap) shift = Math.max(shift, requiredGap - gap);
+	}
+	return shift;
 }
 
 /**
