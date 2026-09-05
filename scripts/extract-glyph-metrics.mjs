@@ -78,7 +78,17 @@ const GLYPHS = [
 	'timeSig6',
 	'timeSig7',
 	'timeSig8',
-	'timeSig9'
+	'timeSig9',
+	// Part-grouping glyphs (M2 Slice 5). `brace` is drawn as a single glyph,
+	// stretched via a one-off font size to whatever span a keyboard-style
+	// two-staff part needs (see `layout.ts`'s `layoutBrace`); `bracketTop`/
+	// `bracketBottom` are the fixed-size hook pieces a choir/ensemble
+	// bracket is *assembled* from around a plain vertical rect, rather than
+	// scaling the single `bracket` glyph Bravura also publishes, which would
+	// distort its square corners for anything but its one native span.
+	'brace',
+	'bracketTop',
+	'bracketBottom'
 ];
 
 // Engraving defaults are line thicknesses and extensions the font *recommends*
@@ -96,7 +106,12 @@ const ENGRAVING_DEFAULTS = [
 	'beamThickness',
 	'beamSpacing',
 	'tieMidpointThickness',
-	'slurMidpointThickness'
+	'slurMidpointThickness',
+	// The vertical spine `layoutBracket` (M2 Slice 5) draws as a plain rect
+	// between its `bracketTop`/`bracketBottom` end pieces, the same
+	// hand-drawn-rect-at-the-font's-own-thickness convention every other
+	// line in this list already follows.
+	'bracketThickness'
 ];
 
 // The stem attachment anchors we use. SMuFL publishes many more per notehead

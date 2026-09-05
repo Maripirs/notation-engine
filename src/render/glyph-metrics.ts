@@ -355,6 +355,33 @@ export const GLYPH_METRICS = {
 		bBoxNE: [1.656, 1.004],
 		anchors: {}
 	},
+	brace: {
+		name: 'brace',
+		codepoint: 0xE000,
+		description: 'Brace',
+		advance: 0.28,
+		bBoxSW: [0, -0.0025],
+		bBoxNE: [0.2774, 4.0024],
+		anchors: {}
+	},
+	bracketTop: {
+		name: 'bracketTop',
+		codepoint: 0xE003,
+		description: 'Bracket top',
+		advance: 1.876,
+		bBoxSW: [0, 0],
+		bBoxNE: [1.876, 1.18],
+		anchors: {}
+	},
+	bracketBottom: {
+		name: 'bracketBottom',
+		codepoint: 0xE004,
+		description: 'Bracket bottom',
+		advance: 1.876,
+		bBoxSW: [0, -1.18],
+		bBoxNE: [1.876, 0],
+		anchors: {}
+	},
 } as const satisfies Record<string, GlyphMetrics>;
 
 /** Name of any glyph this engine knows how to draw. */
@@ -390,6 +417,7 @@ export const ENGRAVING_DEFAULTS = {
 	beamSpacing: 0.25,
 	tieMidpointThickness: 0.22,
 	slurMidpointThickness: 0.22,
+	bracketThickness: 0.5,
 } as const;
 
 /**

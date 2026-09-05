@@ -18,7 +18,7 @@
 // region-scoped redraw possible at all; that property still holds; it just no
 // longer comes from a naive fixed-plus-linear formula.
 
-import type { ClefType, Measure, Note, NoteId, NoteValue, Score, Slur, TimeSignature } from '../model/score.js';
+import type { ClefType, Measure, Note, NoteId, NoteValue, Part, Score, Slur, TimeSignature } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -162,6 +162,42 @@ const SPACING = {
 	 * separates one system's whole staff group from the next.
 	 */
 	staffGap: 6
+} as const;
+
+/**
+ * Constants for M2 Slice 5's part-grouping decorations (brace/bracket, part
+ * name label). Kept in their own block rather than folded into `SPACING`
+ * since none of these are engraving-standard optical spacing the way
+ * `SPACING`'s own values mostly are; several are this slice's own documented
+ * heuristics (see `estimateTextWidthPx`'s comment in particular).
+ */
+const PART_DECORATION = {
+	/** Gap after a brace/bracket's own ink: between two qualifying groups
+	 *  stacked left to right, and between the last one and the label column
+	 *  (or, with no groups at all, between the left margin and the label
+	 *  column). */
+	columnGap: 0.6,
+	/** Gap between the label column's own reserved width and the clef. */
+	labelGap: 0.6,
+	/** A part-name label's font size, staff spaces: ordinary text, not a
+	 *  SMuFL glyph, sized relative to the staff the same way every other
+	 *  measurement in this file is, rather than a fixed point size. */
+	labelFontSizeSpaces: 2,
+	/**
+	 * Heuristic average glyph width, as a fraction of font size, used to
+	 * estimate a text label's pixel width. Layout has no canvas to measure
+	 * real text metrics with (`glyph-metrics.ts` only publishes SMuFL glyph
+	 * metrics, not an arbitrary text font's), so this is a documented
+	 * approximation, not a real measurement: 0.55 is a reasonable average
+	 * character width for a normal sans-serif font, good enough to reserve a
+	 * header column that comfortably fits a typical instrument name and to
+	 * roughly right-align each label against its own clef. A label whose
+	 * actual rendered width differs noticeably from this estimate (an
+	 * unusually wide or narrow font, a very short or very long name) could
+	 * end up a little more loosely or tightly spaced than intended; nothing
+	 * in this slice's own acceptance criteria needs pixel-exact text layout.
+	 */
+	labelAvgCharWidthRatio: 0.55
 } as const;
 
 /**
@@ -582,6 +618,325 @@ function barlineSpan(staffIndex: number, staffCount: number, staffTopY: number, 
 	};
 }
 
+/** One `Part` (see `model/score.ts`) that draws a brace or bracket: a
+ *  grouping of two or more staves, sorted ascending, plus which glyph shape
+ *  it draws. See `computePartGroupDecorations`. */
+interface PartGroupDecoration {
+	readonly staffIndices: readonly number[];
+	readonly glyph: 'brace' | 'bracket';
+}
+
+function isContiguous(indices: readonly number[]): boolean {
+	for (let i = 1; i < indices.length; i++) {
+		if (indices[i] !== indices[i - 1]! + 1) return false;
+	}
+	return true;
+}
+
+/**
+ * Which of `score.parts` actually draw a brace or bracket at all, and which
+ * shape each one gets (M2 Slice 5).
+ *
+ * A part grouping exactly one staff draws neither: real engraving never
+ * brackets a solo staff, which is why `Part.staffIndices.length < 2` is
+ * filtered out here rather than, say, drawing a zero-height glyph. A part
+ * grouping staves that are not *contiguous* (e.g. `[0, 2]`, skipping a staff
+ * that belongs to some other part) is also skipped: a brace/bracket is one
+ * connecting shape, and there is no sensible single shape to draw across a
+ * gap it does not actually span. This is a deliberate, documented scope cut,
+ * not an oversight; nothing in this slice's own acceptance criteria
+ * exercises a non-contiguous grouping.
+ *
+ * The glyph choice is this slice's own convention, spelled out in its own
+ * scoping text: exactly two staves reads as a keyboard-style pair (a piano's
+ * two staves) and gets the curly `brace`; three or more reads as a
+ * choir/ensemble group (this slice's own SATB demo, four staves) and gets
+ * the square `bracket`. Real engraving occasionally brackets a two-staff
+ * *vocal* pair too, rather than bracing it, but nothing in this slice's own
+ * acceptance criteria exercises that case, so the simpler staff-count-only
+ * rule is what is built; see `layoutBrace`'s own comment for why a brace, not
+ * a bracket, is specifically the right choice for a keyboard-style pair (a
+ * bracket assembles from fixed-size pieces at any span; a brace is a single
+ * glyph stretched to fit, which only stays a reasonable shape at the modest,
+ * fixed span a two-staff group always has).
+ *
+ * Sorted broadest-group-first (most staves first): `layoutSystemPartDecorations`
+ * lays multiple qualifying groups out left to right, and a wider, outer
+ * grouping conventionally sits to the left of a narrower one nested inside
+ * it (an orchestral family bracket outside its own sections' individual
+ * ones). This slice's own demo only ever exercises one qualifying group, but
+ * costs nothing to get right for more.
+ */
+function computePartGroupDecorations(score: Score): PartGroupDecoration[] {
+	const groups: PartGroupDecoration[] = [];
+	for (const part of score.parts) {
+		if (part.staffIndices.length < 2) continue;
+		const sorted = [...part.staffIndices].sort((a, b) => a - b);
+		if (!isContiguous(sorted)) continue;
+		groups.push({ staffIndices: sorted, glyph: sorted.length === 2 ? 'brace' : 'bracket' });
+	}
+	groups.sort((a, b) => b.staffIndices.length - a.staffIndices.length);
+	return groups;
+}
+
+/**
+ * The *solo* (single-staff) named `Part` that labels `staffIndex` on its own
+ * row, if any, ties broken by whichever comes first in `score.parts`.
+ *
+ * Only ever a single-staff part: a part grouping two or more staves gets its
+ * own name drawn once, centred on the whole group's span (see
+ * `layoutSystemPartDecorations`'s own group-label pass below), never
+ * repeated at every row it spans, which is what real engraving does for a
+ * named keyboard/ensemble part (a piano's name is not printed twice, once
+ * beside each of its own two staves). This split is what lets a choral score
+ * give each voice its own label (Soprano, Alto, Tenor, Bass) even though
+ * every one of those staves also belongs to one broader, typically unnamed,
+ * bracket-only grouping `Part` spanning all four: the group's own pass and
+ * this per-staff one never compete for the same row.
+ */
+function soloLabelForStaff(score: Score, staffIndex: number): Part | undefined {
+	let best: Part | undefined;
+	for (const part of score.parts) {
+		if (!part.name || part.staffIndices.length !== 1) continue;
+		if (!part.staffIndices.includes(staffIndex)) continue;
+		if (!best) best = part;
+	}
+	return best;
+}
+
+/** Every label this score's part decorations draw: one entry per solo
+ *  (single-staff) named `Part`, plus one per named multi-staff `Part`
+ *  (drawn once, centred on its own group, never per staff; see
+ *  `soloLabelForStaff`'s own comment). Shared by `computePartDecorationPlan`
+ *  (which only needs the strings, to size the reserved label column) and
+ *  `layoutSystemPartDecorations` (which also needs each one's own row). */
+function collectPartLabels(
+	score: Score
+): readonly { readonly name: string; readonly staffIndices: readonly number[] }[] {
+	const labels: { readonly name: string; readonly staffIndices: readonly number[] }[] = [];
+	for (let staffIndex = 0; staffIndex < score.staves.length; staffIndex++) {
+		const part = soloLabelForStaff(score, staffIndex);
+		if (part?.name) labels.push({ name: part.name, staffIndices: [staffIndex] });
+	}
+	for (const part of score.parts) {
+		if (part.name && part.staffIndices.length >= 2) labels.push({ name: part.name, staffIndices: part.staffIndices });
+	}
+	return labels;
+}
+
+/** See `PART_DECORATION.labelAvgCharWidthRatio`'s own comment on why this is
+ *  an estimate, not a real measurement. */
+function estimateTextWidthPx(text: string, fontSizePx: number): number {
+	return text.length * fontSizePx * PART_DECORATION.labelAvgCharWidthRatio;
+}
+
+/**
+ * The full, unsegmented vertical span, staff spaces, `staffCount` contiguous
+ * staves occupy: every staff's own 4-space height, plus `SPACING.staffGap`
+ * for every gap between them. Unlike `barlineSpan` (which deliberately
+ * *splits* this same span into one segment per staff, for the region-safety
+ * reasons spelled out in its own comment), a brace/bracket draws this whole
+ * span as one shape from a single dedicated x-band no staff's own measure
+ * ever touches (see `LaidOutScore.partDecorations`'s own comment), so it
+ * never needs splitting at all.
+ */
+function groupSpanSpaces(staffCount: number): number {
+	return staffCount * 4 + (staffCount - 1) * SPACING.staffGap;
+}
+
+/** The horizontal pixel width one part-grouping decoration's own column
+ *  needs, at its own required span. See `layoutBracket`/`layoutBrace` for how
+ *  each shape is actually drawn at that same width. */
+function partGroupColumnWidth(group: PartGroupDecoration, ss: number): number {
+	if (group.glyph === 'bracket') {
+		// Fixed regardless of span: `layoutBracket` assembles a bracket from
+		// fixed-size `bracketTop`/`bracketBottom` pieces plus a plain vertical
+		// rect between them, so only the rect's *height* grows with the span,
+		// never its width, and the hook pieces' own native width (their widest
+		// point) is this column's constant footprint.
+		return GLYPH_METRICS.bracketTop.bBoxNE[0] * ss;
+	}
+	// A brace is a single glyph, uniformly scaled (see `layoutBrace`'s own
+	// comment on why not non-uniformly) to whatever height its own span needs;
+	// its width scales by that exact same factor.
+	const nativeHeight = GLYPH_METRICS.brace.bBoxNE[1] - GLYPH_METRICS.brace.bBoxSW[1];
+	const scale = groupSpanSpaces(group.staffIndices.length) / nativeHeight;
+	return GLYPH_METRICS.brace.advance * ss * scale;
+}
+
+/**
+ * Draw a keyboard-style curly brace spanning canvas y `top`..`bottom`
+ * (a two-staff group's full outer height) at horizontal offset `x`,
+ * returning the x just past its own ink.
+ *
+ * Bravura's `brace` glyph is a single scalable shape, SMuFL's own
+ * recommendation for exactly this case: rather than assembling it from
+ * pieces the way `layoutBracket` does (a bracket's flat corners tolerate
+ * that; a brace's continuous curve does not), it is meant to be stretched to
+ * fit whatever span it needs to cover. This engine's glyphs are ordinary
+ * font text drawn at one shared font size per redraw (`ctx.font`, set once
+ * in `CanvasRenderer`), so stretching one glyph needs its own, one-off font
+ * size instead of the shared one: `DrawOp`'s `glyph` variant carries an
+ * optional `fontSizePx` override for exactly this, applied and restored by
+ * the renderer around this one op.
+ *
+ * Real engraving scales a brace *non-uniformly* (vertically only, keeping
+ * its width closer to natural) so a very tall brace does not also become
+ * very wide. Scaling both axes together via plain font size, as this does,
+ * is a deliberate, documented simplification: it is only ever used for a
+ * *two*-staff group (see `computePartGroupDecorations`'s own comment on why
+ * a 3+-staff group draws a `bracket` instead), whose span is always the same
+ * fixed `groupSpanSpaces(2)` regardless of which two adjacent staves it
+ * covers, so the resulting width is a known, modest constant rather than
+ * something that could grow unboundedly on an arbitrarily large group.
+ */
+function layoutBrace(ops: DrawOp[], x: number, top: number, bottom: number, ss: number): number {
+	const native = GLYPH_METRICS.brace;
+	const nativeHeight = native.bBoxNE[1] - native.bBoxSW[1];
+	const scale = (bottom - top) / (nativeHeight * ss);
+	const fontSizePx = ss * STAFF_SPACES_PER_EM * scale;
+	// The glyph's own bottom edge sits `bBoxSW[1]` above its origin (see
+	// `glyphBounds`'s own convention: canvas bottom = origin - bBoxSW[1] *
+	// scaled-ss); solving for the origin that lands that edge exactly on
+	// `bottom` is what makes the stretched glyph's ink span `top`..`bottom`
+	// exactly, not merely approximately.
+	const originY = bottom + native.bBoxSW[1] * ss * scale;
+	ops.push({ kind: 'glyph', glyph: 'brace', x, y: originY, fontSizePx });
+	return x + native.advance * ss * scale;
+}
+
+/**
+ * Draw a choir/ensemble square bracket spanning canvas y `top`..`bottom` at
+ * horizontal offset `x`, returning the x just past its own ink.
+ *
+ * Assembled from three pieces, not one scaled glyph (contrast `layoutBrace`):
+ * Bravura's `bracketTop`/`bracketBottom` hooks are fixed-size end pieces
+ * (their own native metrics never change), joined by a plain vertical rect
+ * whose *height* grows to whatever the span needs, the same
+ * hand-drawn-rect-at-the-font's-own-thickness approach every other straight
+ * line in this file (staff lines, stems, barlines, beams) already uses. This
+ * keeps the hooks' own corners crisp at any span, where scaling a single
+ * `bracket` glyph (which Bravura also publishes) would stretch and distort
+ * them for anything but that glyph's one native size.
+ *
+ * `bracketTop`'s own origin sits at its *bottom* edge (`bBoxSW = [0, 0]`) and
+ * `bracketBottom`'s at its *top* edge (`bBoxNE = [.., 0]`): placing each
+ * origin at the spine's own top/bottom end, inset from `top`/`bottom` by the
+ * hook's own height, makes the hook curl outward from there, its outer edge
+ * landing exactly on `top`/`bottom`.
+ */
+function layoutBracket(ops: DrawOp[], x: number, top: number, bottom: number, ss: number): number {
+	const hookHeight = GLYPH_METRICS.bracketTop.bBoxNE[1] * ss;
+	const spineTop = top + hookHeight;
+	const spineBottom = bottom - hookHeight;
+	const spineWidth = ED.bracketThickness * ss;
+	ops.push({ kind: 'glyph', glyph: 'bracketTop', x, y: spineTop });
+	ops.push({ kind: 'rect', x, y: spineTop, width: spineWidth, height: Math.max(0, spineBottom - spineTop) });
+	ops.push({ kind: 'glyph', glyph: 'bracketBottom', x, y: spineBottom });
+	return x + GLYPH_METRICS.bracketTop.bBoxNE[0] * ss;
+}
+
+/**
+ * How much horizontal room, and which groups/labels, this score's part
+ * decorations need: computed once for the whole score (not per system), so
+ * every system reserves the identical left margin whether or not it actually
+ * draws the label at that system (see `layoutSystemPartDecorations`'s own
+ * comment on the system-1-only label rule). Real engraving keeps a
+ * bracketed score's systems visually aligned the same way.
+ *
+ * Zero (`headerWidth` reducing to 0) when the score has no multi-staff `Part`
+ * and no named `Part` at all, which is every score before this slice (and
+ * still the common case): `layoutScore`'s own `x = padding + headerWidth`
+ * then reduces to plain `padding`, reproducing the exact layout this
+ * function's caller always produced.
+ */
+interface PartDecorationPlan {
+	readonly groups: readonly PartGroupDecoration[];
+	readonly bracketAreaWidth: number;
+	readonly labelColumnWidth: number;
+	readonly labelFontSizePx: number;
+	readonly headerWidth: number;
+}
+
+function computePartDecorationPlan(score: Score, ss: number): PartDecorationPlan {
+	const groups = computePartGroupDecorations(score);
+	let bracketAreaWidth = 0;
+	for (const group of groups) {
+		bracketAreaWidth += partGroupColumnWidth(group, ss) + PART_DECORATION.columnGap * ss;
+	}
+	const labelFontSizePx = PART_DECORATION.labelFontSizeSpaces * ss;
+	let maxLabelWidth = 0;
+	for (const label of collectPartLabels(score)) {
+		maxLabelWidth = Math.max(maxLabelWidth, estimateTextWidthPx(label.name, labelFontSizePx));
+	}
+	const labelColumnWidth = maxLabelWidth > 0 ? maxLabelWidth + PART_DECORATION.labelGap * ss : 0;
+	return { groups, bracketAreaWidth, labelColumnWidth, labelFontSizePx, headerWidth: bracketAreaWidth + labelColumnWidth };
+}
+
+/**
+ * Build one system's own part-decoration ops: every qualifying group's
+ * brace/bracket (drawn at *every* system, real engraving's own convention),
+ * plus, only when `isFirstSystem`, each labelled staff's own name.
+ *
+ * The label's system-1-only rule is the one place this function's own
+ * behaviour actually varies by system; everything about *where* things sit
+ * (`plan`'s own widths, computed once for the whole score) stays identical
+ * across every system, which is what keeps a bracketed score's systems
+ * visually aligned down the page even though only the first one carries
+ * text.
+ *
+ * `staffTopYs` is this system's own pre-`shiftY` top-line y per staff index
+ * (captured by `layoutScore` during its own per-staff loop, before it moves
+ * on to the next staff's `staffTopY`); the returned ops are in that same
+ * provisional frame and get the same final `shiftY` translation every
+ * measure op already does.
+ */
+function layoutSystemPartDecorations(
+	score: Score,
+	ss: number,
+	plan: PartDecorationPlan,
+	staffTopYs: readonly number[],
+	leftX: number,
+	isFirstSystem: boolean
+): DrawOp[] {
+	const ops: DrawOp[] = [];
+	let x = leftX;
+	for (const group of plan.groups) {
+		const top = staffTopYs[group.staffIndices[0]!]!;
+		const bottom = staffTopYs[group.staffIndices[group.staffIndices.length - 1]!]! + 4 * ss;
+		x = (group.glyph === 'brace' ? layoutBrace : layoutBracket)(ops, x, top, bottom, ss);
+		x += PART_DECORATION.columnGap * ss;
+	}
+	if (isFirstSystem) {
+		const labelRightEdge = leftX + plan.bracketAreaWidth + plan.labelColumnWidth - PART_DECORATION.labelGap * ss;
+		for (const label of collectPartLabels(score)) {
+			const width = estimateTextWidthPx(label.name, plan.labelFontSizePx);
+			// A solo (single-staff) label's row is that one staff's own top; a
+			// multi-staff label (see `collectPartLabels`'s own comment on why it
+			// is drawn once, not per staff) instead uses the *centre* of its
+			// whole group's outer span, so the name reads as belonging to the
+			// group as a whole rather than favouring whichever staff happens to
+			// be first.
+			const groupTop = staffTopYs[Math.min(...label.staffIndices)]!;
+			const groupBottom = staffTopYs[Math.max(...label.staffIndices)]! + 4 * ss;
+			const rowTop = label.staffIndices.length === 1 ? groupTop : (groupTop + groupBottom) / 2 - 2 * ss;
+			ops.push({
+				kind: 'text',
+				text: label.name,
+				x: labelRightEdge - width,
+				// Roughly vertically centred on the row: a baseline a little below
+				// its own middle line, nudged down further by a fraction of the
+				// font size to visually balance the ascenders and descenders a
+				// real instrument name mixes (capital initial letter, no
+				// descenders, in most names this slice's own demo uses).
+				y: rowTop + 2 * ss + plan.labelFontSizePx * 0.35,
+				fontSizePx: plan.labelFontSizePx
+			});
+		}
+	}
+	return ops;
+}
+
 /**
  * Lay a whole score out: every system a horizontal row of every staff's own
  * measures, tightly stacked (M2 Slice 4), cast off into as many systems as
@@ -634,7 +989,16 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	const staffCount = score.staves.length;
 
 	if (staffCount === 0) {
-		return { width: 0, height: 0, staffSpacePx: ss, staffTopY: padding, fontSizePx, measures: [], systems: [] };
+		return {
+			width: 0,
+			height: 0,
+			staffSpacePx: ss,
+			staffTopY: padding,
+			fontSizePx,
+			measures: [],
+			systems: [],
+			partDecorations: []
+		};
 	}
 
 	const measureCount = score.staves[0]!.measures.length;
@@ -654,8 +1018,24 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	// own doc comment: every staff shares one system membership.
 	const systemPlans = planSystems(score, 0, ss, padding, options.systemWidthPx);
 
+	// M2 Slice 5: how much left margin every system reserves for a
+	// brace/bracket plus part-name labels, decided once for the whole score
+	// (see `computePartDecorationPlan`'s own comment). Not fed into
+	// `planSystems`/`probeMeasureWidth`/`systemSpacingScale`'s own width
+	// budgeting above, which still assumes a system's note content starts at
+	// plain `padding`: a documented scope cut, not an oversight. A score that
+	// combines `systemWidthPx` casting-off with a bracketed/labelled part
+	// therefore renders `decorationPlan.headerWidth` pixels wider than
+	// `systemWidthPx` asks for, rather than the header eating into the note
+	// content's own budget; nothing in this slice's own acceptance criteria
+	// exercises that combination, and getting it exactly right would mean
+	// threading a second, asymmetric margin through three functions whose
+	// signatures nothing else in this slice needs touched.
+	const decorationPlan = computePartDecorationPlan(score, ss);
+
 	const measures: LaidOutMeasure[] = [];
 	const systems: { measureIndices: number[]; topY: number; spacingScale: number; staffIndex: number }[] = [];
+	const partDecorationOps: DrawOp[] = [];
 
 	// Provisional frame: the very first staff's own nominal top is 0, and the
 	// whole score is shifted down by `shiftY` at the very end, the same
@@ -704,13 +1084,19 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 
 		let staffTopY = groupTopY;
 		let groupBottom = groupTopY;
+		// This system's own pre-shift `staffTopY` per staff index, captured as
+		// each staff is laid out: `layoutSystemPartDecorations` (below, once
+		// this loop finishes) needs every staff's top in one place to work out
+		// a group's own outer span.
+		const staffTopYs: number[] = [];
 		for (let staffIndex = 0; staffIndex < staffCount; staffIndex++) {
 			const staff = score.staves[staffIndex]!;
 			const clef = staff.clef;
 			const lines = CLEF_LINES[clef];
 			const span = barlineSpan(staffIndex, staffCount, staffTopY, ss);
+			staffTopYs.push(staffTopY);
 
-			let x = padding;
+			let x = padding + decorationPlan.headerWidth;
 			const rowMeasures: LaidOutMeasure[] = [];
 			for (let col = 0; col < plan.length; col++) {
 				const measureIndex = plan[col]!;
@@ -747,6 +1133,10 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 			if (staffIndex < staffCount - 1) staffTopY = staffTopY + 4 * ss + SPACING.staffGap * ss;
 		}
 
+		partDecorationOps.push(
+			...layoutSystemPartDecorations(score, ss, decorationPlan, staffTopYs, padding, systemIndex === 0)
+		);
+
 		groupTopY = groupBottom + SPACING.systemGap * ss;
 	}
 
@@ -754,6 +1144,13 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	const shiftY = padding - top;
 	const shiftedMeasures = measures.map((m) => translateMeasure(m, shiftY));
 	const shiftedSystems = systems.map((s) => ({ ...s, topY: s.topY + shiftY }));
+	// Part decorations never reach above the topmost measure's own region (a
+	// brace/bracket's ink is bounded exactly to its own staves' span by
+	// construction, and a label sits well inside its own staff's band; see
+	// `layoutBrace`/`layoutBracket`/`layoutSystemPartDecorations`'s own
+	// comments), so they need only the same `shiftY` every measure op already
+	// gets, never a second pass over `top`.
+	const shiftedPartDecorationOps = translateOps(partDecorationOps, shiftY);
 
 	const width = Math.max(padding * 2, ...shiftedMeasures.map((m) => m.region.x + m.region.width + padding));
 	// Already in shifted (final) coordinates, so the shifted top sits at
@@ -774,7 +1171,8 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 		staffTopY: shiftedSystems[0]!.topY,
 		fontSizePx,
 		measures: shiftedMeasures,
-		systems: shiftedSystems
+		systems: shiftedSystems,
+		partDecorations: shiftedPartDecorationOps
 	};
 }
 
@@ -2792,10 +3190,21 @@ function measureRegion(
 			// their y-extent is a safe (if slightly generous) enclosure.
 			top = Math.min(top, op.y0, op.cy0, op.cy1, op.y1);
 			bottom = Math.max(bottom, op.y0, op.cy0, op.cy1, op.y1);
+		} else if (op.kind === 'text') {
+			// Not reachable today: a `text` op only ever exists in
+			// `LaidOutScore.partDecorations` (M2 Slice 5), never inside a
+			// measure's own `ops`, so no measure's region needs to account for
+			// one. Handled explicitly anyway, rather than falling into the
+			// `glyph` branch below (which would misread `op`'s fields), so this
+			// function stays correct if that ever changes rather than silently
+			// wrong.
+			top = Math.min(top, op.y - op.fontSizePx);
+			bottom = Math.max(bottom, op.y);
 		} else {
+			const scale = op.fontSizePx !== undefined ? op.fontSizePx / (STAFF_SPACES_PER_EM * ss) : 1;
 			const { bBoxSW, bBoxNE } = GLYPH_METRICS[op.glyph];
-			top = Math.min(top, op.y - bBoxNE[1] * ss);
-			bottom = Math.max(bottom, op.y - bBoxSW[1] * ss);
+			top = Math.min(top, op.y - bBoxNE[1] * ss * scale);
+			bottom = Math.max(bottom, op.y - bBoxSW[1] * ss * scale);
 		}
 	}
 	// A hair of slack absorbs antialiasing at the edges of stems and staff
@@ -2805,22 +3214,34 @@ function measureRegion(
 	return { x: startX, y: top - REGION_BLEED_PX, width, height: bottom - top + REGION_BLEED_PX * 2 };
 }
 
+/**
+ * Shift every y-coordinate in a list of ops down by `dy`.
+ *
+ * A curve op has no single `y` field (it has four: `y0`/`cy0`/`cy1`/`y1`), so
+ * the generic `{ ...op, y: op.y + dy }` shift that works for `rect`/`glyph`/
+ * `text` would leave every one of its y-coordinates untouched while adding a
+ * stray, `NaN`-valued `y` field on top. Shifting all four explicitly is what
+ * keeps a tie's or slur's curve aligned with the notes it connects once the
+ * whole score is translated into its final canvas position.
+ *
+ * Shared by `translateMeasure` (below) and `layoutScore`'s own part-
+ * decoration ops (M2 Slice 5), which need the exact same shift but are not
+ * attached to any `LaidOutMeasure`.
+ */
+function translateOps(ops: readonly DrawOp[], dy: number): DrawOp[] {
+	return ops.map((op) =>
+		op.kind === 'curve'
+			? { ...op, y0: op.y0 + dy, cy0: op.cy0 + dy, cy1: op.cy1 + dy, y1: op.y1 + dy }
+			: { ...op, y: op.y + dy }
+	);
+}
+
 function translateMeasure(measure: LaidOutMeasure, dy: number): LaidOutMeasure {
 	return {
 		index: measure.index,
 		staffIndex: measure.staffIndex,
 		region: { ...measure.region, y: measure.region.y + dy },
-		// A curve op has no single `y` field (it has four: `y0`/`cy0`/`cy1`/`y1`),
-		// so the generic `{ ...op, y: op.y + dy }` shift used for `rect`/`glyph`
-		// would leave every one of its y-coordinates untouched while adding a
-		// stray, `NaN`-valued `y` field on top. Shifting all four explicitly is
-		// what keeps a tie's curve aligned with the notes it connects once the
-		// whole score is translated into its final canvas position.
-		ops: measure.ops.map((op) =>
-			op.kind === 'curve'
-				? { ...op, y0: op.y0 + dy, cy0: op.cy0 + dy, cy1: op.cy1 + dy, y1: op.y1 + dy }
-				: { ...op, y: op.y + dy }
-		),
+		ops: translateOps(measure.ops, dy),
 		notes: measure.notes.map((note) => ({
 			id: note.id,
 			bounds: { ...note.bounds, y: note.bounds.y + dy }

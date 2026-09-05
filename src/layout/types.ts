@@ -37,6 +37,12 @@ export interface Rect {
  *
  * `noteId` tags the ops that belong to a specific note so the renderer can tint
  * a selection without layout knowing what "selected" means.
+ *
+ * `text` is M2 Slice 5's addition (part-name labels): plain, arbitrary text
+ * ("Soprano", "Piano"), which is not a SMuFL glyph at all, so it carries its
+ * own font size rather than reusing `LaidOutScore.fontSizePx` (the shared
+ * Bravura size every `glyph` op draws at) and is rendered in an ordinary text
+ * font, not the music font.
  */
 export type DrawOp =
 	| {
@@ -45,6 +51,26 @@ export type DrawOp =
 			/** Glyph origin, which for SMuFL sits on the staff position, not on a text baseline box. */
 			readonly x: number;
 			readonly y: number;
+			/**
+			 * Draw this one glyph at a one-off font size instead of the shared
+			 * `LaidOutScore.fontSizePx` every other `glyph` op uses. Only ever set
+			 * by `layoutBrace` (M2 Slice 5): a curly brace has to stretch to fit
+			 * whatever span its two staves need, and this engine's glyphs are
+			 * ordinary font text with no path-transform API in play, so a
+			 * different size is the only lever available for that stretch. Omitted
+			 * for every other glyph, which draws at the shared size exactly as
+			 * before this field existed.
+			 */
+			readonly fontSizePx?: number;
+			readonly noteId?: NoteId;
+	  }
+	| {
+			readonly kind: 'text';
+			readonly text: string;
+			/** Text origin (baseline-left, `CanvasRenderingContext2D`'s own default). */
+			readonly x: number;
+			readonly y: number;
+			readonly fontSizePx: number;
 			readonly noteId?: NoteId;
 	  }
 	| {
@@ -157,4 +183,25 @@ export interface LaidOutScore {
 		readonly spacingScale: number;
 		readonly staffIndex: number;
 	}[];
+	/**
+	 * Part-grouping decorations (M2 Slice 5): a brace or bracket per
+	 * multi-staff `Part`, drawn at every system, plus a part-name label per
+	 * named `Part`, drawn only at the score's first system. See `layout.ts`'s
+	 * `layoutSystemPartDecorations` for how these are built.
+	 *
+	 * Deliberately *not* folded into any `LaidOutMeasure`'s own `ops`/
+	 * `region`, unlike everything else this engine draws. A brace/bracket's
+	 * ink spans every staff a `Part` groups, which would blow up whichever
+	 * single measure "owned" it into a region whose bounding rectangle
+	 * reaches into every other staff's own row at the same x, breaking the
+	 * "a measure's region never overlaps a neighbour's" invariant that makes
+	 * region-scoped redraw safe at all (see the doc comment on `layoutScore`'s
+	 * `computePartDecorationPlan` for the full reasoning). Living outside
+	 * every measure's own region instead, in its own dedicated x-band no
+	 * measure ever draws into, sidesteps the problem entirely: nothing here
+	 * ever changes in response to an edit (no edit op that exists touches a
+	 * `Part`'s grouping or name), so `drawAll()` paints these once and
+	 * `redrawMeasure`/`redrawMeasures` never need to touch them at all.
+	 */
+	readonly partDecorations: readonly DrawOp[];
 }

@@ -599,6 +599,80 @@ export function createGrandStaffShowcaseScore(): Score {
 	return score;
 }
 
+/**
+ * M2 Slice 5's part-grouping showcase: a real four-staff SATB choral score
+ * (Soprano/Alto in treble, Tenor in treble8 so the same written pitches read
+ * naturally for a tenor voice, Bass in bass clef), each staff its own named,
+ * single-staff `Part` (so each gets its own label, drawn only at system 1 per
+ * this slice's own scope), plus one further, deliberately *unnamed*
+ * grouping `Part` spanning all four staff indices, which is what actually
+ * draws the bracket (a choir/ensemble group of 3+ staves; see
+ * `computePartGroupDecorations`'s own comment on the brace-vs-bracket
+ * convention this slice builds). A closed four-part G major hymn phrase,
+ * chosen because real SATB voicing naturally exercises every clef's own
+ * ledger-line/staff-position range at once (the soprano and tenor reach
+ * above their own staves, the bass sits low in its own), which is a useful
+ * side effect for eyeballing the render even though this slice's own scope
+ * is the bracket and labels, not the clefs (M2 Slice 3's own job).
+ *
+ * Built the same low-level way `createClefShowcaseScore`/
+ * `createGrandStaffShowcaseScore` (M2 Slices 3-4) are, for the same reason:
+ * `buildScore` only ever populates one implicit staff. Deliberately *not*
+ * folded into `createFullDemoScore`/`npm run dev`'s single combined score,
+ * again for the same reason those two showcases are not: `appendMeasures`
+ * only ever merges a source score into a single-staff destination. Verified
+ * the same way too: rasterizing `layoutScore` on this function's own score
+ * directly through node-canvas and inspecting the PNG by eye.
+ */
+export function createSatbBracketShowcaseScore(): Score {
+	const score = new Score({ keyFifths: 1, time: { beats: 4, beatType: 4 }, clef: 'treble' });
+	score.appendStaff('treble');
+	score.appendStaff('treble8');
+	score.appendStaff('bass');
+
+	score.addPart([0], 'Soprano');
+	score.addPart([1], 'Alto');
+	score.addPart([2], 'Tenor');
+	score.addPart([3], 'Bass');
+	// The bracket-only grouping: unnamed on purpose, since a per-staff label
+	// already names each voice; see this function's own doc comment.
+	score.addPart([0, 1, 2, 3]);
+
+	const voicing: readonly (readonly (readonly [string, NoteValue])[])[] = [
+		[
+			['D5', 'quarter'],
+			['G5', 'quarter'],
+			['F#5', 'quarter'],
+			['G5', 'quarter']
+		],
+		[
+			['B4', 'quarter'],
+			['D5', 'quarter'],
+			['D5', 'quarter'],
+			['D5', 'quarter']
+		],
+		[
+			['G4', 'quarter'],
+			['B4', 'quarter'],
+			['A4', 'quarter'],
+			['B4', 'quarter']
+		],
+		[
+			['G3', 'quarter'],
+			['G3', 'quarter'],
+			['D3', 'quarter'],
+			['G3', 'quarter']
+		]
+	];
+	for (let staffIndex = 0; staffIndex < voicing.length; staffIndex++) {
+		const measure = score.appendMeasure(staffIndex);
+		for (const [pitch, value] of voicing[staffIndex]!) {
+			score.appendNote(measure, { pitch: parsePitch(pitch), value });
+		}
+	}
+	return score;
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and

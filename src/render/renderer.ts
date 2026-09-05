@@ -18,6 +18,10 @@ import { BRAVURA_FAMILY, GLYPH_METRICS } from './glyph-metrics.js';
 export interface CanvasRendererOptions {
 	/** Font family the SMuFL font is registered under. */
 	readonly fontFamily?: string;
+	/** Font family a `text` op (M2 Slice 5's part-name labels) draws with.
+	 *  Ordinary text, not a music glyph, so it uses a normal text font rather
+	 *  than `fontFamily`'s SMuFL one. */
+	readonly labelFontFamily?: string;
 	/** Ink colour for staff, glyphs and stems. */
 	readonly foreground?: string;
 	/**
@@ -31,6 +35,7 @@ export interface CanvasRendererOptions {
 
 const DEFAULTS = {
 	fontFamily: BRAVURA_FAMILY,
+	labelFontFamily: 'sans-serif',
 	foreground: '#111111',
 	background: '#ffffff',
 	selection: '#c2410c'
@@ -66,6 +71,7 @@ export class CanvasRenderer {
 		this.#layout = layout;
 		this.#options = {
 			fontFamily: options.fontFamily ?? DEFAULTS.fontFamily,
+			labelFontFamily: options.labelFontFamily ?? DEFAULTS.labelFontFamily,
 			foreground: options.foreground ?? DEFAULTS.foreground,
 			background: options.background === undefined ? DEFAULTS.background : options.background,
 			selection: options.selection ?? DEFAULTS.selection
@@ -135,6 +141,11 @@ export class CanvasRenderer {
 			this.lastRedrawnMeasures.push(measure.index);
 			this.lastRedrawnRegions.push(measure.region);
 		}
+		// Part-grouping decorations (M2 Slice 5): drawn once here, never by
+		// `redrawMeasure`/`redrawMeasures`. See `LaidOutScore.partDecorations`'s
+		// own comment on why they live outside every measure's own region and
+		// therefore outside the region-scoped redraw path entirely.
+		this.#drawOps(this.#layout.partDecorations);
 	}
 
 	/**
@@ -213,6 +224,20 @@ export class CanvasRenderer {
 				ctx.moveTo(op.x0, op.y0);
 				ctx.bezierCurveTo(op.cx0, op.cy0, op.cx1, op.cy1, op.x1, op.y1);
 				ctx.stroke();
+			} else if (op.kind === 'text') {
+				// Ordinary text, not a music glyph: swap to the label font/size for
+				// this one op, then swap back, since every op around this one
+				// assumes the shared Bravura font is active (set once per draw call
+				// above, not per op).
+				ctx.font = `${op.fontSizePx}px ${this.#options.labelFontFamily}`;
+				ctx.fillText(op.text, op.x, op.y);
+				ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;
+			} else if (op.fontSizePx !== undefined) {
+				// A one-off scaled glyph (M2 Slice 5's brace, stretched to fit its
+				// own two staves' span): same swap-and-restore as `text`, above.
+				ctx.font = `${op.fontSizePx}px "${this.#options.fontFamily}"`;
+				ctx.fillText(String.fromCodePoint(GLYPH_METRICS[op.glyph].codepoint), op.x, op.y);
+				ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;
 			} else {
 				ctx.fillText(String.fromCodePoint(GLYPH_METRICS[op.glyph].codepoint), op.x, op.y);
 			}

@@ -7,6 +7,7 @@ import {
 	createDurationShowcaseScore,
 	createGrandStaffShowcaseScore,
 	createKeyTimeChangeShowcaseScore,
+	createSatbBracketShowcaseScore,
 	createSlurShowcaseScore,
 	createTieShowcaseScore,
 	createTwoVoiceShowcaseScore,
@@ -2295,6 +2296,158 @@ describe('multi-staff system layout (M2 Slice 4)', () => {
 			const treble = layout.measures.find((m) => m.staffIndex === 0 && m.index === i)!;
 			const bass = layout.measures.find((m) => m.staffIndex === 1 && m.index === i)!;
 			expect(bass.region.x + bass.region.width).toBeCloseTo(treble.region.x + treble.region.width, 6);
+		}
+	});
+});
+
+describe('part grouping decorations (M2 Slice 5)', () => {
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+
+	/** An `staffCount`-staff score, `measuresPerStaff` identical one-quarter-
+	 *  note measures per staff, with `parts` (`[staffIndices, name?]` pairs)
+	 *  registered via `Score.addPart` in order. Built the same low-level way
+	 *  every other multi-staff test fixture in this file is (`buildScore` only
+	 *  ever populates one implicit staff). */
+	function buildStavesScore(
+		staffCount: number,
+		parts: readonly (readonly [staffIndices: number[], name?: string])[],
+		measuresPerStaff = 1
+	) {
+		const score = buildScore(
+			Array.from({ length: measuresPerStaff }, () => [['C4', 'quarter']] as const),
+			{ clef: 'treble' }
+		);
+		for (let staffIndex = 1; staffIndex < staffCount; staffIndex++) {
+			score.appendStaff('treble');
+			for (let i = 0; i < measuresPerStaff; i++) {
+				const m = score.appendMeasure(staffIndex);
+				score.appendNote(m, { pitch: parsePitch('C4'), value: 'quarter' });
+			}
+		}
+		for (const [staffIndices, name] of parts) score.addPart(staffIndices, name);
+		return score;
+	}
+
+	const glyphsOf = (ops: readonly DrawOp[]) => ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+	const textsOf = (ops: readonly DrawOp[]) => ops.flatMap((op) => (op.kind === 'text' ? [op.text] : []));
+
+	it('a two-staff part draws a brace whose ink spans exactly its two staves\' outer height', () => {
+		const score = buildStavesScore(2, [[[0, 1], 'Piano']]);
+		const layout = layoutScore(score, options);
+
+		expect(glyphsOf(layout.partDecorations)).toEqual(['brace']);
+		const brace = layout.partDecorations.find(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'brace'
+		)!;
+		expect(brace.fontSizePx).toBeDefined();
+
+		const staff0Top = layout.systems.find((s) => s.staffIndex === 0)!.topY;
+		const staff1Top = layout.systems.find((s) => s.staffIndex === 1)!.topY;
+		const expectedTop = staff0Top;
+		const expectedBottom = staff1Top + 4 * ss;
+
+		// Same y-bounds convention `glyphBounds` uses elsewhere in this file:
+		// SMuFL bounding boxes are y-up, so `NE` gives the ink's canvas top and
+		// `SW` its canvas bottom, scaled by this one glyph's own one-off
+		// `fontSizePx` rather than the shared staff-space size.
+		const native = GLYPH_METRICS.brace;
+		const glyphScale = brace.fontSizePx! / (4 * ss);
+		const inkTop = brace.y - native.bBoxNE[1] * ss * glyphScale;
+		const inkBottom = brace.y - native.bBoxSW[1] * ss * glyphScale;
+		expect(inkTop).toBeCloseTo(expectedTop, 6);
+		expect(inkBottom).toBeCloseTo(expectedBottom, 6);
+	});
+
+	it('a three-or-more-staff part draws an assembled bracket spanning exactly its staves\' outer height', () => {
+		const score = buildStavesScore(4, [[[0, 1, 2, 3], 'Choir']]);
+		const layout = layoutScore(score, options);
+
+		// Assembled from fixed hook pieces plus a plain rect spine, not a
+		// single scaled `bracket` glyph (see `layoutBracket`'s own comment).
+		expect(glyphsOf(layout.partDecorations)).toEqual(['bracketTop', 'bracketBottom']);
+		expect(layout.partDecorations.some((op) => op.kind === 'rect')).toBe(true);
+
+		const top = layout.systems.find((s) => s.staffIndex === 0)!.topY;
+		const bottom = layout.systems.find((s) => s.staffIndex === 3)!.topY + 4 * ss;
+		const hookHeight = GLYPH_METRICS.bracketTop.bBoxNE[1] * ss;
+
+		const hookTopOp = layout.partDecorations.find(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'bracketTop'
+		)!;
+		const hookBottomOp = layout.partDecorations.find(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'bracketBottom'
+		)!;
+		const spineRect = layout.partDecorations.find((op): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect')!;
+
+		// The hooks' own ink meets the target span exactly: the top hook's own
+		// outer edge sits `hookHeight` above where it's anchored, and the
+		// bottom hook's the same distance below its own anchor.
+		expect(hookTopOp.y - hookHeight).toBeCloseTo(top, 6);
+		expect(hookBottomOp.y + hookHeight).toBeCloseTo(bottom, 6);
+		// The spine rect joins the two hooks with no gap or overlap.
+		expect(spineRect.y).toBeCloseTo(hookTopOp.y, 6);
+		expect(spineRect.y + spineRect.height).toBeCloseTo(hookBottomOp.y, 6);
+	});
+
+	it('a single-staff part draws no brace/bracket, even when named', () => {
+		const score = buildStavesScore(2, [[[0], 'Solo']]);
+		const layout = layoutScore(score, options);
+		expect(glyphsOf(layout.partDecorations)).toEqual([]);
+		expect(textsOf(layout.partDecorations)).toEqual(['Solo']);
+	});
+
+	it('a non-contiguous multi-staff part is skipped (documented scope cut), not thrown', () => {
+		const score = buildStavesScore(3, [[[0, 2], 'Divisi']]);
+		expect(() => layoutScore(score, options)).not.toThrow();
+		const layout = layoutScore(score, options);
+		expect(glyphsOf(layout.partDecorations)).toEqual([]);
+		// The (skipped) group's own name still labels staff 0, the most
+		// specific named part covering it: the contiguity scope cut only
+		// drops the connecting glyph, not the grouping's other effects.
+		expect(textsOf(layout.partDecorations)).toEqual(['Divisi']);
+	});
+
+	it('a part-name label is drawn only at the first system; a brace/bracket repeats at every system', () => {
+		const score = buildStavesScore(2, [[[0, 1], 'Piano']], 6);
+		// Small enough that 6 one-quarter-note measures per staff cast off into
+		// more than one system.
+		const layout = layoutScore(score, { staffSpacePx: ss, systemWidthPx: 90 });
+		expect(layout.systems.filter((s) => s.staffIndex === 0).length).toBeGreaterThan(1);
+
+		expect(textsOf(layout.partDecorations)).toEqual(['Piano']);
+		const systemCount = layout.systems.filter((s) => s.staffIndex === 0).length;
+		expect(glyphsOf(layout.partDecorations).filter((g) => g === 'brace')).toHaveLength(systemCount);
+	});
+
+	it('a score with no multi-staff or named Part renders exactly as before this slice', () => {
+		// The default `Score` (one staff, one unnamed part) and a score with a
+		// second staff `appendStaff` alone adds (M2 Slice 3/4's own demos):
+		// neither ever calls `addPart` with a real grouping or a name, so
+		// `partDecorations` is empty and every measure's own `x` is unaffected
+		// by this slice's new left-margin reservation.
+		const solo = layoutScore(createDemoScore(), options);
+		expect(solo.partDecorations).toEqual([]);
+		// `layoutScore`'s own default `paddingPx` (16), unaffected by this
+		// slice's `padding + decorationPlan.headerWidth` when `headerWidth` is 0.
+		expect(solo.measures[0]!.region.x).toBeCloseTo(16, 6);
+
+		const grand = layoutScore(createGrandStaffShowcaseScore());
+		expect(grand.partDecorations).toEqual([]);
+	});
+
+	it('renders the SATB bracket showcase (four staves, one bracket, four labels) without error', () => {
+		const score = createSatbBracketShowcaseScore();
+		const layout = layoutScore(score);
+
+		expect(glyphsOf(layout.partDecorations)).toEqual(['bracketTop', 'bracketBottom']);
+		expect(textsOf(layout.partDecorations).sort()).toEqual(['Alto', 'Bass', 'Soprano', 'Tenor']);
+
+		// Every staff's own measure still lays out and starts to the right of
+		// the reserved header column, not on top of it.
+		expect(layout.measures).toHaveLength(4);
+		for (const measure of layout.measures) {
+			expect(measure.region.x).toBeGreaterThan(16);
 		}
 	});
 });

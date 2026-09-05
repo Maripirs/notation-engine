@@ -284,6 +284,42 @@ describe('CanvasRenderer region-scoped redraw across staves (M2 Slice 3)', () =>
 	});
 });
 
+describe('CanvasRenderer painting part decorations (M2 Slice 5)', () => {
+	it('drawAll paints a brace/bracket and its part-name label; redrawMeasure never repaints them', () => {
+		const score = new Score({ keyFifths: 0 });
+		score.appendStaff('bass');
+		score.addPart([0, 1], 'Piano');
+		for (const staffIndex of [0, 1] as const) {
+			const measure = score.appendMeasure(staffIndex);
+			score.appendNote(measure, { pitch: parsePitch('C4'), value: 'quarter' });
+		}
+
+		const layout = layoutScore(score);
+		expect(layout.partDecorations.length).toBeGreaterThan(0);
+
+		const recorder = recordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, layout);
+		renderer.drawAll();
+
+		// The label text reaches the renderer as a real `fillText` call, the
+		// same call every glyph draws with; nothing about `partDecorations`
+		// needs its own renderer code path beyond what `#drawOps` already had.
+		const label = layout.partDecorations.find((op) => op.kind === 'text')!;
+		expect(label).toBeDefined();
+		expect(recorder.calls.some((call) => call.call === 'fillText' && Math.abs(call.x - label.x) < 0.001)).toBe(
+			true
+		);
+
+		// A region-scoped redraw never repaints the decoration ink: nothing in
+		// this slice's scope ever changes a `Part`'s grouping or name, so there
+		// is nothing for an edit to keep in sync there.
+		recorder.calls.length = 0;
+		renderer.redrawMeasure(0);
+		const decorationXs = new Set(layout.partDecorations.flatMap((op) => (op.kind === 'curve' ? [] : [op.x])));
+		expect(recorder.calls.some((call) => decorationXs.has(call.x))).toBe(false);
+	});
+});
+
 describe('CanvasRenderer painting a tie curve', () => {
 	// A second, narrower stub than `recordingContext`, since only this suite's
 	// tests need to know a curve was actually stroked rather than just that
