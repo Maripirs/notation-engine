@@ -139,17 +139,29 @@ const SPACING = {
 	 */
 	systemGap: 6,
 	/**
-	 * Blank between one staff's own whole laid-out block (every one of its
-	 * systems) and the next staff's, staff spaces (M2 Slice 3). A generous
-	 * fixed gap, the same naive-but-correct spirit as `systemGap`: real
-	 * multi-staff engraving instead stacks staves *tightly* within one shared
-	 * system (M2 Slice 4's own job, "Multi-staff system layout"), leaving only
-	 * as much room as each staff's own tallest ink needs. This is deliberately
-	 * not that: `layoutScore` lays each staff out as an independent,
-	 * self-contained block and stacks whole blocks, so this gap only has to
-	 * clear two whole staves' worth of margin, not two systems' worth.
+	 * Blank between one staff and the next, staff spaces, when two or more
+	 * staves are stacked *within one system* (M2 Slice 4). A fixed, generous
+	 * gap, the same naive-but-correct spirit as `systemGap`: real engraving
+	 * would size this per system based on the tallest ink actually landing in
+	 * it (a deep ledger line, a beam); this file has no such measurement yet,
+	 * so a constant wide enough for a couple of ledger lines on either side
+	 * (e.g. middle C sitting between a piano's two staves) is the stand-in.
+	 * Deliberately *not* ink-aware: `layoutScore` fixes every staff's own top
+	 * at a constant offset from the previous staff's nominal (not actual)
+	 * bottom, precisely so the shared barline's own split point (see
+	 * `layoutScore`'s own comment on `barlineTop`/`barlineBottom`) can be
+	 * computed up front, before any measure's content is laid out, with no
+	 * circular dependency between "how tall is this staff's ink" and "where
+	 * does the next staff start".
+	 *
+	 * Replaces Slice 3's `staffBlockGap`, which separated two whole
+	 * independent per-staff *blocks* (every one of a staff's own systems,
+	 * stacked below the previous staff's own last system); this slice
+	 * interleaves staves *within* a system instead, so the gap that matters
+	 * now is staff-to-staff, not block-to-block, and `systemGap` alone
+	 * separates one system's whole staff group from the next.
 	 */
-	staffBlockGap: 10
+	staffGap: 6
 } as const;
 
 /**
@@ -488,179 +500,281 @@ const TIME_SIG_DIGITS = [
 ] as const satisfies readonly GlyphName[];
 
 /**
- * Lay a whole score out: every staff, each cast off into its own systems
- * (staff lines, stacked vertically) as needed, then the staves themselves
- * stacked one below the next.
+ * Antialiasing slack `measureRegion` pads every measure's region by, on both
+ * the top and the bottom, pixels: see its own comment. Hoisted to a named
+ * module constant (rather than a literal local to `measureRegion`) because
+ * `barlineSpan` (M2 Slice 4, below) also has to know this exact value: a
+ * shared barline's two segments, if split at the raw geometric midpoint of
+ * the staff gap, would each still get its own `REGION_BLEED_PX` of region
+ * padding *toward* the other staff once `measureRegion` runs, and since both
+ * segments' ink already reaches that same midpoint, the two staves' regions
+ * would overlap by `2 * REGION_BLEED_PX`, not just touch. `barlineSpan`
+ * shortens each segment's own ink by exactly this much on the side facing its
+ * neighbour to cancel that out; see its own comment for the full reasoning.
+ */
+const REGION_BLEED_PX = 1;
+
+/**
+ * The vertical band, in the same provisional (pre-`shiftY`) frame as
+ * everything else `layoutScore` computes, one staff's own portion of a
+ * *shared* barline occupies within its system's staff group (M2 Slice 4).
  *
- * Without `options.systemWidthPx` a staff keeps Phase 0's original
- * behaviour: one system, forever, however wide its music gets. With it,
- * measures run left to right until the next one would overflow the budget,
- * then a new system starts below (see `planSystems`). Either way, one
- * staff's own result is built the same way `layoutScore` always built its
- * one implicit staff: figure out which measures belong to which system,
- * then lay out each system's measures left to right with that system's own
- * staff top (`layoutOneStaff`, below).
+ * A real multi-staff barline is one continuous line from the top staff's top
+ * line to the bottom staff's bottom line, running straight through the gaps
+ * between staves with no visible break. Splitting it into one segment per
+ * staff (rather than one staff drawing the whole tall line, or every staff
+ * drawing a duplicate copy of it) is what keeps this compatible with
+ * region-scoped redraw: each staff's own `LaidOutMeasure.region` bounds
+ * exactly the pixels that staff's own redraw is allowed to touch, so a
+ * barline segment two staves both needed to draw would make their regions
+ * overlap, and redrawing one would clear (and never restore) part of the
+ * other's ink. This is the same "split a run into independent halves at a
+ * neutral boundary" shape M1 Slices 5-6 already used for a tie or slur
+ * crossing a *measure* boundary; here the boundary being split is a *staff*
+ * boundary instead.
  *
- * Multiple staves (M2 Slice 3) are laid out independently this way, one at a
- * time, and simply stacked: each staff's whole self-contained block goes
- * directly beneath the previous one's, separated by `SPACING.staffBlockGap`.
- * This is a deliberately naive placeholder, not real multi-staff engraving
- * (which interleaves staves *within* each system, tightly stacked, sharing
- * one barline per system-column): that tight interleaving is M2 Slice 4's
- * own scope ("Multi-staff system layout"), not this one's. What this slice
- * needs is only that a multi-staff `Score` produces one real, non-
- * overlapping, multi-staff `LaidOutScore` to prove `(staffIndex,
- * measureIndex)` addressing and region-scoped redraw against, which naive
- * stacking already does; a single-staff score (every score before this
- * slice, and still the common case) is the zero-extra-staves degenerate
- * case, running this loop once with nothing to stack, reproducing the exact
- * same result `layoutScore` always produced.
+ * Every staff strictly between the first and last extends both upward (to
+ * meet the staff above) and downward (to meet the staff below); the group's
+ * first staff only extends downward, and its last only upward, since there is
+ * nothing on the other side to meet.
+ *
+ * Naively splitting exactly at the gap's midpoint (using `SPACING.staffGap`'s
+ * own fixed value on both sides) would make the two ink segments touch
+ * exactly there, which sounds right but is not quite: `measureRegion` pads
+ * *every* measure's computed ink extent by `REGION_BLEED_PX` on every side,
+ * for antialiasing slack, with no awareness that one particular edge happens
+ * to border another staff's own measure rather than blank margin. Two ink
+ * segments touching at the same y would each then bleed `REGION_BLEED_PX`
+ * *past* that shared point into the neighbour's own territory, so redrawing
+ * one measure would clear (and never restore) a strip of the other's ink,
+ * exactly the region conflict this whole function exists to avoid.
+ *
+ * The fix is to stop each segment's own ink `REGION_BLEED_PX` short of the
+ * true midpoint on the side facing a neighbour, leaving a `2 *
+ * REGION_BLEED_PX`-wide neutral strip that belongs to neither staff's ink.
+ * Once `measureRegion` bleeds each side back out by that same amount, the two
+ * regions land exactly flush (touching, not overlapping) at the true
+ * midpoint, with neither drawing into the other's pixels. This is
+ * deterministic from the same three inputs `relayoutMeasure` already has
+ * (`staffIndex`, `staffCount`, this staff's own cached `staffTopY`) with no
+ * need to also know what the *neighbouring* staff's content did, exactly
+ * like the naive midpoint split it replaces.
+ *
+ * A repeat-start barline (`Measure.startBarline`, drawn by
+ * `layoutRepeatStartBarline`) is deliberately excluded from this treatment:
+ * it is rare enough, and this slice's own acceptance criteria narrow enough
+ * (a shared *end* barline, not every barline shape), that leaving it a
+ * per-staff, non-spanning line is a reasonable, documented scope cut rather
+ * than doubling this function's own complexity for a shape nothing here
+ * currently exercises.
+ */
+function barlineSpan(staffIndex: number, staffCount: number, staffTopY: number, ss: number): { top: number; bottom: number } {
+	// Clamped at 0 defensively: only reachable at a `staffSpacePx` far smaller
+	// than any real engraving use (`SPACING.staffGap` is 6 staff spaces, so
+	// this would need `ss` under roughly a third of a pixel), where the two
+	// ink segments would already be visually meaningless; better to have them
+	// touch with zero neutral strip than to have this go negative and overlap
+	// the wrong way.
+	const halfGap = Math.max(0, (SPACING.staffGap * ss) / 2 - REGION_BLEED_PX);
+	return {
+		top: staffTopY - (staffIndex > 0 ? halfGap : 0),
+		bottom: staffTopY + 4 * ss + (staffIndex < staffCount - 1 ? halfGap : 0)
+	};
+}
+
+/**
+ * Lay a whole score out: every system a horizontal row of every staff's own
+ * measures, tightly stacked (M2 Slice 4), cast off into as many systems as
+ * `options.systemWidthPx` demands (`planSystems`).
+ *
+ * Real multi-staff engraving interleaves staves *within* a system rather
+ * than laying each staff out as its own independent, self-contained block
+ * (M2 Slice 3's own placeholder, which this replaces): every staff's own
+ * portion of the *same* set of measures stacks directly below the previous
+ * staff's, sharing one barline per measure boundary, and the whole stacked
+ * group repeats below for the next system. A single-staff score (every score
+ * before this slice, and still the common case) is the one-staff-per-group
+ * degenerate case of all of this: no staff to stack against, no barline
+ * segment to split (`barlineSpan` returns exactly `staffTopY`/`staffTopY +
+ * 4 * ss`, unchanged from before this slice), reproducing the exact same
+ * result `layoutScore` always produced.
+ *
+ * System membership (which measures land in which system) is decided *once*
+ * for the whole score, off staff 0 alone, not independently per staff: a
+ * shared system only makes sense if every staff agrees on where it starts
+ * and ends, and `planSystems`'s own width-probing already assumes one
+ * measure count and one score-wide key/time/barline sequence (M1 Slices
+ * 7-8), which every staff in practice shares. This is also why every staff
+ * in a `Score` is required to have the same number of measures (checked
+ * below, not silently assumed): a staff with a different measure count would
+ * have no coherent claim to be "in system 3" at all. Flagged as a real scope
+ * boundary, not an oversight: a future divisi split with genuinely different
+ * measure counts per staff is out of this slice's scope.
+ *
+ * Within one system, every measure column's *width* is also shared across
+ * every staff, not decided independently per staff: a single barline spanning
+ * the group (`barlineSpan`, above) is only geometrically meaningful if every
+ * staff's version of that boundary sits at the same x. Each staff still lays
+ * its own notes out at its own natural spacing (`layoutMeasure`, unchanged);
+ * the *narrower* staff at a given column (e.g. a bass clef's smaller header,
+ * or simply fewer/shorter notes) then has its own trailing space padded out
+ * to match the widest staff's natural width for that same column
+ * (`columnWidth` below), rather than every staff's notes being re-scaled to
+ * force identical column widths. This is a deliberate, simpler choice than a
+ * true cross-staff justification pass: it keeps each staff's own optical
+ * spacing exactly what `layoutMeasure` would have produced alone, at the
+ * cost of not forcing note-for-note x-alignment between two staves whose own
+ * content genuinely differs (which nothing in this slice's own acceptance
+ * criteria asks for).
  */
 export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutScore {
 	const ss = options.staffSpacePx ?? DEFAULTS.staffSpacePx;
 	const padding = options.paddingPx ?? DEFAULTS.paddingPx;
 	const fontSizePx = ss * STAFF_SPACES_PER_EM;
+	const staffCount = score.staves.length;
+
+	if (staffCount === 0) {
+		return { width: 0, height: 0, staffSpacePx: ss, staffTopY: padding, fontSizePx, measures: [], systems: [] };
+	}
+
+	const measureCount = score.staves[0]!.measures.length;
+	for (let s = 1; s < staffCount; s++) {
+		if (score.staves[s]!.measures.length !== measureCount) {
+			throw new Error(
+				`layoutScore: staff ${s} has ${score.staves[s]!.measures.length} measures, staff 0 has ` +
+					`${measureCount}. M2 Slice 4's interleaved multi-staff layout decides system membership ` +
+					`once for the whole score (see this function's own doc comment), which needs every staff ` +
+					`to agree on how many measures it has; a score with genuinely different per-staff measure ` +
+					`counts is out of this slice's scope.`
+			);
+		}
+	}
+
+	// Decided once, off staff 0, for the reason explained in this function's
+	// own doc comment: every staff shares one system membership.
+	const systemPlans = planSystems(score, 0, ss, padding, options.systemWidthPx);
 
 	const measures: LaidOutMeasure[] = [];
 	const systems: { measureIndices: number[]; topY: number; spacingScale: number; staffIndex: number }[] = [];
-	let width = 0;
-	let yOffset = 0;
-	let firstStaffTopY = 0;
 
-	for (let staffIndex = 0; staffIndex < score.staves.length; staffIndex++) {
-		const block = layoutOneStaff(score, staffIndex, options, ss, padding);
-		if (staffIndex === 0) firstStaffTopY = block.staffTopY;
-		width = Math.max(width, block.width);
-
-		// `dy === 0` (staff 0, and every single-staff score) skips
-		// `translateMeasure` entirely rather than calling it with a no-op
-		// shift: `layoutOneStaff` already produced the exact final result in
-		// that case, so re-wrapping it here would only allocate fresh, if
-		// numerically identical, objects for no reason.
-		const dy = yOffset;
-		if (dy === 0) {
-			measures.push(...block.measures);
-			systems.push(...block.systems);
-		} else {
-			for (const measure of block.measures) measures.push(translateMeasure(measure, dy));
-			for (const system of block.systems) systems.push({ ...system, topY: system.topY + dy });
-		}
-		yOffset += block.height + SPACING.staffBlockGap * ss;
-	}
-
-	return {
-		width,
-		// The last staff's own trailing gap was added but never used by
-		// anything below it; drop it so the canvas does not end in dead space.
-		height: score.staves.length === 0 ? 0 : yOffset - SPACING.staffBlockGap * ss,
-		staffSpacePx: ss,
-		staffTopY: firstStaffTopY,
-		fontSizePx,
-		measures,
-		systems
-	};
-}
-
-/**
- * Lay out one staff's own measures, cast off into its own systems, as a
- * self-contained block starting at `options.paddingPx` from its own top
- * (i.e. exactly what `layoutScore` produced for the score's one implicit
- * staff before M2 Slice 3). `layoutScore` calls this once per staff and
- * stacks the results; see its own comment for why that stacking is a
- * deliberately naive placeholder rather than real multi-staff layout.
- */
-function layoutOneStaff(
-	score: Score,
-	staffIndex: number,
-	options: LayoutOptions,
-	ss: number,
-	padding: number
-): {
-	measures: LaidOutMeasure[];
-	systems: { measureIndices: number[]; topY: number; spacingScale: number; staffIndex: number }[];
-	width: number;
-	height: number;
-	staffTopY: number;
-} {
-	const staff = score.staves[staffIndex];
-	if (!staff) throw new Error(`layoutScore: no staff at index ${staffIndex}`);
-	const clef = staff.clef;
-	const lines = CLEF_LINES[clef];
-
-	const systemPlans = planSystems(score, staffIndex, ss, padding, options.systemWidthPx);
-
-	// Lay out against a provisional first staff top of 0 and translate
-	// everything afterwards. Ledger lines, stems and flags can reach well
-	// above the staff, and how far is not known until the notes are placed,
-	// so reserving a guessed margin up front would either waste space or clip.
-	const measures: LaidOutMeasure[] = [];
-	const systems: { measureIndices: number[]; topY: number; spacingScale: number }[] = [];
-	let systemTopY = 0;
-	let contentWidth = 0;
+	// Provisional frame: the very first staff's own nominal top is 0, and the
+	// whole score is shifted down by `shiftY` at the very end, the same
+	// "lay out at 0, then translate" trick Slice 3 used per staff, now done
+	// once for the whole interleaved score (ledger lines/stems/a beam can
+	// reach above the top staff's own top line by an amount not known until
+	// after laying it out).
+	let groupTopY = 0;
 
 	for (let systemIndex = 0; systemIndex < systemPlans.length; systemIndex++) {
 		const plan = systemPlans[systemIndex]!;
 		const isLastSystem = systemIndex === systemPlans.length - 1;
-		const spacingScale = systemSpacingScale(
-			score,
-			staffIndex,
-			plan,
-			ss,
-			padding,
-			options.systemWidthPx,
-			isLastSystem
-		);
-		const staffTopY = systemTopY;
-		let x = padding;
-		for (const measureIndex of plan) {
-			const measure = staff.measures[measureIndex]!;
-			const laid = layoutMeasure(score, measure, {
-				ss,
-				staffTopY,
-				startX: x,
-				isSystemFirst: measureIndex === plan[0],
-				isScoreFirst: measureIndex === 0,
-				isLast: measureIndex === staff.measures.length - 1,
-				spacingScale,
-				staffIndex,
-				clef,
-				lines
-			});
-			measures.push(laid);
-			x = laid.region.x + laid.region.width;
-		}
-		systems.push({ measureIndices: [...plan], topY: staffTopY, spacingScale });
-		contentWidth = Math.max(contentWidth, x + padding);
 
-		const systemMeasures = measures.slice(-plan.length);
-		const systemBottom = Math.max(
-			staffTopY + 4 * ss,
-			...systemMeasures.map((m) => m.region.y + m.region.height)
+		// Each staff's own justification scale for this system, independent
+		// per staff (unchanged from Slice 3/9): a sparser staff stretches more
+		// than a denser one to reach the same `systemWidthPx` target.
+		const scales = score.staves.map((_, staffIndex) =>
+			systemSpacingScale(score, staffIndex, plan, ss, padding, options.systemWidthPx, isLastSystem)
 		);
-		systemTopY = systemBottom + SPACING.systemGap * ss;
+
+		// Every staff's own natural (pre-column-sharing) width for every
+		// measure in this system, at that staff's own decided scale: what
+		// `layoutMeasure` would produce completely on its own, before the
+		// cross-staff column-width sharing below pads a narrower staff out.
+		const naturalWidths = score.staves.map((staff, staffIndex) =>
+			plan.map((measureIndex) => {
+				const measure = staff.measures[measureIndex]!;
+				return probeMeasureWidth(
+					score,
+					staffIndex,
+					measure,
+					ss,
+					{
+						isSystemFirst: measureIndex === plan[0],
+						isScoreFirst: measureIndex === 0,
+						isLast: measureIndex === staff.measures.length - 1
+					},
+					scales[staffIndex]
+				);
+			})
+		);
+		// The shared width every staff's own version of a given measure column
+		// renders at (see this function's own doc comment on why padding, not
+		// re-scaling, closes the gap for whichever staff was narrower here).
+		const columnWidths = plan.map((_measureIndex, col) => Math.max(...naturalWidths.map((row) => row[col]!)));
+
+		let staffTopY = groupTopY;
+		let groupBottom = groupTopY;
+		for (let staffIndex = 0; staffIndex < staffCount; staffIndex++) {
+			const staff = score.staves[staffIndex]!;
+			const clef = staff.clef;
+			const lines = CLEF_LINES[clef];
+			const span = barlineSpan(staffIndex, staffCount, staffTopY, ss);
+
+			let x = padding;
+			const rowMeasures: LaidOutMeasure[] = [];
+			for (let col = 0; col < plan.length; col++) {
+				const measureIndex = plan[col]!;
+				const measure = staff.measures[measureIndex]!;
+				const laid = layoutMeasure(score, measure, {
+					ss,
+					staffTopY,
+					startX: x,
+					isSystemFirst: measureIndex === plan[0],
+					isScoreFirst: measureIndex === 0,
+					isLast: measureIndex === staff.measures.length - 1,
+					spacingScale: scales[staffIndex],
+					staffIndex,
+					clef,
+					lines,
+					columnWidth: columnWidths[col],
+					barlineTop: span.top,
+					barlineBottom: span.bottom
+				});
+				rowMeasures.push(laid);
+				x = laid.region.x + laid.region.width;
+			}
+			measures.push(...rowMeasures);
+			systems.push({ measureIndices: [...plan], topY: staffTopY, spacingScale: scales[staffIndex]!, staffIndex });
+
+			const rowBottom = Math.max(staffTopY + 4 * ss, ...rowMeasures.map((m) => m.region.y + m.region.height));
+			groupBottom = Math.max(groupBottom, rowBottom);
+			// Next staff's own top is a fixed offset from *this* staff's own
+			// nominal bottom (not `rowBottom`'s ink-aware one): see
+			// `SPACING.staffGap`'s own comment on why this has to stay
+			// deterministic, computable before any staff's content is laid
+			// out, for `barlineSpan`'s split point to have no circular
+			// dependency on it.
+			if (staffIndex < staffCount - 1) staffTopY = staffTopY + 4 * ss + SPACING.staffGap * ss;
+		}
+
+		groupTopY = groupBottom + SPACING.systemGap * ss;
 	}
 
 	const top = Math.min(0, ...measures.map((m) => m.region.y));
-	const bottom = Math.max(
-		...systems.map((s) => s.topY + 4 * ss),
-		...measures.map((m) => m.region.y + m.region.height)
-	);
 	const shiftY = padding - top;
+	const shiftedMeasures = measures.map((m) => translateMeasure(m, shiftY));
+	const shiftedSystems = systems.map((s) => ({ ...s, topY: s.topY + shiftY }));
+
+	const width = Math.max(padding * 2, ...shiftedMeasures.map((m) => m.region.x + m.region.width + padding));
+	// Already in shifted (final) coordinates, so the shifted top sits at
+	// exactly `padding` (that is what `shiftY` was chosen to guarantee: the
+	// unshifted `top` moves to `top + shiftY === padding`); `bottom + padding`
+	// therefore reproduces the same "content height plus a margin on each
+	// side" `bottom - top + padding * 2` always computed, just read directly
+	// off values already in the frame the caller sees.
+	const bottom = Math.max(
+		...shiftedSystems.map((s) => s.topY + 4 * ss),
+		...shiftedMeasures.map((m) => m.region.y + m.region.height)
+	);
 
 	return {
-		width: contentWidth,
-		height: bottom - top + padding * 2,
-		// Layout is translation-invariant in y, so shifting a staff laid out
-		// with a first staff top of 0 by `shiftY` is the same as having laid
-		// it out at `shiftY` to begin with.
-		staffTopY: shiftY,
-		measures: measures.map((m) => translateMeasure(m, shiftY)),
-		systems: systems.map((s) => ({
-			measureIndices: s.measureIndices,
-			topY: s.topY + shiftY,
-			spacingScale: s.spacingScale,
-			staffIndex
-		}))
+		width,
+		height: bottom + padding,
+		staffSpacePx: ss,
+		staffTopY: shiftedSystems[0]!.topY,
+		fontSizePx,
+		measures: shiftedMeasures,
+		systems: shiftedSystems
 	};
 }
 
@@ -816,13 +930,20 @@ function planSystems(
  * `layoutMeasure` itself now lays notes out against (see `measureColumns`)
  * rather than this function needing its own separate note-summing logic to
  * keep in sync.
+ *
+ * `spacingScale` (M2 Slice 4) is only ever passed by `layoutScore`'s own
+ * `naturalWidths` probe, which needs each staff's *natural* width at its
+ * already-decided justification scale, to feed `columnWidth`'s cross-staff
+ * max; `planSystems`'s own casting-off probes (below) always omit it, since
+ * a system's scale is not yet decided at the point casting-off runs.
  */
 function probeMeasureWidth(
 	score: Score,
 	staffIndex: number,
 	measure: Measure,
 	ss: number,
-	flags: { isSystemFirst: boolean; isScoreFirst: boolean; isLast: boolean }
+	flags: { isSystemFirst: boolean; isScoreFirst: boolean; isLast: boolean },
+	spacingScale?: number
 ): number {
 	const clef = score.staves[staffIndex]!.clef;
 	return layoutMeasure(score, measure, {
@@ -830,6 +951,7 @@ function probeMeasureWidth(
 		staffTopY: 0,
 		startX: 0,
 		...flags,
+		spacingScale,
 		staffIndex,
 		clef,
 		lines: CLEF_LINES[clef]
@@ -998,6 +1120,38 @@ interface MeasureContext {
 	 *  repeatedly: every note/ledger/stem-direction calculation below reads
 	 *  this instead of a treble-only constant. */
 	readonly lines: ClefLines;
+	/**
+	 * The pixel width this measure's *column* is laid out at, when it is part
+	 * of a multi-staff system whose staves share one barline per column (M2
+	 * Slice 4; see `layoutScore`'s own doc comment on `columnWidth`). Omitted
+	 * for a single-staff score (or any standalone probe, e.g. `planSystems`'s
+	 * own width-probing, or a test laying out one measure in isolation), which
+	 * keeps this measure's own natural width, exactly as before this slice.
+	 *
+	 * When given and this measure's own natural width falls short of it (this
+	 * staff was the narrower one at this column), the shortfall is added as
+	 * extra trailing space *after* the last note, pushing this measure's own
+	 * barline right until it lines up with every other staff's barline in the
+	 * same column. Notes themselves are never rescaled to close the gap (see
+	 * `layoutScore`'s own comment on why padding, not a true cross-staff
+	 * justification pass, is this slice's chosen trade-off).
+	 */
+	readonly columnWidth?: number;
+	/**
+	 * This measure's own portion of a *shared* end barline spanning a
+	 * multi-staff group (M2 Slice 4; see `barlineSpan`), overriding the
+	 * ordinary single-staff barline band of `staffTopY` to `staffTopY + 4 *
+	 * ss`. Both omitted (the default) for a single-staff score, or any staff
+	 * with nothing above or below it to share a barline with, which draws the
+	 * exact same barline it always has. Affects only the end-barline draw ops
+	 * (the main line, `'double'`/`'final'`'s extra thin line): the five staff
+	 * lines themselves, and a repeat-end's dots, stay within this staff's own
+	 * band regardless, since neither is the continuous vertical stroke a
+	 * shared barline is about.
+	 */
+	readonly barlineTop?: number;
+	/** See `barlineTop`. */
+	readonly barlineBottom?: number;
 }
 
 function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): LaidOutMeasure {
@@ -1292,8 +1446,23 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	const thick = ED.thickBarlineThickness * ss;
 	const mainThickness =
 		endBarline === 'repeatStart' ? 0 : endBarline === 'final' || endBarline === 'repeatEnd' ? thick : thin;
+	// Column-width sharing (M2 Slice 4, see `MeasureContext.columnWidth`'s own
+	// comment): only ever adds trailing space, never removes it, so a staff
+	// that is already the widest one at this column (the one whose own
+	// natural width *is* `columnWidth`) is untouched.
+	if (ctx.columnWidth !== undefined) {
+		const naturalWidth = cursor + mainThickness - startX;
+		if (naturalWidth < ctx.columnWidth) cursor += ctx.columnWidth - naturalWidth;
+	}
 	const barlineX = cursor;
 	const measureWidth = barlineX + mainThickness - startX;
+	// This measure's own portion of a shared multi-staff barline (M2 Slice 4),
+	// falling back to the ordinary single-staff band when this staff has
+	// nothing above or below it to share a barline with (`barlineTop`/
+	// `barlineBottom` both undefined): see `MeasureContext.barlineTop`'s own
+	// comment on exactly which draws below this reads it for.
+	const barlineTop = ctx.barlineTop ?? staffTopY;
+	const barlineBottom = ctx.barlineBottom ?? staffTopY + 4 * ss;
 	const lineThickness = ED.staffLineThickness * ss;
 	for (let line = 0; line < 5; line++) {
 		ops.unshift({
@@ -1320,9 +1489,9 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		ops.push({
 			kind: 'rect',
 			x: barlineX - ED.barlineSeparation * ss - thin,
-			y: staffTopY,
+			y: barlineTop,
 			width: thin,
-			height: 4 * ss
+			height: barlineBottom - barlineTop
 		});
 	}
 	if (endBarline === 'repeatEnd') {
@@ -1333,9 +1502,9 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		ops.push({
 			kind: 'rect',
 			x: barlineX,
-			y: staffTopY,
+			y: barlineTop,
 			width: mainThickness,
-			height: 4 * ss
+			height: barlineBottom - barlineTop
 		});
 	}
 
@@ -2629,9 +2798,11 @@ function measureRegion(
 			bottom = Math.max(bottom, op.y - bBoxSW[1] * ss);
 		}
 	}
-	// A hair of slack absorbs antialiasing at the edges of stems and staff lines.
-	const bleed = 1;
-	return { x: startX, y: top - bleed, width, height: bottom - top + bleed * 2 };
+	// A hair of slack absorbs antialiasing at the edges of stems and staff
+	// lines. `REGION_BLEED_PX`, not a locally re-declared literal: `barlineSpan`
+	// (M2 Slice 4) has to know this exact value too, to keep two staves' own
+	// bled regions from overlapping at a shared barline; see its own comment.
+	return { x: startX, y: top - REGION_BLEED_PX, width, height: bottom - top + REGION_BLEED_PX * 2 };
 }
 
 function translateMeasure(measure: LaidOutMeasure, dy: number): LaidOutMeasure {

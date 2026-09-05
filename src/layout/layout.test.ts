@@ -5,6 +5,7 @@ import {
 	createClefShowcaseScore,
 	createDemoScore,
 	createDurationShowcaseScore,
+	createGrandStaffShowcaseScore,
 	createKeyTimeChangeShowcaseScore,
 	createSlurShowcaseScore,
 	createTieShowcaseScore,
@@ -2064,6 +2065,236 @@ describe('multi-staff redraw isolation (M2 Slice 3)', () => {
 				const before = layout.measures.find((mm) => mm.staffIndex === m.staffIndex && mm.index === m.index);
 				expect(m).toBe(before);
 			}
+		}
+	});
+});
+
+describe('multi-staff system layout (M2 Slice 4)', () => {
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+
+	/** Two-staff score (treble over bass), one measure of one quarter note each
+	 *  by default, built the same low-level way the M2 Slice 3 redraw-isolation
+	 *  test above does (`buildScore` only ever populates one implicit staff).
+	 *  `notes` lets a test give each staff a different phrase without repeating
+	 *  the `appendStaff`/`appendMeasure`/`appendNote` boilerplate. */
+	function buildTwoStaffScore(
+		notes: readonly (readonly (readonly [string, NoteValue])[])[] = [[['C5', 'quarter']], [['C3', 'quarter']]]
+	) {
+		const score = buildScore([[...notes[0]!]], { clef: 'treble' });
+		score.appendStaff('bass');
+		const staff1Measure = score.appendMeasure(1);
+		for (const [pitch, value] of notes[1]!) {
+			score.appendNote(staff1Measure, { pitch: parsePitch(pitch), value });
+		}
+		return score;
+	}
+
+	const rectsOf = (ops: readonly DrawOp[]) =>
+		ops.filter((op): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect');
+
+	it('stacks a second staff tightly below the first, at a fixed offset from its nominal (not ink-measured) bottom', () => {
+		const score = buildTwoStaffScore();
+		const layout = layoutScore(score, options);
+
+		const sys0 = layout.systems.find((s) => s.staffIndex === 0)!;
+		const sys1 = layout.systems.find((s) => s.staffIndex === 1)!;
+		expect(sys0).toBeDefined();
+		expect(sys1).toBeDefined();
+		// Staff 1 starts strictly below staff 0's own nominal bottom (its top
+		// line plus 4 staff spaces): the two staves are genuinely stacked, not
+		// overlapping or coincident.
+		const staffBand = 4 * ss;
+		expect(sys1.topY).toBeGreaterThan(sys0.topY + staffBand);
+		// Tightly: the two staves interleave within one system, not two whole
+		// independent per-staff blocks each carrying its own top-and-bottom
+		// margin the way Slice 3's naive placeholder stacked them. Comparing
+		// against what laying each staff out *alone* would cost (its own full
+		// padding on both sides, not just a staff-to-staff gap) is a
+		// self-documenting bound rather than a magic number: the interleaved
+		// offset has to be well under what two independent blocks would need.
+		const solo0 = layoutScore(buildScore([[['C5', 'quarter']]], { clef: 'treble' }), options);
+		const solo1 = layoutScore(buildScore([[['C3', 'quarter']]], { clef: 'bass' }), options);
+		expect(sys1.topY - sys0.topY).toBeLessThan(solo0.height + solo1.height);
+
+		// The offset is deterministic, computable from staff 0's own nominal
+		// bottom alone: laying out a *third* staff with identical content
+		// reproduces the exact same staff-to-staff offset a second time.
+		score.appendStaff('bass');
+		score.appendNote(score.appendMeasure(2), { pitch: parsePitch('C3'), value: 'quarter' });
+		const layout3 = layoutScore(score, options);
+		const sys0b = layout3.systems.find((s) => s.staffIndex === 0)!;
+		const sys1b = layout3.systems.find((s) => s.staffIndex === 1)!;
+		const sys2b = layout3.systems.find((s) => s.staffIndex === 2)!;
+		expect(sys1b.topY - sys0b.topY).toBeCloseTo(sys1.topY - sys0.topY, 6);
+		expect(sys2b.topY - sys1b.topY).toBeCloseTo(sys1.topY - sys0.topY, 6);
+
+		// Every staff's own measure region sits in its own non-overlapping
+		// vertical band: no measure of staff 1 draws above where staff 0's own
+		// band ends.
+		const m0 = layout.measures.find((m) => m.staffIndex === 0)!;
+		const m1 = layout.measures.find((m) => m.staffIndex === 1)!;
+		expect(m1.region.y).toBeGreaterThanOrEqual(m0.region.y + m0.region.height - 0.001);
+	});
+
+	it('a single-staff score is unaffected: exactly the layout it always produced', () => {
+		// The degenerate case `layoutScore`'s own doc comment calls out:
+		// `barlineSpan` for a lone staff reduces to the ordinary single-staff
+		// band, so this is a regression guard that multi-staff plumbing did not
+		// change the common case's output.
+		const score = buildScore([[['C4', 'quarter'], ['D4', 'quarter']]], { clef: 'treble' });
+		const layout = layoutScore(score, options);
+		expect(layout.systems).toHaveLength(1);
+		const barlineRect = rectsOf(layout.measures[0]!.ops).find(
+			(r) => Math.abs(r.width - ED.thinBarlineThickness * ss) < 0.01
+		)!;
+		expect(barlineRect).toBeDefined();
+		expect(barlineRect.y).toBeCloseTo(layout.staffTopY, 6);
+		expect(barlineRect.height).toBeCloseTo(4 * ss, 6);
+	});
+
+	it("draws one shared end barline per measure column, each staff's own segment meeting the next with no gap or overlap", () => {
+		const score = buildTwoStaffScore([
+			[['C5', 'quarter'], ['D5', 'quarter']],
+			[['C3', 'quarter'], ['D3', 'quarter']]
+		]);
+		const layout = layoutScore(score, options);
+		const m0 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 0)!;
+		const m1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 0)!;
+
+		// Each staff's own end-barline rect: the thin 'normal' main line (this
+		// is measure 0 of 1, not the score's last measure, so `endBarline`
+		// resolves to 'normal', a single thin rect with no extra thin line or
+		// dots to filter out).
+		const barlineOf = (ops: readonly DrawOp[]) =>
+			rectsOf(ops).find((r) => Math.abs(r.width - ED.thinBarlineThickness * ss) < 0.01)!;
+		const b0 = barlineOf(m0.ops);
+		const b1 = barlineOf(m1.ops);
+		expect(b0).toBeDefined();
+		expect(b1).toBeDefined();
+
+		// Same column, so the same x and the same thickness: two independent
+		// segments of what reads as one continuous vertical line.
+		expect(b1.x).toBeCloseTo(b0.x, 6);
+		expect(b1.width).toBeCloseTo(b0.width, 6);
+
+		// Staff 0 (the group's first staff) only extends *downward*, past its
+		// own nominal bottom, into the gap; staff 1 (the group's last staff)
+		// only extends *upward*, past its own nominal top, into the same gap.
+		expect(b0.height).toBeGreaterThan(4 * ss);
+		expect(b1.height).toBeGreaterThan(4 * ss);
+		expect(b0.y).toBeCloseTo(layout.staffTopY, 6); // staff 0's own top is unmoved
+
+		// The two ink segments meet near the midpoint of the staff gap, close
+		// enough to read as one continuous line, but not touching pixel-for-
+		// pixel: a deliberate, small neutral strip is left between them (see
+		// `barlineSpan`'s own comment on why splitting at the exact geometric
+		// midpoint would make the two staves' *regions* overlap once each one's
+		// antialiasing bleed is applied). No overlap in the ink itself either
+		// way, which is the property that actually matters here.
+		expect(b1.y).toBeGreaterThanOrEqual(b0.y + b0.height - 0.001);
+		expect(b1.y - (b0.y + b0.height)).toBeLessThan(5);
+
+		// Each staff's own region bounds at least its own segment...
+		expect(m0.region.y + m0.region.height).toBeGreaterThanOrEqual(b0.y + b0.height - 0.001);
+		expect(m1.region.y).toBeLessThanOrEqual(b1.y + 0.001);
+		// ...and, the property region-scoped redraw actually depends on, the
+		// two staves' regions do not overlap vertically at all: redrawing one
+		// staff's measure can never clear a pixel that belongs to the other
+		// staff's own ink without also being the one to repaint it.
+		expect(m0.region.y + m0.region.height).toBeLessThanOrEqual(m1.region.y + 0.001);
+	});
+
+	it('a narrower staff has its measure column padded to match the wider staff, keeping both barlines aligned', () => {
+		// Staff 0 gets a busy run of eighth notes (wide); staff 1 gets a single
+		// whole note (narrow on its own). Column-width sharing (M2 Slice 4)
+		// pads staff 1's trailing space, not its note positions, out to match.
+		const score = buildTwoStaffScore([
+			[
+				['C5', 'eighth'],
+				['D5', 'eighth'],
+				['E5', 'eighth'],
+				['F5', 'eighth'],
+				['G5', 'eighth'],
+				['A5', 'eighth'],
+				['B5', 'eighth'],
+				['C6', 'eighth']
+			],
+			[['C3', 'whole']]
+		]);
+		const layout = layoutScore(score, options);
+		const m0 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 0)!;
+		const m1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 0)!;
+
+		// Both measures' columns end (region's right edge) at the same x: the
+		// wide staff's own natural width decided the shared column width, and
+		// the narrow staff's trailing space was padded out to match it.
+		expect(m1.region.x + m1.region.width).toBeCloseTo(m0.region.x + m0.region.width, 6);
+
+		// The narrow staff's one note is untouched by the padding: it still
+		// sits at its own natural position, close to the measure's own start,
+		// not stretched or re-centred to fill the wider column.
+		const noteOp = m1.ops.find((op) => op.kind === 'glyph' && op.glyph === 'noteheadWhole')!;
+		expect(noteOp).toBeDefined();
+		expect((noteOp as Extract<DrawOp, { kind: 'glyph' }>).x).toBeLessThan(m1.region.x + m1.region.width / 2);
+	});
+
+	it("each staff draws its own clef and its own correct key signature, independently of the other staff's", () => {
+		// Staff 0: treble, D major (2 sharps, the score's own initial key).
+		// Staff 1: bass, Eb major (3 flats), set as an explicit per-measure
+		// override on staff 1's own measure 0 (`Score.keyFifthsAt` walks back
+		// through each staff's own measures independently; see its own
+		// comment), so the two staves genuinely disagree about the key, not
+		// just the clef.
+		const score = buildScore([[['D5', 'quarter']]], { clef: 'treble', keyFifths: 2 });
+		score.appendStaff('bass');
+		const m1 = score.appendMeasure(1);
+		m1.keyFifths = -3;
+		score.appendNote(m1, { pitch: parsePitch('Eb3'), value: 'quarter' });
+
+		const layout = layoutScore(score, options);
+		const laid0 = layout.measures.find((m) => m.staffIndex === 0)!;
+		const laid1 = layout.measures.find((m) => m.staffIndex === 1)!;
+
+		expect(findGlyph(laid0.ops, 'gClef')).toBeDefined();
+		expect(findGlyph(laid0.ops, 'fClef')).toBeUndefined();
+		expect(laid0.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')).toHaveLength(2);
+		expect(laid0.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalFlat')).toHaveLength(0);
+
+		expect(findGlyph(laid1.ops, 'fClef')).toBeDefined();
+		expect(findGlyph(laid1.ops, 'gClef')).toBeUndefined();
+		expect(laid1.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalFlat')).toHaveLength(3);
+		expect(laid1.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')).toHaveLength(0);
+	});
+
+	it('rejects a score whose staves disagree on measure count', () => {
+		const score = buildScore([[['C4', 'quarter']]], { clef: 'treble' });
+		score.appendStaff('bass');
+		score.appendMeasure(1);
+		score.appendMeasure(1);
+		expect(() => layoutScore(score, options)).toThrow(/measures/);
+	});
+
+	it('renders the grand-staff showcase (two staves, one system each measure column) without error', () => {
+		const score = createGrandStaffShowcaseScore();
+		for (const staff of score.staves) {
+			for (const measure of staff.measures) {
+				expect(validateMeasure(measure, score.timeAt(measure.index, measure.staffIndex)).valid).toBe(true);
+			}
+		}
+
+		const layout = layoutScore(score);
+		// Four measures, two staves.
+		expect(layout.measures).toHaveLength(8);
+		expect(findGlyph(layout.measures.find((m) => m.staffIndex === 0 && m.index === 0)!.ops, 'gClef')).toBeDefined();
+		expect(findGlyph(layout.measures.find((m) => m.staffIndex === 1 && m.index === 0)!.ops, 'fClef')).toBeDefined();
+
+		// Every measure column's barline aligns across both staves (see the
+		// column-width-sharing test above), for all four columns, not just one.
+		for (let i = 0; i < 4; i++) {
+			const treble = layout.measures.find((m) => m.staffIndex === 0 && m.index === i)!;
+			const bass = layout.measures.find((m) => m.staffIndex === 1 && m.index === i)!;
+			expect(bass.region.x + bass.region.width).toBeCloseTo(treble.region.x + treble.region.width, 6);
 		}
 	});
 });

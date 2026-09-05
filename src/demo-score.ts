@@ -521,6 +521,84 @@ export function createClefShowcaseScore(): Score {
 	return score;
 }
 
+/**
+ * M2 Slice 4's grand-staff showcase: a two-staff piano-style score (treble
+ * over bass) with a *different* key signature per staff (D major over Eb
+ * major, a deliberately implausible pairing no real piece would use, chosen
+ * precisely because it makes each staff's own independent header impossible
+ * to confuse with the other's at a glance), four measures, ending in a
+ * `'final'` double-thick barline. The treble staff plays a busy run of
+ * eighth notes while the bass staff plays sparser quarter notes and whole
+ * notes, so a human looking at the rendered PNG can also see the column-
+ * width sharing this slice adds: the bass staff's own narrower measures pad
+ * out to match the treble staff's wider ones, keeping every barline in the
+ * combined system a single straight vertical line across both staves.
+ *
+ * Built the same low-level way `createClefShowcaseScore` (M2 Slice 3) is,
+ * for the same reason: `buildScore` only ever populates one implicit staff.
+ * Deliberately *not* folded into `createFullDemoScore`/`npm run dev`'s single
+ * combined score, again for the same reason `createClefShowcaseScore` is
+ * not: `appendMeasures` only ever merges a source score into a single-staff
+ * destination, and a second, differently-shaped multi-staff fixture has no
+ * more payoff there than the first one did. Verified the same way too:
+ * rasterizing `layoutScore` on this function's own score directly through
+ * node-canvas and inspecting the PNG by eye.
+ */
+export function createGrandStaffShowcaseScore(): Score {
+	const score = new Score({ keyFifths: 2, time: { beats: 4, beatType: 4 } });
+	score.staves[0]!.clef = 'treble';
+	score.appendStaff('bass');
+
+	const treblePhrases: readonly (readonly (readonly [string, NoteValue])[])[] = [
+		[
+			['D5', 'eighth'],
+			['E5', 'eighth'],
+			['F#5', 'eighth'],
+			['G5', 'eighth'],
+			['A5', 'eighth'],
+			['B5', 'eighth'],
+			['C#6', 'eighth'],
+			['D6', 'eighth']
+		],
+		[
+			['D6', 'eighth'],
+			['C#6', 'eighth'],
+			['B5', 'eighth'],
+			['A5', 'eighth'],
+			['G5', 'eighth'],
+			['F#5', 'eighth'],
+			['E5', 'eighth'],
+			['D5', 'eighth']
+		],
+		[['A5', 'quarter'], ['G5', 'quarter'], ['F#5', 'quarter'], ['E5', 'quarter']],
+		[['D5', 'whole']]
+	];
+	const bassPhrases: readonly (readonly (readonly [string, NoteValue])[])[] = [
+		[['Eb3', 'whole']],
+		[['Bb2', 'half'], ['Eb3', 'half']],
+		[['Ab2', 'quarter'], ['Eb3', 'quarter'], ['G3', 'quarter'], ['Eb3', 'quarter']],
+		[['Eb2', 'whole']]
+	];
+
+	for (let i = 0; i < treblePhrases.length; i++) {
+		// No explicit `keyFifths` override needed here: the score's own initial
+		// value (2, D major) already applies to every staff by default, and
+		// only staff 1 (bass) needs to diverge from it below.
+		const trebleMeasure = score.appendMeasure(0);
+		for (const [pitch, value] of treblePhrases[i]!) {
+			score.appendNote(trebleMeasure, { pitch: parsePitch(pitch), value });
+		}
+	}
+	for (let i = 0; i < bassPhrases.length; i++) {
+		const bassMeasure = score.appendMeasure(1);
+		if (i === 0) bassMeasure.keyFifths = -3;
+		for (const [pitch, value] of bassPhrases[i]!) {
+			score.appendNote(bassMeasure, { pitch: parsePitch(pitch), value });
+		}
+	}
+	return score;
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
