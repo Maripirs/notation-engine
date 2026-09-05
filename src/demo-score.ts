@@ -118,14 +118,52 @@ export function createDurationShowcaseScore(): Score {
 }
 
 /**
- * What `npm run dev` actually shows: the Phase 0 fixture followed by Slice 1's
- * duration showcase, so a human can see the new durations render without
- * disturbing `createDemoScore`'s frozen shape (see the comment on it above).
+ * Slice 4's accidental showcase: same-measure repeat suppression, the
+ * reverting case that must *not* be suppressed, and the tight-spacing
+ * collision clearance, all in C major (`keyFifths: 0`) so every accidental
+ * drawn here is one the key signature does not already supply (unlike the
+ * other showcases' G major, where an F-sharp needs no accidental at all).
  */
-export function createFullDemoScore(): Score {
-	const score = createDemoScore();
-	const showcase = createDurationShowcaseScore();
-	for (const measure of showcase.measures) {
+export function createAccidentalShowcaseScore(): Score {
+	return buildScore(
+		[
+			[
+				// F-sharp, restated (suppressed: same alter, same step, still in
+				// force), then F-natural (a real change, drawn), then F-sharp again
+				// (a real change back, drawn once more rather than staying
+				// suppressed just because it matches the very first note).
+				['F#5', 'quarter'],
+				['F#5', 'quarter'],
+				['F5', 'quarter'],
+				['F#5', 'quarter']
+			],
+			[
+				// Filler rests bring the measure up to 4/4 before the pair this
+				// measure exists to show: C4, a 64th, draws a ledger line one line
+				// below the staff and claims barely more horizontal room than that
+				// ledger line's own ink reaches. C-sharp 4 right after it needs a
+				// sharp (C major has none), which without this slice's collision
+				// clearance would print on top of that ledger line.
+				[null, 'half'],
+				[null, 'quarter'],
+				[null, 'eighth'],
+				[null, '16th'],
+				[null, '32nd'],
+				['C4', '64th'],
+				['C#4', '64th']
+			]
+		],
+		{ keyFifths: 0, time: { beats: 4, beatType: 4 } }
+	);
+}
+
+/** Copy every note of `source`'s measures onto the end of `score`, preserving
+ *  each note's full spec. The showcases are built as standalone scores (so
+ *  their own unit tests can lay them out and validate them in isolation) and
+ *  then folded onto the single score `npm run dev` actually renders; this is
+ *  the fold, shared by every showcase `createFullDemoScore` appends. */
+function appendMeasures(score: Score, source: Score): void {
+	for (const measure of source.measures) {
 		const copy = score.appendMeasure();
 		for (const note of measure.notes) {
 			score.appendNote(copy, {
@@ -136,5 +174,17 @@ export function createFullDemoScore(): Score {
 			});
 		}
 	}
+}
+
+/**
+ * What `npm run dev` actually shows: the Phase 0 fixture followed by Slice 1's
+ * duration showcase and Slice 4's accidental showcase, so a human can see
+ * both render without disturbing `createDemoScore`'s frozen shape (see the
+ * comment on it above).
+ */
+export function createFullDemoScore(): Score {
+	const score = createDemoScore();
+	appendMeasures(score, createDurationShowcaseScore());
+	appendMeasures(score, createAccidentalShowcaseScore());
 	return score;
 }

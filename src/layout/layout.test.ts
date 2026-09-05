@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { createDemoScore, createDurationShowcaseScore } from '../demo-score.js';
+import { createAccidentalShowcaseScore, createDemoScore, createDurationShowcaseScore } from '../demo-score.js';
 import { buildScore, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
 import { ENGRAVING_DEFAULTS as ED } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
@@ -588,5 +588,110 @@ describe('stem direction', () => {
 		const beamSideY = stems.map((s) => s.y + s.height);
 		expect(beamSideY[1]).toBeCloseTo(beamSideY[0]!, 6);
 		expect(beamSideY[0]).toBeGreaterThan(Math.max(...headYsOf(ops)));
+	});
+});
+
+describe('accidental placement', () => {
+	// Same fixed staff space as the beaming/stem-direction suites, for the
+	// same reason: round, distinct geometry to key exact-position assertions
+	// off of.
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
+	/** A ledger line rect: the one rect height unique to it among everything
+	 *  else `layoutMeasure` draws (staff lines, stems, beams and barlines all
+	 *  use different `ENGRAVING_DEFAULTS` constants). */
+	const ledgerRects = (ops: readonly DrawOp[]) =>
+		ops.filter(isRect).filter((op) => Math.abs(op.height - ED.legerLineThickness * ss) < 0.001);
+
+	it('suppresses a repeated accidental on the same pitch later in the same measure', () => {
+		// C major (no sharps): both F-sharps need an accidental the key
+		// signature does not supply on its own. The second, an identical
+		// pitch restated later in the same measure, should not repeat it.
+		const score = buildScore([[['F#5', 'quarter'], ['G4', 'quarter'], ['F#5', 'quarter']]]);
+		const layout = layoutScore(score, options);
+		const sharps = glyphsOf(layout.measures[0]!.ops).filter((g) => g === 'accidentalSharp');
+		expect(sharps).toHaveLength(1);
+	});
+
+	it('redraws the accidental whenever the alter actually changes, even back to one already stated', () => {
+		// F-sharp, then F-natural, then F-sharp again: each is a change from
+		// whatever was last stated for the F step (sharp, then natural), so
+		// all three draw their own accidental. The third is not treated as a
+		// repeat of the first just because they share a pitch.
+		const score = buildScore([[['F#5', 'quarter'], ['F5', 'quarter'], ['F#5', 'quarter']]]);
+		const layout = layoutScore(score, options);
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
+		expect(glyphs.filter((g) => g === 'accidentalNatural')).toHaveLength(1);
+	});
+
+	it('resets the same-measure carry-over at the next barline', () => {
+		// The same altered pitch, restated as the first note of the next
+		// measure, is not "later in the same measure": the barline between
+		// them resets what is in force for the step, so it draws its own
+		// accidental too, rather than the second measure inheriting the
+		// first's.
+		const score = buildScore([[['F#5', 'quarter']], [['F#5', 'quarter']]]);
+		const layout = layoutScore(score, options);
+		const sharpsIn = (i: number) =>
+			glyphsOf(layout.measures[i]!.ops).filter((g) => g === 'accidentalSharp').length;
+		expect(sharpsIn(0)).toBe(1);
+		expect(sharpsIn(1)).toBe(1);
+	});
+
+	it("pushes a tight accidental right by exactly the minimum clearance past the previous note's ledger line", () => {
+		// C4, the shortest duration (a 64th), draws a ledger line one line
+		// below the staff and claims barely more horizontal room than that
+		// ledger line's own ink reaches: the tightest realistic case this
+		// collision check exists for. C-sharp 4 right after it needs a sharp
+		// (C major has none), which without the extra clearance would land
+		// only about 0.76 staff spaces past the ledger line (worked out from
+		// this file's own spacing/glyph constants), short of the 0.9 minimum.
+		const score = buildScore([[['C4', '64th'], ['C#4', '64th']]]);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+
+		// Both notes sit on the same ledger-line position (a sharp does not
+		// move a note on the staff), so there are two rects here, one per
+		// note; the leftmost belongs to C4, the one this accidental must
+		// clear.
+		const ledgers = ledgerRects(ops).slice().sort((a, b) => a.x - b.x);
+		expect(ledgers.length).toBeGreaterThanOrEqual(1);
+		const ledgerRight = ledgers[0]!.x + ledgers[0]!.width;
+
+		const accidental = ops.find((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')!;
+		// The shift closes the gap to exactly the minimum rather than
+		// over-padding it.
+		expect(accidental.x - ledgerRight).toBeCloseTo(0.9 * ss, 5);
+	});
+
+	it('validates every accidental-showcase measure against 4/4 capacity', () => {
+		// Same discipline as the duration showcase: the hand-built measures
+		// `npm run dev` shows for this slice are exactly the kind of mistake
+		// `validateMeasure` exists to catch.
+		const score = createAccidentalShowcaseScore();
+		for (const measure of score.measures) {
+			expect(validateMeasure(measure, score.time).valid).toBe(true);
+		}
+	});
+
+	it('renders the accidental showcase with repeat suppression, the reverting case, and collision clearance', () => {
+		const score = createAccidentalShowcaseScore();
+		const layout = layoutScore(score);
+
+		// Measure 1: F-sharp, F-sharp (suppressed), F-natural, F-sharp again.
+		// Two sharps and one natural, not three sharps.
+		const firstMeasureGlyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(firstMeasureGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
+		expect(firstMeasureGlyphs.filter((g) => g === 'accidentalNatural')).toHaveLength(1);
+
+		// Measure 2: the tight C4/C-sharp-4 pair draws exactly one sharp, and
+		// (this measure's whole point) it does not throw or silently overlap;
+		// the geometry itself is pinned down by the collision-clearance test
+		// above, using the same pair built directly rather than through this
+		// showcase.
+		const secondMeasureGlyphs = glyphsOf(layout.measures[1]!.ops);
+		expect(secondMeasureGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(1);
 	});
 });

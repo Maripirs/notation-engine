@@ -88,7 +88,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       unit tests over a range of pitches and one beamed-group case;
       demo shows correct stem directions including a beam that doesn't
       flip mid-group.
-- [ ] **Slice 4 — Accidental placement + collision avoidance.**
+- [x] **Slice 4 — Accidental placement + collision avoidance.**
       Courtesy accidentals (same pitch altered earlier in the measure
       needs no repeat per MusicXML convention, already partly handled
       by key-aware suppression; extend to same-measure repeats) and
@@ -259,4 +259,49 @@ divisi splits). Unscoped.
   sanity-checked by laying out `createFullDemoScore` directly (not through a
   browser, per this repo's no-browser-automation-dependency principle) and
   confirming it renders without error and still draws stems.
+- 2026-09-04: Slice 4 (accidental placement + collision avoidance) done.
+  `layoutMeasure` now tracks, per diatonic step, the alter most recently
+  stated by a note earlier in the same measure (starting from the key
+  signature, reset by a fresh `Map` on every `layoutMeasure` call, i.e. at
+  every barline); `layoutNote` draws an accidental only when a note's alter
+  disagrees with that running value, not just the key signature, so a
+  repeated F-sharp stops repeating its sharp while an F-natural in between
+  still draws, and a third F-sharp after that draws again rather than
+  staying suppressed. Deliberately tracked per step only, not per (step,
+  octave): a stricter reading of the real convention scopes the carry-over
+  to the same octave too, so an F#5 followed later by a plain F4 would,
+  under that reading, still need its own natural; this does not yet draw
+  that natural, flagged in `layoutNote`'s own comment as a known
+  simplification with nothing in this slice's scope exercising it. Collision
+  avoidance adds `SPACING.minAccidentalClearance` (0.9 staff spaces): a new
+  `noteInkRight` helper computes each note's rightmost ink (notehead, ledger
+  line, or stem, sharing a new `stemXEdges` helper extracted from what
+  `layoutStemAndFlag` and `beamStemX` each computed separately before), and
+  `layoutNote` pushes a note needing an accidental right by whatever
+  shortfall closes that gap to the minimum, propagating the shift into its
+  own returned cursor so the measure's width and every later note's position
+  stay honest. Worked out against this file's own spacing constants that the
+  only realistic case ever tight enough to trigger is the shortest durations
+  (32nd/64th) landing right after a ledger-lined note, which is also what
+  the new geometric test targets, asserting the resulting gap closes to
+  exactly the minimum rather than merely checking "no overlap" (already true
+  even without the fix at this specific gap size, so a weaker assertion
+  would not have proven anything). A small refactor rides along: beam
+  groups now decide their shared stem direction once, in `computeBeamGroups`
+  itself (a new `BeamGroup.direction` field), instead of `layoutBeamGroup`
+  recomputing it later, because a beamed note's ink-extent calculation needs
+  to know its eventual direction before `layoutBeamGroup` ever runs. 6 new
+  tests (repeat suppression, the reverting case, the cross-measure reset,
+  the tight-spacing geometry, plus the new `createAccidentalShowcaseScore`'s
+  capacity validation and a rendering smoke test) bring the suite to 138
+  (up from 132); check/build are green and bench is unchanged (0.107-0.145ms
+  scoped edit vs 0.659-10.505ms full redraw across 4-124 measures, matching
+  Slice 3's 0.114-0.146ms/0.655-10.408ms). `npm run dev` now also shows this
+  slice's showcase (`createAccidentalShowcaseScore`, folded into
+  `createFullDemoScore` alongside Slice 1's via a small shared
+  `appendMeasures` helper factored out of what was `createFullDemoScore`'s
+  own copy loop): one measure demonstrating the suppress/revert/redraw
+  sequence, one demonstrating the tight-spacing pair, both sanity-checked by
+  laying out `createFullDemoScore` directly (this repo's established
+  no-browser-automation-dependency approach) rather than through a browser.
 </content>

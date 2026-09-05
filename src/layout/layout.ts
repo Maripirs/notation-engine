@@ -57,6 +57,24 @@ const SPACING = {
 	noteSlopePerWhole: 9,
 	/** Gap between an accidental and the notehead it belongs to. */
 	accidentalGap: 0.3,
+	/**
+	 * Minimum blank required between the previous note's rightmost ink (its
+	 * stem, a ledger line, or just its notehead) and an accidental this note
+	 * must draw. Below this, the accidental would print on top of that ink;
+	 * `layoutNote` pushes the whole note right by however much clearance is
+	 * missing rather than let that happen. Independent of `accidentalGap`,
+	 * which is the gap on the *other* side, between the accidental and its
+	 * own notehead.
+	 *
+	 * `noteBase` already reserves more room than a plain in-staff note's ink
+	 * needs, so this only ever bites the case real engraving actually worries
+	 * about: the shortest durations (32nd/64th), whose `noteSlopePerWhole`
+	 * contribution is nearly zero, landing right after a note with a ledger
+	 * line. 0.9 sits just above that specific gap (worked out from this
+	 * file's own constants) without being so large it starts padding ordinary
+	 * in-staff spacing that was never actually tight.
+	 */
+	minAccidentalClearance: 0.9,
 	/** Gap between a notehead (or rest) and its first augmentation dot. */
 	dotGap: 0.2,
 	/** Gap between two augmentation dots on the same note. */
@@ -453,10 +471,35 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	}
 	const placements = new Map<NoteId, NotePlacement>();
 
+	// Tracks, per diatonic step, the alter most recently *stated* by a note
+	// drawn earlier in this measure: an explicit accidental, or the absence of
+	// one when a note simply matched what was already in force. Starts empty
+	// each measure (a fresh `Map` per `layoutMeasure` call), so the first note
+	// on a step falls back to the key signature; see `layoutNote`'s own
+	// comment on the same-measure carry-over rule this implements.
+	const lastStatedAlterForStep = new Map<Step, number>();
+	// The previous note's rightmost ink (notehead, ledger line, or stem), so
+	// the current note can tell whether an accidental it needs would land too
+	// close to it. `null` for the measure's first note, which has nothing
+	// before it in this measure to collide with; see `layoutNote`'s collision-
+	// clearance comment.
+	let previousInkRight: number | null = null;
+
 	for (const note of measure.notes) {
-		const beamed = beamGroupOfNote.has(note.id);
-		const laid = layoutNote(ops, notes, cursor, note, score.keyFifths, ctx, beamed);
+		const beamDirection = beamGroupOfNote.get(note.id)?.direction ?? null;
+		const laid = layoutNote(
+			ops,
+			notes,
+			cursor,
+			note,
+			score.keyFifths,
+			ctx,
+			beamDirection,
+			lastStatedAlterForStep,
+			previousInkRight
+		);
 		cursor = laid.cursor;
+		previousInkRight = laid.inkRight;
 		if (laid.placement) placements.set(note.id, laid.placement);
 	}
 	for (const group of beamGroups) layoutBeamGroup(ops, group, placements, ctx);
@@ -592,9 +635,12 @@ function layoutNote(
 	note: Note,
 	keyFifths: number,
 	ctx: MeasureContext,
-	beamed: boolean
-): { cursor: number; placement: NotePlacement | null } {
+	beamDirection: 'up' | 'down' | null,
+	lastStatedAlterForStep: Map<Step, number>,
+	previousInkRight: number | null
+): { cursor: number; placement: NotePlacement | null; inkRight: number } {
 	const { ss } = ctx;
+	const beamed = beamDirection !== null;
 	const advance = (SPACING.noteBase + SPACING.noteSlopePerWhole * note.durationWholes) * ss;
 
 	if (note.pitch === null) {
@@ -607,23 +653,56 @@ function layoutNote(
 		// sits at the rest's own y with no vertical adjustment.
 		layoutAugmentationDots(ops, cellX + GLYPH_METRICS[glyph].advance * ss, y, false, note.dots, ctx);
 		notes.push({ id: note.id, bounds: glyphBounds(glyph, cellX, y, ss, 0.25) });
-		return { cursor: cellX + advance, placement: null };
+		return { cursor: cellX + advance, placement: null, inkRight: cellX + GLYPH_METRICS[glyph].bBoxNE[0] * ss };
 	}
 
 	const pitch = note.pitch;
 	const d = diatonicIndex(pitch);
 	const y = staffY(d, ctx);
 
-	// Draw an accidental only when the note disagrees with the key signature.
-	// The fuller rule also remembers accidentals already drawn earlier in the
-	// same measure, which is part of Phase 1's accidental handling; skipping it
-	// here means a repeated F-sharp in G major is correct but a repeated
-	// F-natural would be redrawn on every note. Phase 0 never generates that.
-	let noteX = cellX;
-	if (pitch.alter !== keyAlterForStep(keyFifths, pitch.step)) {
+	// Draw an accidental when this note's alter disagrees with what is
+	// currently "in force" for its step: the key signature, unless some
+	// earlier note in this measure already stated a different alter for the
+	// same step, in which case that stated alter is what carries forward
+	// instead (the MusicXML/engraving convention that a stated accidental
+	// holds for the rest of the measure, reset at the next barline). A second
+	// F-sharp in a measure that already stated one therefore draws nothing;
+	// an F-natural in between draws its natural and itself becomes what the
+	// next F needs to match, so a third F-sharp after that draws its sharp
+	// again rather than staying suppressed.
+	//
+	// Tracked per step only, not per (step, octave): a stricter reading of the
+	// convention scopes the carry-over to the same octave too, so an F#5
+	// followed later by a plain F4 would, under that reading, still need its
+	// own natural. This does not yet draw that natural; multi-octave
+	// same-step interaction is left for whichever later slice first needs to
+	// tell two octaves of the same step apart; nothing in this slice's scope
+	// exercises it.
+	const impliedAlter = lastStatedAlterForStep.get(pitch.step) ?? keyAlterForStep(keyFifths, pitch.step);
+	const needsAccidental = pitch.alter !== impliedAlter;
+
+	// A tight previous note can leave less than a clean gap before this
+	// accidental: push the whole note (accidental, head, stem, everything
+	// after it) right by however much clearance is missing, rather than let
+	// the accidental print on top of the previous note's stem or ledger line.
+	// Only an accidental triggers this, since it is the one thing drawn to the
+	// *left* of the note's own cell; the notehead itself already gets its own
+	// room from `SPACING.noteBase`/`noteSlopePerWhole`. The shift has to widen
+	// this note's returned cursor too (below), or the next note's cell would
+	// start back where this one would have landed without it, undoing the
+	// very clearance just added.
+	let collisionShift = 0;
+	if (needsAccidental && previousInkRight !== null) {
+		const shortfall = SPACING.minAccidentalClearance * ss - (cellX - previousInkRight);
+		if (shortfall > 0) collisionShift = shortfall;
+	}
+	let noteX = cellX + collisionShift;
+
+	if (needsAccidental) {
 		const glyph = ACCIDENTAL_GLYPHS[String(clampAlter(pitch.alter)) as keyof typeof ACCIDENTAL_GLYPHS];
 		ops.push({ kind: 'glyph', glyph, x: noteX, y, noteId: note.id });
 		noteX += (GLYPH_METRICS[glyph].advance + SPACING.accidentalGap) * ss;
+		lastStatedAlterForStep.set(pitch.step, pitch.alter);
 	}
 
 	const headGlyph = NOTEHEAD_GLYPHS[note.value];
@@ -646,18 +725,55 @@ function layoutNote(
 	// member of its group has a recorded position: its length and direction
 	// depend on the whole group, not on this note alone. An unbeamed note
 	// (whole, or eighth-and-shorter with no beamable neighbour) keeps the
-	// simple single-note path it always had.
+	// simple single-note path it always had. Either way the direction itself
+	// is decided once, here, rather than separately by whichever of the two
+	// paths ends up drawing the stem: a beamed note takes its already-decided
+	// group direction, an unbeamed one the ordinary single-note rule.
 	let placement: NotePlacement | null = null;
+	let up: boolean | null = null;
 	if (note.value !== 'whole') {
+		up = beamed ? beamDirection === 'up' : stemDirectionForNotes([d]) === 'up';
 		if (beamed) {
 			placement = { noteX, y, headGlyph, d };
 		} else {
-			layoutStemAndFlag(ops, noteX, y, headGlyph, d, note.value, note.id, ctx);
+			layoutStemAndFlag(ops, noteX, y, headGlyph, note.value, note.id, ctx, up);
 		}
 	}
 
 	notes.push({ id: note.id, bounds: glyphBounds(headGlyph, noteX, y, ss, 0.3) });
-	return { cursor: cellX + advance, placement };
+	return {
+		cursor: cellX + advance + collisionShift,
+		placement,
+		inkRight: noteInkRight(noteX, headGlyph, d, up, ss)
+	};
+}
+
+/**
+ * The rightmost x a note's own ink reaches: past the notehead itself when a
+ * ledger line's extension or a stem's outer edge sticks out further, which
+ * they routinely do. The only consumer is the accidental collision check
+ * above; nothing else in this file needs a note's horizontal ink extent
+ * collapsed to one number.
+ */
+function noteInkRight(
+	noteX: number,
+	headGlyph: GlyphName,
+	d: number,
+	up: boolean | null,
+	ss: number
+): number {
+	let right = noteX + GLYPH_METRICS[headGlyph].bBoxNE[0] * ss;
+	// Ledger lines only ever land on line positions and only extend past a
+	// note outside the staff's own top/bottom lines; this mirrors
+	// `layoutLedgerLines`'s own loop bounds.
+	if (d >= TREBLE_TOP_LINE + 2 || d <= TREBLE_BOTTOM_LINE - 2) {
+		right = Math.max(right, noteX + GLYPH_METRICS[headGlyph].advance * ss + ED.legerLineExtension * ss);
+	}
+	if (up !== null) {
+		const stem = stemXEdges(headGlyph, noteX, up, ss);
+		if (stem) right = Math.max(right, stem.right);
+	}
+	return right;
 }
 
 /**
@@ -721,28 +837,29 @@ function layoutStemAndFlag(
 	noteX: number,
 	noteY: number,
 	headGlyph: GlyphName,
-	d: number,
 	value: NoteValue,
 	noteId: string,
-	ctx: MeasureContext
+	ctx: MeasureContext,
+	up: boolean
 ): void {
 	const { ss } = ctx;
-	// See `stemDirectionForNotes` for the rule; a single note is just the
-	// one-element case of the same function `layoutBeamGroup` uses for a
-	// whole group, kept as one function so the rule lives in exactly one place.
-	const up = stemDirectionForNotes([d]) === 'up';
+	// Direction is decided once, by the caller (`layoutNote`), via
+	// `stemDirectionForNotes`; a single note is just the one-element case of
+	// the same function `layoutBeamGroup` uses for a whole group, and passing
+	// the answer in rather than recomputing it here is what lets a note's ink
+	// extent (`noteInkRight`, computed before this function runs) and its
+	// actual stem agree on which way it points.
 	const anchors = glyphMetrics(headGlyph).anchors;
 	const anchor = up ? anchors.stemUpSE : anchors.stemDownNW;
 	if (!anchor) return;
+	const stem = stemXEdges(headGlyph, noteX, up, ss);
+	if (!stem) return;
 	const thickness = ED.stemThickness * ss;
-	// The anchor names the *outer* edge of the stem, hence the inset by one
-	// stem thickness on the up side: the stem hangs to the left of that edge.
-	const stemX = up ? noteX + anchor[0] * ss - thickness : noteX + anchor[0] * ss;
 	const attachY = noteY - anchor[1] * ss;
 	const tipY = noteY + (up ? -STEM_LENGTH * ss : STEM_LENGTH * ss);
 	ops.push({
 		kind: 'rect',
-		x: stemX,
+		x: stem.left,
 		y: Math.min(attachY, tipY),
 		width: thickness,
 		height: Math.abs(tipY - attachY),
@@ -761,10 +878,35 @@ function layoutStemAndFlag(
 	ops.push({
 		kind: 'glyph',
 		glyph,
-		x: stemX - flagAnchor[0] * ss,
+		x: stem.left - flagAnchor[0] * ss,
 		y: tipY + flagAnchor[1] * ss,
 		noteId
 	});
+}
+
+/**
+ * The x a note's stem occupies (its left/outer edge, and the right edge one
+ * stem thickness in), given the notehead's own stem anchor. Shared by
+ * `layoutStemAndFlag`, `beamStemX` (a beamed note's stem, decided once its
+ * group's direction is known) and `noteInkRight`'s accidental-collision
+ * check, all three of which need the same two numbers and none of which
+ * should compute them differently. `null` when the notehead publishes no
+ * stem anchor at all (Phase 0/1 only lacks one for `noteheadWhole`, which
+ * never reaches here since whole notes never carry a stem).
+ */
+function stemXEdges(
+	headGlyph: GlyphName,
+	noteX: number,
+	up: boolean,
+	ss: number
+): { left: number; right: number } | null {
+	const anchor = glyphMetrics(headGlyph).anchors[up ? 'stemUpSE' : 'stemDownNW'];
+	if (!anchor) return null;
+	const thickness = ED.stemThickness * ss;
+	// The anchor names the *outer* edge of the stem, hence the inset by one
+	// stem thickness on the up side: the stem hangs to the left of that edge.
+	const left = up ? noteX + anchor[0] * ss - thickness : noteX + anchor[0] * ss;
+	return { left, right: left + thickness };
 }
 
 /** A run of consecutive beamable notes sharing one beam. Always two or more
@@ -772,6 +914,15 @@ function layoutStemAndFlag(
  *  eligible note is indistinguishable from an ordinary unbeamed one. */
 interface BeamGroup {
 	readonly notes: readonly Note[];
+	/**
+	 * The one stem direction shared by the whole group, decided once here
+	 * (by `computeBeamGroups`, via `stemDirectionForNotes`) so every consumer
+	 * agrees: `layoutBeamGroup`'s own stems and beam, and `layoutNote`'s
+	 * ink-extent calculation for a beamed member (needed before
+	 * `layoutBeamGroup` ever runs, since the accidental-collision check walks
+	 * the measure's notes in order).
+	 */
+	readonly direction: 'up' | 'down';
 }
 
 /**
@@ -846,7 +997,10 @@ function computeBeamGroups(notes: readonly Note[], time: TimeSignature): BeamGro
 	}
 	flush();
 
-	return groups.map((group) => ({ notes: group }));
+	return groups.map((group) => ({
+		notes: group,
+		direction: stemDirectionForNotes(group.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : [])))
+	}));
 }
 
 /**
@@ -912,11 +1066,7 @@ function stemDirectionForNotes(diatonicIndices: readonly number[]): 'up' | 'down
  *  anchor (Phase 0/1 only lacks one for `noteheadWhole`, which never reaches
  *  here since whole notes are never beam-eligible). */
 function beamStemX(placement: NotePlacement, up: boolean, ss: number): number | null {
-	const anchors = glyphMetrics(placement.headGlyph).anchors;
-	const anchor = up ? anchors.stemUpSE : anchors.stemDownNW;
-	if (!anchor) return null;
-	const thickness = ED.stemThickness * ss;
-	return up ? placement.noteX + anchor[0] * ss - thickness : placement.noteX + anchor[0] * ss;
+	return stemXEdges(placement.headGlyph, placement.noteX, up, ss)?.left ?? null;
 }
 
 /**
@@ -946,8 +1096,7 @@ function layoutBeamGroup(
 	});
 	if (members.length < 2) return;
 
-	const diatonics = group.notes.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : []));
-	const up = stemDirectionForNotes(diatonics) === 'up';
+	const up = group.direction === 'up';
 	const beamY = up
 		? Math.min(...members.map((m) => m.placement.y - STEM_LENGTH * ss))
 		: Math.max(...members.map((m) => m.placement.y + STEM_LENGTH * ss));
