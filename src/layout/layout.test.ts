@@ -6,7 +6,8 @@ import {
 	createDurationShowcaseScore,
 	createKeyTimeChangeShowcaseScore,
 	createSlurShowcaseScore,
-	createTieShowcaseScore
+	createTieShowcaseScore,
+	createTwoVoiceShowcaseScore
 } from '../demo-score.js';
 import { buildScore, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
 import { ENGRAVING_DEFAULTS as ED } from '../render/glyph-metrics.js';
@@ -1442,5 +1443,286 @@ describe('barline types', () => {
 		expect(barlineRects(layout.measures[0]!.ops)).toHaveLength(2); // double
 		expect(repeatDots(layout.measures[2]!.ops)).toHaveLength(2); // repeatStart's own
 		expect(repeatDots(layout.measures[3]!.ops)).toHaveLength(2); // repeatEnd's own
+	});
+});
+
+describe('two voices in one staff (M2 Slice 1)', () => {
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
+	const isGlyph = (op: DrawOp): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph';
+	const stemWidth = ED.stemThickness * ss;
+	const beamHeight = ED.beamThickness * ss;
+	const stemRects = (ops: readonly DrawOp[]) =>
+		ops.filter(isRect).filter((op) => Math.abs(op.width - stemWidth) < 0.001);
+	const beamRects = (ops: readonly DrawOp[]) =>
+		ops.filter(isRect).filter((op) => Math.abs(op.height - beamHeight) < 0.001);
+
+	// A half-note voice (voice 1) against a running-eighths voice (voice 2),
+	// the task's own suggested two-voice example: voice 1's two half notes
+	// land at onsets 0 and 0.5, voice 2's four eighths land at 0, 0.125,
+	// 0.25 and 0.375 and its own half note at 0.5. Per `noteAdvanceSpaces`'s
+	// documented table (half=7, eighth=5 staff spaces), the shared columns
+	// are 7 (onset 0, driven by voice 1's half note, wider than voice 2's
+	// eighth there), 5, 5, 5 (voice 2's interior eighths, voice 1 has
+	// nothing there) and 7 (onset 0.5, both voices land here, tied at 7).
+	const halfAgainstEighths = [
+		['D4', 'half', { voice: 1 }],
+		['E4', 'half', { voice: 1 }],
+		['C4', 'eighth', { voice: 2 }],
+		['D4', 'eighth', { voice: 2 }],
+		['E4', 'eighth', { voice: 2 }],
+		['F4', 'eighth', { voice: 2 }],
+		['G4', 'half', { voice: 2 }]
+	] as const;
+
+	it('aligns two voices of differing rhythm on the same x at a shared onset', () => {
+		const score = buildScore([halfAgainstEighths]);
+		const layout = layoutScore(score, options);
+		const measure = layout.measures[0]!;
+		const idOf = (index: number) => score.measures[0]!.notes[index]!.id;
+		const xOf = (id: string) => measure.notes.find((n) => n.id === id)!.bounds.x;
+
+		// Voice 1's second half note and voice 2's half note both start at
+		// onset 0.5: the same shared column, therefore the same x.
+		const v1SecondX = xOf(idOf(1));
+		const v2HalfX = xOf(idOf(6));
+		expect(v1SecondX).toBeCloseTo(v2HalfX, 6);
+
+		// The exact offset from voice 1's first note (onset 0): the three
+		// columns in between (7 + 5 + 5 + 5 = 22 staff spaces) scaled to
+		// pixels, not wherever voice 1's own single half-note advance alone
+		// would have put it (which would be 7 staff spaces, i.e. 70px, a
+		// very different, wrong answer this test also rules out).
+		const v1FirstX = xOf(idOf(0));
+		expect(v2HalfX - v1FirstX).toBeCloseTo(22 * ss, 6);
+	});
+
+	it('does not widen a shared column when the other voice needs no more room than it already has', () => {
+		// Same measure as above, minus voice 2's trailing half note: the
+		// shared onset-0.5 column is then driven by voice 1's own half note
+		// alone (width 7), same as when voice 2's half note is also there
+		// (also width 7, tied). Adding voice 2's half note back must not grow
+		// the measure at all, since the column's width is a max, not a sum;
+		// a per-note-across-both-voices sum (the bug this slice's column
+		// model replaces) would have grown it by a whole extra half note's
+		// worth of room.
+		const without = buildScore([halfAgainstEighths.slice(0, 6)]);
+		const withTail = buildScore([halfAgainstEighths]);
+		const w1 = layoutScore(without, options).measures[0]!.region.width;
+		const w2 = layoutScore(withTail, options).measures[0]!.region.width;
+		expect(w2).toBeCloseTo(w1, 6);
+	});
+
+	it("does not double-count both voices' advances in a system's justification scale", () => {
+		// The same measure's shared columns sum to 7 + 5 + 5 + 5 + 7 = 29
+		// staff spaces (see the alignment test above), not 7 + 7 + 5 + 5 + 5
+		// + 5 + 7 = 41, which is what summing every voice's every note's own
+		// advance across both voices (the bug `systemSpacingScale` no longer
+		// has) would give.
+		const filler = [['C4', 'whole']] as const;
+		const scoreWithFillers = buildScore([halfAgainstEighths, filler, filler, filler]);
+
+		// Read the measure's own natural (unscaled) width with the exact same
+		// context flags `systemSpacingScale`'s probe uses (system-first,
+		// score-first, not the score's last measure): a huge systemWidthPx
+		// keeps every measure in one, therefore-last, therefore-unjustified
+		// system, so this measure's width there is its true natural width.
+		const naturalLayout = layoutScore(scoreWithFillers, { staffSpacePx: ss, systemWidthPx: 5000 });
+		expect(naturalLayout.systems[0]!.spacingScale).toBe(1);
+		const naturalWidth = naturalLayout.measures[0]!.region.width;
+
+		const systemWidthPx = 500;
+		const layout = layoutScore(scoreWithFillers, { staffSpacePx: ss, systemWidthPx });
+		// This measure lands alone in system 0, not the score's last system,
+		// so it is justified (stretched): exactly the case that exercises the
+		// scale computation this test targets.
+		expect(layout.systems[0]!.measureIndices).toEqual([0]);
+
+		const padding = 16; // DEFAULTS.paddingPx, not exported
+		const availableWidth = systemWidthPx - 2 * padding;
+		const correctColumnWidthSum = 29;
+		const expectedScale = Math.max(0.5, 1 + (availableWidth - naturalWidth) / (correctColumnWidthSum * ss));
+		expect(layout.systems[0]!.spacingScale).toBeCloseTo(expectedScale, 6);
+	});
+
+	it('groups beams independently per voice, even when the two voices interleave in the notes array', () => {
+		// Voice 2's four eighths (C4, D4 in beat 0; E4, F4 in beat 1, per
+		// 4/4's quarter-note beat) are written with voice 1's two quarters
+		// physically between them, exactly the interleaving that would
+		// corrupt a single shared beat-position cursor run over the flat
+		// array: voice 1's quarters' durations would be counted against
+		// voice 2's own beat math if the two were not split apart first.
+		const score = buildScore([
+			[
+				['C4', 'eighth', { voice: 2 }],
+				['G4', 'quarter', { voice: 1 }],
+				['D4', 'eighth', { voice: 2 }],
+				['A4', 'quarter', { voice: 1 }],
+				['E4', 'eighth', { voice: 2 }],
+				['F4', 'eighth', { voice: 2 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+		// No individual flags: both eighth pairs beamed, not four flags.
+		expect(ops.filter(isGlyph).some((op) => op.glyph.startsWith('flag'))).toBe(false);
+		// Two two-note beams (one per beat), not one four-note beam and not
+		// zero (which either a crash or a mis-grouping could produce).
+		expect(beamRects(ops)).toHaveLength(2);
+		// Voice 2's 4 beamed eighths + voice 1's 2 quarters (always stemmed,
+		// beamed or not) = 6 stems total.
+		expect(stemRects(ops)).toHaveLength(6);
+	});
+
+	it('forces voice 1 up and voice 2 down when a measure holds two voices, regardless of pitch', () => {
+		// C5 (voice 1) sits above the middle line, where the ordinary
+		// pitch-based rule (Slice 3) would pick a down-stem; C4 (voice 2)
+		// sits well below it, where that same rule would pick an up-stem.
+		// The multi-voice convention overrides both, in the opposite
+		// direction pitch alone would have chosen for each.
+		const layout = layoutScore(
+			buildScore([[['C5', 'eighth', { voice: 1 }], ['C4', 'eighth', { voice: 2 }]]]),
+			options
+		);
+		const glyphs = layout.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+		expect(glyphs).toContain('flag8thUp'); // voice 1, forced up despite C5's own pitch
+		expect(glyphs).toContain('flag8thDown'); // voice 2, forced down despite C4's own pitch
+	});
+
+	it('also overrides a beamed group\'s shared direction per voice, not just a lone note\'s', () => {
+		const score = buildScore([
+			[
+				['C5', 'eighth', { voice: 1 }],
+				['D5', 'eighth', { voice: 1 }],
+				['C4', 'eighth', { voice: 2 }],
+				['D4', 'eighth', { voice: 2 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+		expect(beamRects(ops)).toHaveLength(2); // one beam per voice
+		const stems = stemRects(ops);
+		expect(stems).toHaveLength(4);
+
+		// Both voices share the same rhythm here (two eighths each, at onsets
+		// 0 and 0.125), so they also share the same shared columns and land
+		// at the same x (expected and fine per this slice's own scope: cross-
+		// voice ink collision avoidance is a later slice). x cannot tell the
+		// two beams apart here, so identify each stem's owning voice via the
+		// note id every stem rect already carries.
+		const voiceOf = (noteId: string | undefined) => score.findNote(noteId!)!.voice;
+		const voice1Stems = stems.filter((s) => voiceOf(s.noteId) === 1);
+		const voice2Stems = stems.filter((s) => voiceOf(s.noteId) === 2);
+		expect(voice1Stems).toHaveLength(2);
+		expect(voice2Stems).toHaveLength(2);
+
+		const heads = ops
+			.filter(isGlyph)
+			.filter((op) => op.glyph === 'noteheadBlack')
+			.map((op) => op.y);
+
+		// Voice 1 (C5, D5: both above the middle line, where the pitch rule
+		// would pick a down-stem group) is forced up instead: an up-stem's
+		// beam-side is each stem's own top edge (`y`), and a shared flat beam
+		// means both agree with each other, above every notehead.
+		const voice1BeamSideYs = voice1Stems.map((s) => s.y);
+		expect(voice1BeamSideYs[0]).toBeCloseTo(voice1BeamSideYs[1]!, 6);
+		expect(Math.max(...voice1BeamSideYs)).toBeLessThan(Math.min(...heads));
+
+		// Voice 2 (C4, D4: both below the middle line, where the pitch rule
+		// would pick an up-stem group) is forced down instead: a down-stem's
+		// beam-side is each stem's bottom edge (`y + height`), below every
+		// notehead.
+		const voice2BeamSideYs = voice2Stems.map((s) => s.y + s.height);
+		expect(voice2BeamSideYs[0]).toBeCloseTo(voice2BeamSideYs[1]!, 6);
+		expect(Math.min(...voice2BeamSideYs)).toBeGreaterThan(Math.max(...heads));
+	});
+
+	it('keeps the ordinary pitch-based rule unchanged when only voice 1 is present', () => {
+		// Same C5 pitch as above, alone: the plain single-voice rule (above
+		// the middle line -> down-stem, Slice 3) applies exactly as before
+		// this slice, confirming the override never engages for a
+		// single-voice measure.
+		const layout = layoutScore(buildScore([[['C5', 'eighth']]]), options);
+		const glyphs = layout.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+		expect(glyphs).toContain('flag8thDown');
+	});
+
+	it("offsets voice 1 and voice 2 rests apart when they share the same onset", () => {
+		const score = buildScore([
+			[
+				[null, 'quarter', { voice: 1 }],
+				['G4', 'quarter', { voice: 1 }],
+				['A4', 'quarter', { voice: 1 }],
+				['B4', 'quarter', { voice: 1 }],
+				[null, 'quarter', { voice: 2 }],
+				['C4', 'quarter', { voice: 2 }],
+				['D4', 'quarter', { voice: 2 }],
+				['E4', 'quarter', { voice: 2 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const rests = layout.measures[0]!.ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'restQuarter'
+		);
+		expect(rests).toHaveLength(2);
+		// Same onset, same shared column: same x.
+		expect(rests[0]!.x).toBeCloseTo(rests[1]!.x, 6);
+		// Different y: one shifted two fixed staff spaces up from the
+		// ordinary default, the other the same distance down, so neither
+		// prints on top of the other's ink at this shared column (see
+		// `REST_VOICE_OFFSET_SPACES`'s own comment on why two spaces, not
+		// one, is what actually clears a quarter rest's own glyph height).
+		const defaultY = layout.staffTopY + 2 * ss;
+		const ys = rests.map((r) => r.y).sort((a, b) => a - b);
+		expect(ys[0]).toBeCloseTo(defaultY - 2 * ss, 6); // voice 1: shifted up
+		expect(ys[1]).toBeCloseTo(defaultY + 2 * ss, 6); // voice 2: shifted down
+	});
+
+	it('leaves a single voice\'s rest at its ordinary fixed position with no offset', () => {
+		const layout = layoutScore(buildScore([[[null, 'quarter']]]), options);
+		const rest = layout.measures[0]!.ops.find(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'restQuarter'
+		)!;
+		expect(rest.y).toBeCloseTo(layout.staffTopY + 2 * ss, 6);
+	});
+
+	it('lays out a third voice without crashing, falling back to the ordinary pitch-based stem rule', () => {
+		// Voices 3+ are explicitly out of this slice's scope (see
+		// `voiceStemOverride`'s own comment): this only asserts the
+		// documented gap (no crash, pitch-based fallback), not a real
+		// third-voice convention.
+		const layout = layoutScore(
+			buildScore([
+				[
+					['C5', 'eighth', { voice: 1 }],
+					['C4', 'eighth', { voice: 2 }],
+					['D5', 'eighth', { voice: 3 }]
+				]
+			]),
+			options
+		);
+		const glyphs = layout.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+		// D5 sits above the middle line: the ordinary pitch rule (not voice 1
+		// or 2's forced override, neither of which applies to voice 3) gives
+		// it a down-stem.
+		expect(glyphs).toContain('flag8thDown');
+	});
+
+	it('renders the two-voice showcase without error, with both voices\' notes/rests all present', () => {
+		const score = createTwoVoiceShowcaseScore();
+		const layout = layoutScore(score, options);
+		expect(layout.measures).toHaveLength(2);
+		// Measure 0: voice 1's 2 half notes + voice 2's 8 eighths.
+		expect(layout.measures[0]!.notes).toHaveLength(10);
+		// Measure 1: voice 1's rest + 3 quarters, voice 2's rest + 3 quarters
+		// (a rest still gets a `LaidOutNote` entry; see `layoutNote`'s rest
+		// branch).
+		expect(layout.measures[1]!.notes).toHaveLength(8);
+		// Measure 0's voice 2 still beams into four quarter-beat pairs, the
+		// same grouping it would get as the only voice in the measure,
+		// unaffected by voice 1's two much slower half notes sharing it.
+		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(4);
 	});
 });

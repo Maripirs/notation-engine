@@ -257,6 +257,34 @@ describe('barlines', () => {
 	});
 });
 
+describe('multi-voice literals (M2 Slice 1)', () => {
+	it('defaults every note to voice 1 when extra.voice is omitted', () => {
+		// The single-voice case, unchanged: every score built before this
+		// slice never mentioned voice at all, and must keep landing on
+		// `Note.voice`'s own default of 1.
+		const score = buildScore([[['C4', 'quarter'], [null, 'quarter']]]);
+		expect(score.measures[0]!.notes.map((n) => n.voice)).toEqual([1, 1]);
+	});
+
+	it('wires extra.voice through to the built Note, regardless of array order', () => {
+		// One flat literal array holding two voices' notes side by side (not
+		// interleaved token-for-token): `buildScore` does not need to know
+		// anything about voices beyond copying this field through, since
+		// layout is what groups by voice, not the model or its builder.
+		const score = buildScore([
+			[
+				['C4', 'quarter', { voice: 1 }],
+				['D4', 'quarter', { voice: 1 }],
+				['E4', 'half', { voice: 2 }]
+			]
+		]);
+		const [first, second, third] = score.measures[0]!.notes;
+		expect(first!.voice).toBe(1);
+		expect(second!.voice).toBe(1);
+		expect(third!.voice).toBe(2);
+	});
+});
+
 describe('ties', () => {
 	it('resolves extra.tiedToNext across a barline to the next note in the same voice', () => {
 		const score = buildScore([

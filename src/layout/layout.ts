@@ -179,6 +179,123 @@ function noteAdvanceSpaces(note: Note): number {
 	);
 }
 
+/**
+ * Per-voice cumulative-duration onset for every note in a measure, keyed by
+ * note id: this note's position, as a fraction of a whole note, measured
+ * from the start of *its own voice's* timeline within this measure.
+ *
+ * Two voices interleaved in `measure.notes` never share one timeline the way
+ * Phase 0/1's single voice did, so this groups by `note.voice` first and
+ * runs an independent cumulative-duration cursor per voice, rather than the
+ * one running position a flat walk of the array would corrupt across voices
+ * (the same reason `computeBeamGroups` needs the same per-voice split; see
+ * its own comment). Order within a voice is assumed already chronological:
+ * every score this repo builds (`buildScore`, `appendMeasures`) appends a
+ * voice's own notes in playback order even when a literal interleaves two
+ * voices' tuples, so filtering by voice and walking in array order
+ * reproduces that voice's real time sequence with no extra sorting.
+ */
+function noteOnsets(notes: readonly Note[]): Map<NoteId, number> {
+	const byVoice = new Map<number, Note[]>();
+	for (const note of notes) {
+		const list = byVoice.get(note.voice);
+		if (list) list.push(note);
+		else byVoice.set(note.voice, [note]);
+	}
+	const onsets = new Map<NoteId, number>();
+	for (const voiceNotes of byVoice.values()) {
+		let position = 0;
+		for (const note of voiceNotes) {
+			onsets.set(note.id, position);
+			position += note.durationWholes;
+		}
+	}
+	return onsets;
+}
+
+/**
+ * Buckets a cumulative-duration onset (a fraction of a whole note) to a fixed
+ * precision, so two voices that independently sum to the "same" musical
+ * onset land in the same shared column even if their two running totals
+ * picked up different float rounding along the way (e.g. a tripleted
+ * duration's repeating binary fraction, summed via a different sequence of
+ * additions in each voice). Tighter than any duration difference this model
+ * can express (the shortest, a tripleted 64th, is still on the order of
+ * 1e-3 wholes), the same kind of tolerance `computeBeamGroups`'s own `EPS`
+ * uses for the same reason: comparing a computed position against another
+ * without one occasionally misfires on accumulated rounding noise no
+ * musical difference actually justifies.
+ */
+function onsetKey(onset: number): number {
+	return Math.round(onset * 1e9) / 1e9;
+}
+
+/**
+ * A measure's shared onset columns across every voice it holds ("onset-
+ * aligned columns"): one entry per distinct onset (bucketed via `onsetKey`)
+ * where *any* voice starts a note, sorted left to right, whose `width` is
+ * the largest `noteAdvanceSpaces` among whichever voice(s) actually start a
+ * note there.
+ *
+ * This is the merge step two independent rhythms need to land on the same x
+ * wherever they share a beat, and to not collide where they don't. Two
+ * voices with different rhythms (a half note against four running eighths,
+ * say) do not share every onset; wherever they *do* both start a note at the
+ * same position, that shared column's width is whichever voice's note needs
+ * more room, so neither voice's ink collides with the other's at that x.
+ * Wherever only one voice has a note (the eighths' interior onsets, while
+ * the half note is still sounding), that voice alone decides the column's
+ * width, and the *other* voice's next note still lands correctly further
+ * along the shared timeline, past however many of the first voice's columns
+ * came before it, because the running offset (`layoutMeasure`'s
+ * `columnOffsetPx`) sums every column in between regardless of which voice
+ * contributed it.
+ *
+ * Single voice is the degenerate case: every column is just that voice's own
+ * next note, in its own order, with the column's width its own advance —
+ * exactly the flat linear cursor `layoutMeasure` always used before this
+ * slice, just expressed as a precomputed sum of columns rather than a
+ * running total threaded note to note. `systemSpacingScale` also reads this
+ * (summing `width` across columns, not summing every voice's every note's
+ * own advance) so a two-voice measure's justification denominator matches
+ * the same shared timeline the layout pass itself uses, rather than
+ * double-counting whatever beat both voices happen to have a note on.
+ */
+function measureColumns(
+	notes: readonly Note[]
+): readonly { readonly onset: number; readonly width: number }[] {
+	const onsets = noteOnsets(notes);
+	const columns = new Map<number, { onset: number; width: number }>();
+	for (const note of notes) {
+		const onset = onsets.get(note.id)!;
+		const key = onsetKey(onset);
+		const width = noteAdvanceSpaces(note);
+		const existing = columns.get(key);
+		if (!existing || width > existing.width) columns.set(key, { onset, width });
+	}
+	return [...columns.values()].sort((a, b) => a.onset - b.onset);
+}
+
+/**
+ * Groups a measure's notes by `note.voice`, preserving each voice's own
+ * relative order (the order the notes already appear in `measure.notes`).
+ * Shared by the beam-grouping pass and the note-layout pass in
+ * `layoutMeasure`, both of which need to walk one voice's own notes in
+ * isolation from any other voice interleaved in the same flat array; a
+ * single voice (today's default) is the one-entry degenerate case, which is
+ * what keeps every single-voice code path this feeds identical to before
+ * this slice.
+ */
+function notesByVoice(notes: readonly Note[]): Map<number, Note[]> {
+	const byVoice = new Map<number, Note[]>();
+	for (const note of notes) {
+		const list = byVoice.get(note.voice);
+		if (list) list.push(note);
+		else byVoice.set(note.voice, [note]);
+	}
+	return byVoice;
+}
+
 /** Stem length measured from the notehead centre, staff spaces. Phase 1 shortens
  *  and lengthens this for notes far from the middle line; Phase 0 does not. */
 const STEM_LENGTH = 3.5;
@@ -435,7 +552,14 @@ function systemSpacingScale(
 			isScoreFirst: measureIndex === 0,
 			isLast: measureIndex === score.measures.length - 1
 		});
-		for (const note of measure.notes) advanceSpaces += noteAdvanceSpaces(note);
+		// Sum the shared *columns'* widths (M2 Slice 1), not every voice's
+		// every note's own advance: a two-voice measure's notes no longer form
+		// one timeline, and summing per note across both voices would
+		// double-count whatever beat they share, inflating this denominator
+		// and under-stretching the system relative to what `naturalWidth`
+		// (computed by `probeMeasureWidth`, which already lays the measure out
+		// through the same column logic) actually needs filled.
+		for (const column of measureColumns(measure.notes)) advanceSpaces += column.width;
 	}
 	// An entirely note-free plan (nothing to stretch) has no sensible scale;
 	// natural spacing is already whatever this system is going to look like.
@@ -514,7 +638,14 @@ function planSystems(
 	return systems;
 }
 
-/** A measure's width in isolation, for the casting-off decision in `planSystems`. */
+/**
+ * A measure's width in isolation, for the casting-off decision in
+ * `planSystems`. Delegates entirely to `layoutMeasure`, so a two-voice
+ * measure's width automatically reflects the shared onset columns
+ * `layoutMeasure` itself now lays notes out against (see `measureColumns`)
+ * rather than this function needing its own separate note-summing logic to
+ * keep in sync.
+ */
 function probeMeasureWidth(
 	score: Score,
 	measure: Measure,
@@ -723,54 +854,106 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	}
 	cursor += SPACING.measureLeadIn * ss;
 
-	// Deciding beam groups is a pass over the whole measure's notes (a group
+	// Two voices in one staff (M2 Slice 1): a measure's notes no longer form
+	// one flat sequential stream to walk with a single cursor. `notesByVoice`
+	// is computed once and reused below for both the beam-grouping pass and
+	// the note-layout pass, since both need to see one voice's own notes in
+	// isolation from any other voice sharing this measure. A single voice
+	// (this engine's only case before this slice) is the one-entry
+	// degenerate case, which is what keeps every code path below identical to
+	// before this slice whenever only voice 1 is present.
+	const notesByVoiceGroups = notesByVoice(measure.notes);
+	// Whether this measure genuinely holds more than one voice, gating the
+	// multi-voice stem-direction override and rest offset (see
+	// `voiceStemOverride`/`restVoiceOffsetSpaces`): a single-voice measure
+	// must render byte-for-byte the same as it always has, so both
+	// conventions only engage once a second voice actually shares the staff.
+	const multiVoice = notesByVoiceGroups.size > 1;
+
+	// Deciding beam groups is a pass over each voice's own notes (a group
 	// cannot be known note-by-note: whether the third eighth joins the first
-	// two depends on the beat it falls in), so it happens once here rather
-	// than inside `layoutNote`. A note that lands in a group of two or more
-	// skips its individual stem-and-flag in the main loop below and instead
-	// has its notehead position recorded in `placements`; `layoutBeamGroup`
-	// draws the shared stems and beam afterwards, once every member's position
-	// is known. A note with no beamable neighbour is not in any group here and
-	// falls straight through to its ordinary single-flag stem.
-	const beamGroups = computeBeamGroups(measure.notes, time);
+	// two depends on the beat it falls in), run independently per voice so an
+	// interleaved second voice's durations can never corrupt the first
+	// voice's beat-position tracking, or vice versa (`computeBeamGroups`'s
+	// own single running position would otherwise misgroup across voices). A
+	// note that lands in a group of two or more skips its individual
+	// stem-and-flag in the main loop below and instead has its notehead
+	// position recorded in `placements`; `layoutBeamGroup` draws the shared
+	// stems and beam afterwards, once every member's position is known. A
+	// note with no beamable neighbour is not in any group here and falls
+	// straight through to its ordinary single-flag stem.
+	const beamGroups: BeamGroup[] = [];
+	for (const [voice, voiceNotes] of notesByVoiceGroups) {
+		beamGroups.push(...computeBeamGroups(voiceNotes, time, voiceStemOverride(voice, multiVoice)));
+	}
 	const beamGroupOfNote = new Map<NoteId, BeamGroup>();
 	for (const group of beamGroups) {
 		for (const note of group.notes) beamGroupOfNote.set(note.id, group);
 	}
 	const placements = new Map<NoteId, NotePlacement>();
 
-	// Tracks, per diatonic step, the alter most recently *stated* by a note
-	// drawn earlier in this measure: an explicit accidental, or the absence of
-	// one when a note simply matched what was already in force. Starts empty
-	// each measure (a fresh `Map` per `layoutMeasure` call), so the first note
-	// on a step falls back to the key signature; see `layoutNote`'s own
-	// comment on the same-measure carry-over rule this implements.
-	const lastStatedAlterForStep = new Map<Step, number>();
-	// The previous note's rightmost ink (notehead, ledger line, or stem), so
-	// the current note can tell whether an accidental it needs would land too
-	// close to it. `null` for the measure's first note, which has nothing
-	// before it in this measure to collide with; see `layoutNote`'s collision-
-	// clearance comment.
-	let previousInkRight: number | null = null;
+	// Onset-aligned columns (see `measureColumns`): every voice's notes land
+	// on a shared x wherever they share a beat. `columnOffsetPx` turns each
+	// column's own natural width into a running pixel offset from `cursor`
+	// (the position right after the measure's lead-in space), scaled by this
+	// system's justification factor the same way a single-voice note's own
+	// advance always was.
+	const scale = ctx.spacingScale ?? 1;
+	const columns = measureColumns(measure.notes);
+	const columnOffsetPx = new Map<number, number>();
+	let columnsWidthPx = 0;
+	for (const column of columns) {
+		columnOffsetPx.set(onsetKey(column.onset), columnsWidthPx);
+		columnsWidthPx += column.width * ss * scale;
+	}
+	const onsets = noteOnsets(measure.notes);
 
-	for (const note of measure.notes) {
-		const beamDirection = beamGroupOfNote.get(note.id)?.direction ?? null;
-		const laid = layoutNote(
-			ops,
-			notes,
-			cursor,
-			note,
-			keyFifths,
-			ctx,
-			beamDirection,
-			lastStatedAlterForStep,
-			previousInkRight
-		);
-		cursor = laid.cursor;
-		previousInkRight = laid.inkRight;
-		if (laid.placement) placements.set(note.id, laid.placement);
+	// Every voice threads its own accidental carry-over
+	// (`lastStatedAlterForStep`, tracked per voice, not shared: a different
+	// voice's stated accidental on the same step does not excuse this one
+	// from restating its own, the ordinary engraving convention), its own
+	// previous-ink tracking, and its own accidental-collision shift
+	// accumulator, independently: none of the three is a property of the
+	// measure as a whole, only of one voice's own left-to-right reading, the
+	// same reasoning beam grouping above needed its own per-voice split for.
+	// `finalShiftByVoice` records each voice's own accumulated shift after
+	// its last note, so the measure's total width (below) can widen for
+	// whichever voice's collision-avoidance drifted it furthest right; for a
+	// single voice this is just that voice's own final value, reproducing
+	// the flat cursor's old behaviour exactly.
+	const finalShiftByVoice = new Map<number, number>();
+	for (const [voice, voiceNotes] of notesByVoiceGroups) {
+		const lastStatedAlterForStep = new Map<Step, number>();
+		let previousInkRight: number | null = null;
+		let shiftAccum = 0;
+		for (const note of voiceNotes) {
+			const cellX = cursor + columnOffsetPx.get(onsetKey(onsets.get(note.id)!))! + shiftAccum;
+			const beamDirection = beamGroupOfNote.get(note.id)?.direction ?? null;
+			const laid = layoutNote(
+				ops,
+				notes,
+				cellX,
+				note,
+				keyFifths,
+				ctx,
+				beamDirection,
+				lastStatedAlterForStep,
+				previousInkRight,
+				multiVoice
+			);
+			previousInkRight = laid.inkRight;
+			shiftAccum += laid.collisionShift;
+			if (laid.placement) placements.set(note.id, laid.placement);
+		}
+		finalShiftByVoice.set(voice, shiftAccum);
 	}
 	for (const group of beamGroups) layoutBeamGroup(ops, group, placements, ctx);
+	// The measure's note area ends at the shared columns' own total width,
+	// plus whichever voice's own collision-avoidance shift (above) reached
+	// furthest past it. A single voice's shift is the only one that can ever
+	// be nonzero, so this reduces to exactly the same total the old flat
+	// cursor always produced.
+	cursor += columnsWidthPx + Math.max(0, ...finalShiftByVoice.values());
 	cursor += SPACING.measureTrailOut * ss;
 
 	// Staff lines are per measure, spanning exactly this measure's band, for the
@@ -1154,6 +1337,62 @@ interface NotePlacement {
 	readonly up: boolean | null;
 }
 
+/**
+ * Multi-voice stem-direction convention (M2 Slice 1): voice 1 always stems
+ * up and voice 2 always stems down, regardless of which side of the middle
+ * line a note actually sits on, the standard way real engraving tells two
+ * voices sharing one staff apart at a glance. Only engages when `multiVoice`
+ * is true (this measure genuinely holds more than one voice); a
+ * single-voice measure, this engine's only case before this slice, must keep
+ * the ordinary pitch-based rule (`stemDirectionForNotes` with no override
+ * here) so every existing single-voice test keeps its exact expected output.
+ *
+ * Voices 3+ are out of this slice's scope: the task it implements targets
+ * exactly two voices per staff. A third or later voice in an otherwise
+ * multi-voice measure gets no override here and falls back to the ordinary
+ * pitch-based rule, a documented gap rather than a crash or an arbitrary
+ * third direction; a real convention for 3+ voices on one staff (there are
+ * several, depending on house style) is left for whoever first needs it.
+ */
+function voiceStemOverride(voice: number, multiVoice: boolean): 'up' | 'down' | undefined {
+	if (!multiVoice) return undefined;
+	if (voice === 1) return 'up';
+	if (voice === 2) return 'down';
+	return undefined;
+}
+
+/**
+ * Vertical nudge, in staff spaces, applied to a rest's ordinary default y
+ * (below) once its measure holds more than one voice: voice 1's rests shift
+ * up and voice 2's shift down, so neither voice's rest prints on top of the
+ * other voice's ink at the same or a nearby column. This is the standard
+ * convention for two voices sharing a staff (the upper voice's rests sit
+ * higher than usual, the lower voice's lower), gated on `multiVoice` for
+ * exactly the reason `voiceStemOverride` is: a single-voice measure gets no
+ * offset at all, keeping today's fixed rest position exactly as it was
+ * before this slice.
+ *
+ * `REST_VOICE_OFFSET_SPACES` is not derived from anything Bravura publishes;
+ * it is this file's own chosen distance. Two staff spaces either way (four
+ * between the two voices) rather than one: a quarter rest's own glyph is
+ * about three staff spaces tall (`GLYPH_METRICS.restQuarter`'s bounding box
+ * runs roughly -1.5 to +1.5), so a smaller offset (one space, this file's
+ * first attempt, caught by eye against a rendered PNG rather than by a
+ * dimensionless "no overlap" test) still let the two voices' rest glyphs'
+ * ink visibly merge into one blob at the shared column the acceptance
+ * criteria specifically ask this to clear. Two full spaces still keeps both
+ * rests inside or just past the staff for ordinary cases rather than
+ * pushing them implausibly far off it. Voice 3+ gets no offset, the same
+ * documented gap `voiceStemOverride` leaves.
+ */
+const REST_VOICE_OFFSET_SPACES = 2;
+function restVoiceOffsetSpaces(voice: number, multiVoice: boolean): number {
+	if (!multiVoice) return 0;
+	if (voice === 1) return -REST_VOICE_OFFSET_SPACES;
+	if (voice === 2) return REST_VOICE_OFFSET_SPACES;
+	return 0;
+}
+
 function layoutNote(
 	ops: DrawOp[],
 	notes: LaidOutNote[],
@@ -1163,8 +1402,9 @@ function layoutNote(
 	ctx: MeasureContext,
 	beamDirection: 'up' | 'down' | null,
 	lastStatedAlterForStep: Map<Step, number>,
-	previousInkRight: number | null
-): { cursor: number; placement: NotePlacement | null; inkRight: number } {
+	previousInkRight: number | null,
+	multiVoice: boolean
+): { cursor: number; placement: NotePlacement | null; inkRight: number; collisionShift: number } {
 	const { ss } = ctx;
 	const beamed = beamDirection !== null;
 	const advance = noteAdvanceSpaces(note) * ss * (ctx.spacingScale ?? 1);
@@ -1173,13 +1413,24 @@ function layoutNote(
 		const glyph = REST_GLYPHS[note.value];
 		// Every rest hangs from, sits on, or centres about the middle of the
 		// staff; the glyph origins encode which, so one y works for all four.
-		const y = ctx.staffTopY + (note.value === 'whole' ? 1 : 2) * ss;
+		// `restVoiceOffsetSpaces` nudges that shared default apart for a
+		// second voice sharing this measure (M2 Slice 1); it is always 0 for a
+		// single-voice measure, so this is exactly the old fixed y then.
+		const y =
+			ctx.staffTopY +
+			(note.value === 'whole' ? 1 : 2) * ss +
+			restVoiceOffsetSpaces(note.voice, multiVoice) * ss;
 		ops.push({ kind: 'glyph', glyph, x: cellX, y, noteId: note.id });
 		// A rest has no line/space of its own to nudge a dot off of, so its dot
 		// sits at the rest's own y with no vertical adjustment.
 		layoutAugmentationDots(ops, cellX + GLYPH_METRICS[glyph].advance * ss, y, false, note.dots, ctx);
 		notes.push({ id: note.id, bounds: glyphBounds(glyph, cellX, y, ss, 0.25) });
-		return { cursor: cellX + advance, placement: null, inkRight: cellX + GLYPH_METRICS[glyph].bBoxNE[0] * ss };
+		return {
+			cursor: cellX + advance,
+			placement: null,
+			inkRight: cellX + GLYPH_METRICS[glyph].bBoxNE[0] * ss,
+			collisionShift: 0
+		};
 	}
 
 	const pitch = note.pitch;
@@ -1257,7 +1508,9 @@ function layoutNote(
 	// group direction, an unbeamed one the ordinary single-note rule.
 	let up: boolean | null = null;
 	if (note.value !== 'whole') {
-		up = beamed ? beamDirection === 'up' : stemDirectionForNotes([d]) === 'up';
+		up = beamed
+			? beamDirection === 'up'
+			: stemDirectionForNotes([d], voiceStemOverride(note.voice, multiVoice)) === 'up';
 		if (!beamed) {
 			layoutStemAndFlag(ops, noteX, y, headGlyph, note.value, note.id, ctx, up);
 		}
@@ -1273,7 +1526,8 @@ function layoutNote(
 	return {
 		cursor: cellX + advance + collisionShift,
 		placement,
-		inkRight: noteInkRight(noteX, headGlyph, d, up, ss)
+		inkRight: noteInkRight(noteX, headGlyph, d, up, ss),
+		collisionShift
 	};
 }
 
@@ -1490,8 +1744,22 @@ function beatDurationWholes(time: TimeSignature): number {
  * folds in dots and tuplet ratios, so a tupleted eighth lands in the same
  * beat math as a plain one without this function needing to know tuplets
  * exist.
+ *
+ * `notes` is expected to already be one voice's own notes (M2 Slice 1's
+ * `layoutMeasure` calls this once per voice via `notesByVoice`, never on a
+ * measure's raw flat array): the beat-position cursor above is a single
+ * running total, which a second voice's notes interleaved into the same
+ * array would corrupt (their durations would be counted against the first
+ * voice's beat position, and vice versa). `voiceOverride`, when given, forces
+ * every group's `direction` regardless of pitch (see `voiceStemOverride`);
+ * omitted, a lone voice keeps `stemDirectionForNotes`'s ordinary pitch-based
+ * rule exactly as before this slice.
  */
-function computeBeamGroups(notes: readonly Note[], time: TimeSignature): BeamGroup[] {
+function computeBeamGroups(
+	notes: readonly Note[],
+	time: TimeSignature,
+	voiceOverride?: 'up' | 'down'
+): BeamGroup[] {
 	const beatWholes = beatDurationWholes(time);
 	// A float position compared against a beat boundary with plain `<`/`floor`
 	// would occasionally misfire on the rounding noise a chain of additions
@@ -1528,7 +1796,10 @@ function computeBeamGroups(notes: readonly Note[], time: TimeSignature): BeamGro
 
 	return groups.map((group) => ({
 		notes: group,
-		direction: stemDirectionForNotes(group.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : [])))
+		direction: stemDirectionForNotes(
+			group.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : [])),
+			voiceOverride
+		)
 	}));
 }
 
@@ -1561,8 +1832,18 @@ function computeBeamGroups(notes: readonly Note[], time: TimeSignature): BeamGro
  * line and can be pulled to the wrong side by one note that is actually far
  * off it, exactly the disagreement this function resolves in the far note's
  * favour instead.
+ *
+ * `voiceOverride` (M2 Slice 1) short-circuits all of the above: when a
+ * measure holds more than one voice, direction is decided by *which voice*,
+ * not by pitch at all (see `voiceStemOverride`). Every existing call site
+ * that never passes it (ties, slurs, and a single-voice measure's own notes)
+ * keeps exactly the pitch-based rule below, unchanged.
  */
-function stemDirectionForNotes(diatonicIndices: readonly number[]): 'up' | 'down' {
+function stemDirectionForNotes(
+	diatonicIndices: readonly number[],
+	voiceOverride?: 'up' | 'down'
+): 'up' | 'down' {
+	if (voiceOverride) return voiceOverride;
 	if (diatonicIndices.length === 0) return 'down';
 
 	const displacement = (d: number) => d - TREBLE_MIDDLE_LINE;

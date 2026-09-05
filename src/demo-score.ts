@@ -337,6 +337,79 @@ export function createBarlineShowcaseScore(): Score {
 	);
 }
 
+/**
+ * M2 Slice 1's two-voice showcase: two measures in G major 4/4, still
+ * consistent with the other showcases, that between them exercise every
+ * piece of this slice's scope. `MeasureSpec`'s literal stays one flat array
+ * per measure (voice 1's notes written first, then voice 2's; `extra.voice`
+ * marks which is which) since layout groups by voice itself and never needs
+ * the two voices' tuples interleaved token-for-token to read correctly.
+ *
+ * Measure 1 is the task's own suggested case, "a half-note voice against a
+ * running eighth-note voice": voice 1 is two half notes (G4, C5), voice 2 is
+ * eight running eighths. This exercises three things at once. Onset-aligned
+ * columns: voice 2's eighths land on their own shared column at every
+ * eighth-note onset, and voice 1's second half note (onset 0.5) lands on
+ * whichever of those columns falls at the same position, not wherever voice
+ * 1's own first note's advance alone would have put it. Independent
+ * per-voice beaming: voice 2's eight eighths still beam into four
+ * quarter-beat pairs exactly as a single beamed voice would, unaffected by
+ * voice 1's much slower notes sharing the measure. And the stem-direction
+ * override actually overriding pitch, not just agreeing with it by
+ * coincidence: C5 (voice 1) sits above the middle line, where the ordinary
+ * pitch rule would pick a down-stem, but voice 1 is forced up regardless;
+ * every one of voice 2's eighths sits below the middle line, where the
+ * pitch rule would pick up-stems, but voice 2 is forced down regardless.
+ * F4 is deliberately avoided in voice 2's line so this measure's only
+ * accidental-adjacent concern is the two voices' own independent per-voice
+ * accidental tracking, not a G-major sharp.
+ *
+ * Measure 2 exercises the rest-offset convention: both voices open with a
+ * quarter rest at the very same onset (0), which without a per-voice offset
+ * would print the two rest glyphs on top of each other; with it, voice 1's
+ * rest shifts up and voice 2's shifts down, visibly clearing each other.
+ *
+ * Not validated against `validateMeasure`/`measureDurationWholes` the way
+ * every earlier showcase's measures are: both of those sum a measure's
+ * notes across *all* voices (see `measureDurationWholes`'s own doc comment,
+ * written for a single voice), so a fully-valid two-voice 4/4 measure like
+ * either one here sums to 2 wholes of "duration" by that formula and would
+ * incorrectly fail a capacity check that was never updated for more than one
+ * voice. That gap is real and left open by this slice (multi-voice measure
+ * capacity is out of its scope, only note/beam/stem/rest layout is), flagged
+ * here rather than silently worked around with a validation call that would
+ * have failed for reasons unrelated to what this showcase demonstrates.
+ */
+export function createTwoVoiceShowcaseScore(): Score {
+	return buildScore(
+		[
+			[
+				['G4', 'half', { voice: 1 }],
+				['C5', 'half', { voice: 1 }],
+				['C4', 'eighth', { voice: 2 }],
+				['D4', 'eighth', { voice: 2 }],
+				['E4', 'eighth', { voice: 2 }],
+				['G4', 'eighth', { voice: 2 }],
+				['A4', 'eighth', { voice: 2 }],
+				['G4', 'eighth', { voice: 2 }],
+				['E4', 'eighth', { voice: 2 }],
+				['D4', 'eighth', { voice: 2 }]
+			],
+			[
+				[null, 'quarter', { voice: 1 }],
+				['G4', 'quarter', { voice: 1 }],
+				['A4', 'quarter', { voice: 1 }],
+				['B4', 'quarter', { voice: 1 }],
+				[null, 'quarter', { voice: 2 }],
+				['C4', 'quarter', { voice: 2 }],
+				['D4', 'quarter', { voice: 2 }],
+				['E4', 'quarter', { voice: 2 }]
+			]
+		],
+		{ keyFifths: 1, time: { beats: 4, beatType: 4 } }
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
@@ -376,7 +449,8 @@ function appendMeasures(score: Score, source: Score): void {
 				pitch: note.pitch,
 				value: note.value,
 				dots: note.dots,
-				tuplet: note.tuplet ?? undefined
+				tuplet: note.tuplet ?? undefined,
+				voice: note.voice
 			});
 			copiedIdOf.set(note.id, copiedNote.id);
 		}
@@ -395,9 +469,10 @@ function appendMeasures(score: Score, source: Score): void {
 /**
  * What `npm run dev` actually shows: the Phase 0 fixture followed by Slice 1's
  * duration showcase, Slice 4's accidental showcase, Slice 5's tie showcase,
- * Slice 6's slur showcase, Slice 7's key/time-change showcase and Slice 8's
- * barline showcase, so a human can see all six render without disturbing
- * `createDemoScore`'s frozen shape (see the comment on it above).
+ * Slice 6's slur showcase, Slice 7's key/time-change showcase, Slice 8's
+ * barline showcase and M2 Slice 1's two-voice showcase, so a human can see
+ * all seven render without disturbing `createDemoScore`'s frozen shape (see
+ * the comment on it above).
  */
 export function createFullDemoScore(): Score {
 	const score = createDemoScore();
@@ -407,5 +482,6 @@ export function createFullDemoScore(): Score {
 	appendMeasures(score, createSlurShowcaseScore());
 	appendMeasures(score, createKeyTimeChangeShowcaseScore());
 	appendMeasures(score, createBarlineShowcaseScore());
+	appendMeasures(score, createTwoVoiceShowcaseScore());
 	return score;
 }

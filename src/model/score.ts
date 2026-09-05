@@ -521,15 +521,21 @@ export class Score {
 }
 
 /** One measure written as `[pitchName | null, value, extra?]` triples; `null` is
- *  a rest. `extra` carries dots, a tuplet ratio and/or a tie for the notes
- *  that need them, so a plain literal can stay a 2-tuple. `tiedToNext: true`
- *  marks this note as tied into the *next* note in the same voice, wherever
- *  it ends up (the same measure, or a later one across a barline); see
- *  `buildScore` for how that gets resolved to an actual note id. */
+ *  a rest. `extra` carries dots, a tuplet ratio, a tie and/or a voice for the
+ *  notes that need them, so a plain literal can stay a 2-tuple. `tiedToNext:
+ *  true` marks this note as tied into the *next* note in the same voice,
+ *  wherever it ends up (the same measure, or a later one across a barline);
+ *  see `buildScore` for how that gets resolved to an actual note id.
+ *  `voice` (1-based, matching MusicXML and `Note.voice`'s own default of 1)
+ *  is omitted for every ordinary single-voice literal; a two-voice measure
+ *  (M2 Slice 1) sets it explicitly on the notes that share the measure with
+ *  another voice's notes, in whatever order the literal happens to write
+ *  them in (layout groups by voice itself; a compact literal never needs to
+ *  interleave two voices' notes token-for-token to read naturally). */
 export type MeasureSpec = readonly (readonly [
 	pitch: string | null,
 	value: NoteValue,
-	extra?: { dots?: 0 | 1 | 2; tuplet?: TupletRatio; tiedToNext?: boolean }
+	extra?: { dots?: 0 | 1 | 2; tuplet?: TupletRatio; tiedToNext?: boolean; voice?: number }
 ])[];
 
 /**
@@ -624,7 +630,8 @@ export function buildScore(
 				pitch: pitch === null ? null : parsePitch(pitch),
 				value,
 				dots: extra?.dots,
-				tuplet: extra?.tuplet
+				tuplet: extra?.tuplet,
+				voice: extra?.voice
 			});
 			builtNotes.push(note);
 			if (extra?.tiedToNext) tieRequests.push(note);
