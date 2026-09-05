@@ -286,10 +286,10 @@ tempo change would fit that same shape if built; this milestone
 deliberately does not build it. Slice 1 below is a single score-wide
 tempo, and a mid-score tempo-change field plus its walk-back accessor is
 explicitly punted to a later phase since nothing currently in scope
-needs it. Finally, per this file's own M5 entry, a visible playback
-cursor is explicitly M5's job, not this one; nothing below draws or
+needs it. Finally, per this file's own M4 entry, a visible playback
+cursor is explicitly M4's job, not this one; nothing below draws or
 tracks a cursor, only schedules and produces audio, with Slice 6
-exposing the minimal position hook M5 will eventually consume.
+exposing the minimal position hook M4 will eventually consume.
 
 **Acceptance criteria (whole milestone):** all 6 slices' criteria below
 pass; `npm run check`/`test`/`build` stay green throughout.
@@ -392,9 +392,9 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       seconds) and an onset callback fired as each event starts, built
       directly off Slice 3's scheduler loop rather than a separate
       polling mechanism. This is deliberately the full extent of this
-      milestone's involvement with a "cursor": per this file's own M5
+      milestone's involvement with a "cursor": per this file's own M4
       entry, drawing or moving a visual playback cursor on the score is
-      M5's job once this engine exists, not this milestone's; this
+      M4's job once this engine exists, not this milestone's; this
       slice only makes the underlying position observable, it draws
       nothing. Acceptance: unit tests assert the position query returns
       the correct elapsed time mid-playback and after a pause/seek, and
@@ -411,26 +411,36 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       milestone's intro above, since it is scoped against M2's planned
       shape rather than built code.
 
-### M4 — Phase 4: Pagination [ ]
-
-Est. 1-2 months. Casting measures into systems and systems into pages,
-system/page breaks, part-name indent. Unscoped; M0 already built basic
-measure-to-system casting-off as demo-driven layout work, not a start on
-this milestone's full scope (page casting-off, breaks, indent remain open).
-
-### M5 — Phase 5: Interaction layer [ ]
+### M4 — Phase 4: Interaction layer [ ]
 
 Est. 1-2 months. Own hit-testing, selection/playback cursors, follow-scroll,
 zoom, replacing what E2/E4/E7 currently read off OSMD
 (`GetNearestNote`/`osmd.cursors`/`MeasureList`). Playback cursors depend on
-M3's audio engine existing. Unscoped.
+M3's audio engine existing.
 
-### M6 — Phase 6: Reparity with E2-E12 [ ]
+Also scope (added 2026-09-05, folded in from the now-dropped pagination
+milestone, see Log): the human's workflow for an OMR-derived score is view
+the original scanned PDF, play/interact in this engine's own engraved
+score, and wants the cursor to eventually work on the PDF too, i.e. a
+synced position marker on a separate PDF reference pane as playback/
+selection advances in the engraved score. This engine stays PDF/format-
+agnostic per E13's own decisions, so it does not render or align to a PDF
+itself; its job here is exposing enough position/timing data (measure
+index, onset time, note bounding box) for a host app to drive that sync
+externally. The host-side half of this (rendering the PDF pane, page-level
+scroll-to-sync, and any finer note-level pixel mapping) is Divisi's own
+`divisi-omr-editor` plan, not this repo's — see that plan's E9 (per-page
+measure offsets) and E12 (playback follows the PDF, page-level only for
+now; true note-level position on the scan is a separate, harder backlog
+item there, blocked on pixel-box data the OMR pipeline currently discards).
+Unscoped.
+
+### M5 — Phase 5: Reparity with E2-E12 [ ]
 
 Est. 1-2 months. Re-port seam markers, measure-range selection, undo/redo;
 MusicXML import (Audiveris output) and export. Unscoped.
 
-### M7 — Phase 7: Real-world edge cases [ ]
+### M6 — Phase 6: Real-world edge cases [ ]
 
 Ongoing, open-ended. Lyrics, repeats/endings/codas, grace notes,
 articulations, cross-page ties, and the choral-scan edge cases already
@@ -997,9 +1007,22 @@ divisi splits). Unscoped.
   M2's scoping was). Split into 6 ordered slices: tempo model; a
   per-voice/per-staff playback timeline collapsing tied chains into
   single onsets; a Web Audio lookahead scheduler; minimal oscillator
-  synthesis; play/pause/stop/seek transport; a position hook for M5's
+  synthesis; play/pause/stop/seek transport; a position hook for M4's
   future cursor. Necessarily more speculative than M1's/M2's own
   scoping passes, since M2 (the staff/voice/part model M3's timeline and
   multi-voice onset mapping depend on) is still only Slice 1 of 6, so
   this was scoped against M2's planned shape rather than built code and
   will need re-checking once M2 actually lands.
+- 2026-09-05: Dropped the pagination milestone (was M4) and folded its
+  concern into the interaction layer (renumbered M5->M4). Print-style
+  casting into fixed pages doesn't serve a continuous-scroll web app; the
+  real need, per the human, is that their OMR workflow views the original
+  scanned PDF while playing/interacting in this engine's own engraved
+  score, and the cursor should eventually work on the PDF too (a synced
+  position marker there, not just a scrolled-to page). That's a position-
+  data-exposure job for M4's cursor work, not a pagination job; this engine
+  stays PDF-agnostic and leaves the actual PDF rendering/alignment to
+  `divisi-omr-editor`'s own plan (its E9/E12 already do page-level sync;
+  note-level pixel mapping is a harder, separate item tracked there, not
+  here, since it's blocked on OMR pixel-box data the pipeline currently
+  discards). Old M5-M7 renumbered to M4-M6 accordingly.
