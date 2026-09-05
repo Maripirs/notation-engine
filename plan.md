@@ -199,7 +199,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       scoped to one staff's one measure leaving every other
       staff/measure's ops untouched; demo shows the same pitches
       rendering correctly under treble, bass, and treble-8 clefs.
-- [ ] **Slice 4 — Multi-staff system layout.** `layoutScore`'s
+- [x] **Slice 4 — Multi-staff system layout.** `layoutScore`'s
       per-system loop gains a nested per-staff pass stacking N staves'
       `staffTopY`s tightly within one system (today exactly one staff
       per system); each staff draws its own clef/key-signature header
@@ -1101,3 +1101,33 @@ divisi splits). Unscoped.
   identical to treble but for the small "8") before committing. 229 tests
   pass (up from 215); bench unchanged (0.278-0.331ms scoped edit vs
   0.918-25.725ms full redraw across 4-124 measures).
+- 2026-09-05: M2 Slice 4 (multi-staff system layout) done. `layoutScore`'s
+  naive Slice 3 placeholder (stack each staff's whole independent block)
+  is replaced with real interleaved layout: within each system, every
+  staff stacks tightly (`SPACING.staffGap`) with the next, sharing one
+  barline per measure column that spans the full staff-group height
+  (`barlineSpan`), while each staff still draws its own clef/key header.
+  System membership is decided once, off staff 0, since a shared system
+  needs every staff to agree where it starts/ends; every staff must now
+  have the same measure count (checked, not assumed). A narrower staff's
+  column pads its own trailing space to match the widest staff at that
+  column, rather than rescaling notes. Splitting the shared barline into
+  one segment per staff (not one staff owning the whole tall line) is
+  what keeps this compatible with region-scoped redraw; doing that split
+  at the raw geometric midpoint of the staff gap turned out insufficient
+  on its own, since `measureRegion`'s constant antialiasing bleed on
+  every edge would make the two staves' regions overlap by 2px at that
+  shared point, a genuine redraw-correctness bug. Fixed by reserving a
+  neutral strip on each segment's neighbour-facing side sized to exactly
+  cancel that bleed. First attempt (subagent) got most of the
+  restructure right but was interrupted by host-sleep infra mid-edit,
+  leaving three compile errors; a second subagent, briefed with the
+  broken diff, finished the plumbing and caught the bleed-overlap bug
+  above while writing the shared-barline test. Claude reviewed the full
+  diff, ran check/test/build/bench directly, and independently rendered
+  the new grand-staff showcase (treble/D major over bass/Eb major, three
+  systems) to confirm by eye: continuous barlines through both staves at
+  every column, independent key signatures, correct column alignment
+  despite very different rhythmic density per staff. 236 tests pass (up
+  from 229); bench unchanged (0.277-0.326ms scoped edit vs
+  0.953-26.407ms full redraw across 4-124 measures).
