@@ -375,6 +375,68 @@ describe('ties', () => {
 	});
 });
 
+describe('Staff/Part model (M2 Slice 3)', () => {
+	it('gives every score a default staff 0, treble, with plain buildScore/appendMeasure landing there', () => {
+		const score = buildScore([[['C4', 'quarter']]]);
+		expect(score.staves).toHaveLength(1);
+		expect(score.staves[0]!.index).toBe(0);
+		expect(score.staves[0]!.clef).toBe('treble');
+		expect(score.clef).toBe('treble');
+		expect(score.staves[0]!.measures).toBe(score.measures);
+		expect(score.measures[0]!.staffIndex).toBe(0);
+		expect(score.parts).toEqual([{ staffIndices: [0] }]);
+	});
+
+	it('lets ScoreOptions.clef choose staff 0\'s own clef', () => {
+		const score = buildScore([[['G2', 'quarter']]], { clef: 'bass' });
+		expect(score.staves[0]!.clef).toBe('bass');
+		expect(score.clef).toBe('bass');
+	});
+
+	it('appendStaff adds a further staff with its own clef and independent measures', () => {
+		const score = buildScore([[['C4', 'quarter']]]);
+		const bass = score.appendStaff('bass');
+		expect(score.staves).toHaveLength(2);
+		expect(bass.index).toBe(1);
+		expect(bass.clef).toBe('bass');
+		expect(bass.measures).toHaveLength(0);
+
+		const m = score.appendMeasure(1);
+		expect(m.staffIndex).toBe(1);
+		expect(m.index).toBe(0);
+		score.appendNote(m, { pitch: null, value: 'quarter' });
+		// The new staff's own measures are untouched by, and do not touch,
+		// staff 0's: each staff owns its own independent measures array.
+		expect(bass.measures).toHaveLength(1);
+		expect(score.staves[0]!.measures).toHaveLength(1);
+		expect(score.measures).toHaveLength(1);
+	});
+
+	it('addPart records a grouping without drawing anything (Slice 5\'s own job)', () => {
+		const score = buildScore([[['C4', 'quarter']]]);
+		score.appendStaff('bass');
+		const part = score.addPart([0, 1], 'Piano');
+		expect(score.parts).toEqual([{ staffIndices: [0] }, { name: 'Piano', staffIndices: [0, 1] }]);
+	});
+
+	it('keyFifthsAt/timeAt/endBarlineAt default to staff 0 but resolve a named staff independently', () => {
+		const score = buildScore([{ notes: [['G4', 'quarter']], keyFifths: 2 }], { keyFifths: 1 });
+		score.appendStaff('bass');
+		const m0 = score.appendMeasure(1);
+		score.appendNote(m0, { pitch: null, value: 'quarter' });
+		const m1 = score.appendMeasure(1);
+		score.appendNote(m1, { pitch: null, value: 'quarter' });
+
+		// Staff 0 (default, matching the no-staffIndex call) sees its own key
+		// change; staff 1 has none of its own, so it walks back to the score's
+		// initial key instead, entirely independently of staff 0's.
+		expect(score.keyFifthsAt(0)).toBe(2);
+		expect(score.keyFifthsAt(0, 1)).toBe(1);
+		expect(score.timeAt(0, 1)).toEqual({ beats: 4, beatType: 4 });
+		expect(score.endBarlineAt(1, 1)).toBe('final');
+	});
+});
+
 describe('slurs', () => {
 	it('addSlur wires a span between two arbitrary-pitch notes, no shared pitch required', () => {
 		const score = buildScore([

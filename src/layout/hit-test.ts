@@ -22,6 +22,10 @@ export function containsPoint(rect: Rect, x: number, y: number): boolean {
 export interface HitResult {
 	readonly noteId: NoteId;
 	readonly measureIndex: number;
+	/** Which staff (`Score.staves`) `measureIndex` belongs to (M2 Slice 3's
+	 *  `(staffIndex, measureIndex)` addressing scheme). 0 for every score
+	 *  before this slice, and for the still-common single-staff case. */
+	readonly staffIndex: number;
 }
 
 /**
@@ -40,7 +44,7 @@ export function hitTest(layout: LaidOutScore, x: number, y: number): HitResult |
 		if (!containsPoint(measure.region, x, y)) continue;
 		for (const note of measure.notes) {
 			if (containsPoint(note.bounds, x, y)) {
-				return { noteId: note.id, measureIndex: measure.index };
+				return { noteId: note.id, measureIndex: measure.index, staffIndex: measure.staffIndex };
 			}
 		}
 	}

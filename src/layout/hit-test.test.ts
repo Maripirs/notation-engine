@@ -23,7 +23,7 @@ describe('hitTest', () => {
 		] as const) {
 			const target = centre(measureIndex, noteIndex);
 			const hit = hitTest(layout, target.x, target.y);
-			expect(hit).toEqual({ noteId: target.id, measureIndex });
+			expect(hit).toEqual({ noteId: target.id, measureIndex, staffIndex: 0 });
 		}
 	});
 
@@ -66,6 +66,6 @@ describe('hitTest across systems', () => {
 		// accident.
 		expect(y).toBeGreaterThan(layout.systems[0]!.topY + 4 * layout.staffSpacePx);
 
-		expect(hitTest(layout, x, y)).toEqual({ noteId: note.id, measureIndex });
+		expect(hitTest(layout, x, y)).toEqual({ noteId: note.id, measureIndex, staffIndex: 0 });
 	});
 });

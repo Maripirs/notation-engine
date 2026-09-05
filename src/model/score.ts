@@ -65,6 +65,18 @@ export type NoteId = string;
  */
 export type BarlineType = 'normal' | 'double' | 'final' | 'repeatStart' | 'repeatEnd';
 
+/**
+ * The clefs this engine draws. `treble` and `bass` are the ordinary G and F
+ * clefs. `treble8` is the "octave treble" (vocal tenor) clef: notated on
+ * exactly the same lines and spaces as plain `treble` (only the small "8"
+ * beneath the glyph differs), but *sounding* an octave lower than written.
+ * This engine has no sounding-pitch/playback concept yet (that is M3's
+ * job), so nothing here ever needs to shift a `treble8` note's pitch down an
+ * octave; `treble8` and `treble` share every position table in `layout.ts`
+ * and differ only in which clef glyph gets drawn.
+ */
+export type ClefType = 'treble' | 'bass' | 'treble8';
+
 export interface NoteSpec {
 	/** `null` means a rest. Rests are notes with no pitch rather than a separate type,
 	 *  because every other property (duration, voice, position in the measure, being
@@ -152,8 +164,23 @@ export class Note {
 }
 
 export class Measure {
-	/** Position in the score, 0-based. Kept in sync by `Score`. */
+	/**
+	 * Position within its own staff, 0-based. Kept in sync by `Score`/`Staff`.
+	 *
+	 * Before M2 Slice 3 this was a single score-wide flat address (every score
+	 * had exactly one implicit staff, so "position in the score" and "position
+	 * in the staff" were the same number). Now a measure is addressed by this
+	 * *together with* `staffIndex`: `layout.ts`'s `LaidOutMeasure`,
+	 * `relayoutMeasure` and `CanvasRenderer.redrawMeasure` all take the pair,
+	 * not this field alone. A single-staff score (every score before this
+	 * slice, and still the common case) is the `staffIndex`-always-0
+	 * degenerate case, with this field's own meaning unchanged.
+	 */
 	index: number;
+	/** Which staff (`Score.staves`) this measure belongs to. See `index`'s own
+	 *  comment on the `(staffIndex, index)` addressing pair this slice
+	 *  introduces. */
+	readonly staffIndex: number;
 	readonly notes: Note[] = [];
 	/**
 	 * A key signature change taking effect starting at this measure.
@@ -202,9 +229,57 @@ export class Measure {
 	 */
 	startBarline?: 'repeatStart';
 
-	constructor(index: number) {
+	constructor(index: number, staffIndex: number) {
 		this.index = index;
+		this.staffIndex = staffIndex;
 	}
+}
+
+/**
+ * One staff (a five-line stave): its own clef and its own sequence of
+ * `Measure`s. A `Part` (below) groups one or more staves belonging to the
+ * same instrument or voice (e.g. a piano's two staves, or one SATB voice's
+ * single staff).
+ *
+ * Introduced whole by M2 Slice 3: before it, `Score` had exactly one
+ * implicit staff (a fixed, always-treble `clef` field, and `measures` as one
+ * flat array), which is now `staves[0]`, created by `Score`'s own
+ * constructor so every score before this slice, and the still-common
+ * single-staff case, needs no code change to keep working. Multiple staves
+ * rendering together as one *visually joined* system (staves stacked
+ * tightly, sharing barlines) is M2 Slice 4's job ("Multi-staff system
+ * layout"), not this one: `layout.ts`'s `layoutScore` lays each staff out
+ * independently and merely stacks the results, a deliberately naive
+ * placeholder (see its own comment) that exists only so this slice's
+ * `(staffIndex, measureIndex)` addressing has something real, multi-staff,
+ * to prove region-scoped redraw against.
+ */
+export class Staff {
+	readonly index: number;
+	clef: ClefType;
+	readonly measures: Measure[] = [];
+
+	constructor(index: number, clef: ClefType = 'treble') {
+		this.index = index;
+		this.clef = clef;
+	}
+}
+
+/**
+ * A group of one or more staves belonging to the same instrument or voice
+ * part, e.g. one SATB voice's single staff or a piano's two staves.
+ *
+ * Only the grouping itself is modelled here. The brace/bracket glyph and
+ * vertical span a real score draws at a system's start for a multi-staff
+ * part, plus the part-name label, is M2 Slice 5's own scope ("Part grouping
+ * + braces/brackets"); nothing here draws either one yet. This slice needs
+ * `Part` to exist as a real, constructible grouping so `Score` can express
+ * "these staves belong together" at all, which is the foundation Slice 5
+ * draws on, not a rendering feature in its own right yet.
+ */
+export interface Part {
+	readonly name?: string;
+	readonly staffIndices: readonly number[];
 }
 
 export interface TimeSignature {
@@ -273,6 +348,11 @@ export interface ScoreOptions {
 	/** MusicXML `fifths`: positive counts sharps, negative flats. */
 	readonly keyFifths?: number;
 	readonly time?: TimeSignature;
+	/** Clef of `Score`'s own first staff (`staves[0]`), created by the
+	 *  constructor. Defaults to `'treble'`, matching every score built before
+	 *  M2 Slice 3. Add further staves (with their own clefs) via
+	 *  `appendStaff`. */
+	readonly clef?: ClefType;
 }
 
 /**
@@ -291,8 +371,28 @@ export interface Slur {
 }
 
 export class Score {
-	/** One clef for the whole score in Phase 0. Other clefs are Phase 1. */
-	readonly clef = 'treble' as const;
+	/**
+	 * Every staff in the score (M2 Slice 3). The constructor always creates
+	 * `staves[0]`, so a single-staff score (every score before this slice, and
+	 * still the common case) never has to think about this array at all;
+	 * `appendStaff` adds more.
+	 */
+	readonly staves: Staff[];
+	/**
+	 * Every part in the score, each grouping one or more `staves` indices. The
+	 * constructor creates one default part holding just `staves[0]`, mirroring
+	 * `staves` itself: a single-staff, single-part score (every score before
+	 * this slice) needs no code change to keep that shape. See `Part`'s own
+	 * comment for what this does and does not do yet.
+	 */
+	readonly parts: Part[];
+	/** `staves[0]`'s own clef, kept as a convenience accessor so code (and any
+	 *  external reader) written against "the score's clef" from before M2
+	 *  Slice 3 still resolves to something sensible; a genuinely multi-staff
+	 *  score should read `staves[i].clef` directly instead. */
+	get clef(): ClefType {
+		return this.staves[0]!.clef;
+	}
 	/** The key in force before any measure states its own change; equivalent to
 	 *  a change "at measure -1". Read this directly only when literally asking
 	 *  about the score's starting point; `keyFifthsAt` is what answers "what
@@ -300,12 +400,27 @@ export class Score {
 	keyFifths: number;
 	/** Same idea as `keyFifths`, for the time signature. See `timeAt`. */
 	time: TimeSignature;
-	readonly measures: Measure[] = [];
+	/**
+	 * `staves[0]`'s own measures, kept as a convenience accessor for the same
+	 * reason `clef` is: every score built before M2 Slice 3 (and `buildScore`'s
+	 * own compact literal, still single-staff-only) reads/writes this directly,
+	 * and it stays the exact degenerate case of `staves[0].measures` for a
+	 * single-staff score. A genuinely multi-staff caller reads `staves[i]
+	 * .measures` instead.
+	 */
+	get measures(): Measure[] {
+		return this.staves[0]!.measures;
+	}
 	/** Every slur in the score, in the order `addSlur` was called. Layout reads
 	 *  this directly (not through some per-measure index) since a slur's own
 	 *  measure range has to be worked out fresh from its two note ids anyway,
 	 *  the same reason a tie's crossing-a-barline case reads `Note.tiedToId`
-	 *  and `tiedFromNote` rather than a precomputed span. */
+	 *  and `tiedFromNote` rather than a precomputed span.
+	 *
+	 * Scope cut (M2 Slice 3): a slur's two ends are validated against
+	 * `notesInOrder()`, which (see that method's own comment) only walks
+	 * `staves[0]`'s notes. A slur between two notes on a non-zero staff is
+	 * out of this slice's scope; nothing here builds or exercises one. */
 	readonly slurs: Slur[] = [];
 
 	// Note id -> owning measure. Maintained on insert so an edit can answer
@@ -327,11 +442,39 @@ export class Score {
 	constructor(options: ScoreOptions = {}) {
 		this.keyFifths = options.keyFifths ?? 0;
 		this.time = options.time ?? { beats: 4, beatType: 4 };
+		this.staves = [new Staff(0, options.clef ?? 'treble')];
+		this.parts = [{ staffIndices: [0] }];
 	}
 
-	appendMeasure(): Measure {
-		const measure = new Measure(this.measures.length);
-		this.measures.push(measure);
+	/** Add a new staff (default clef `'treble'`) and return it. The score's
+	 *  constructor always creates `staves[0]`; this is how a score grows a
+	 *  second or later staff, e.g. a piano's two staves or an additional SATB
+	 *  voice. Does not add the new staff to any `Part`: a caller wanting a
+	 *  multi-staff part (a piano's brace, a choir's bracket) still has to add
+	 *  or edit a `Part` itself, since a bare `appendStaff` call has no way to
+	 *  guess whether the new staff joins an existing part or starts its own. */
+	appendStaff(clef: ClefType = 'treble'): Staff {
+		const staff = new Staff(this.staves.length, clef);
+		this.staves.push(staff);
+		return staff;
+	}
+
+	/** Add a new `Part` grouping `staffIndices`, returning it. See `Part`'s own
+	 *  comment: this only records the grouping, it draws no brace/bracket
+	 *  (Slice 5's job). */
+	addPart(staffIndices: readonly number[], name?: string): Part {
+		const part: Part = { name, staffIndices };
+		this.parts.push(part);
+		return part;
+	}
+
+	/** Append a measure to a staff (`staves[0]` by default, preserving every
+	 *  single-staff call site from before M2 Slice 3 unchanged) and return it. */
+	appendMeasure(staffIndex = 0): Measure {
+		const staff = this.staves[staffIndex];
+		if (!staff) throw new Error(`appendMeasure: no staff at index ${staffIndex}`);
+		const measure = new Measure(staff.measures.length, staffIndex);
+		staff.measures.push(measure);
 		return measure;
 	}
 
@@ -342,23 +485,29 @@ export class Score {
 	 * key right now" (layout's key-aware accidental suppression, the courtesy
 	 * key signature at a change) calls this rather than walking `measures`
 	 * itself, so the walk-back rule lives in exactly one place.
+	 *
+	 * `staffIndex` (M2 Slice 3, default 0) walks back through *that staff's
+	 * own* measures: every score before this slice only ever had staff 0, so
+	 * the default reproduces the exact old single-argument behaviour.
 	 */
-	keyFifthsAt(measureIndex: number): number {
+	keyFifthsAt(measureIndex: number, staffIndex = 0): number {
+		const measures = this.staves[staffIndex]?.measures ?? [];
 		for (let i = measureIndex; i >= 0; i--) {
-			const explicit = this.measures[i]?.keyFifths;
+			const explicit = measures[i]?.keyFifths;
 			if (explicit !== undefined) return explicit;
 		}
 		return this.keyFifths;
 	}
 
 	/** Same walk-back as `keyFifthsAt`, for the time signature in force at
-	 *  `measureIndex`. Layout uses this for beat grouping and the courtesy time
-	 *  signature at a change; `validateMeasure` uses it to check a measure
-	 *  against the capacity that actually applies to it, not the score's
-	 *  initial one, once a measure has changed it. */
-	timeAt(measureIndex: number): TimeSignature {
+	 *  `measureIndex` (of `staffIndex`, default 0). Layout uses this for beat
+	 *  grouping and the courtesy time signature at a change; `validateMeasure`
+	 *  uses it to check a measure against the capacity that actually applies to
+	 *  it, not the score's initial one, once a measure has changed it. */
+	timeAt(measureIndex: number, staffIndex = 0): TimeSignature {
+		const measures = this.staves[staffIndex]?.measures ?? [];
 		for (let i = measureIndex; i >= 0; i--) {
-			const explicit = this.measures[i]?.time;
+			const explicit = measures[i]?.time;
 			if (explicit !== undefined) return explicit;
 		}
 		return this.time;
@@ -382,12 +531,17 @@ export class Score {
 	 * no explicit annotation required, but a score that *does* annotate its
 	 * last measure (e.g. `endBarline: 'double'`) is honoured over the
 	 * automatic default.
+	 *
+	 * `staffIndex` (M2 Slice 3, default 0) resolves the boundary within *that
+	 * staff's own* measures, the same additive default every other staff-aware
+	 * method here uses.
 	 */
-	endBarlineAt(measureIndex: number): BarlineType {
-		if (this.measures[measureIndex + 1]?.startBarline === 'repeatStart') return 'repeatStart';
-		const explicit = this.measures[measureIndex]?.endBarline;
+	endBarlineAt(measureIndex: number, staffIndex = 0): BarlineType {
+		const measures = this.staves[staffIndex]?.measures ?? [];
+		if (measures[measureIndex + 1]?.startBarline === 'repeatStart') return 'repeatStart';
+		const explicit = measures[measureIndex]?.endBarline;
 		if (explicit !== undefined) return explicit;
-		return measureIndex === this.measures.length - 1 ? 'final' : 'normal';
+		return measureIndex === measures.length - 1 ? 'final' : 'normal';
 	}
 
 	/** Append a note (or rest) to a measure, returning it so callers can keep its id. */
@@ -414,6 +568,14 @@ export class Score {
 	 * genuinely comes before its end; a tie never needed this because its
 	 * target is always a single note named directly, never "whatever comes
 	 * between two others."
+	 *
+	 * Scope cut (M2 Slice 3): reads `this.measures`, i.e. `staves[0]` only.
+	 * Multiple staves each have their own independent note sequence, so a
+	 * single flat "score order" spanning all of them is not obviously even the
+	 * right shape (M3's own scoping notes flag this same question for
+	 * playback); this slice does not answer it, and nothing here needs to,
+	 * since ties and slurs (this method's only two callers) are only ever
+	 * built within one staff today.
 	 */
 	notesInOrder(): readonly Note[] {
 		return this.measures.flatMap((measure) => measure.notes);
@@ -506,10 +668,23 @@ export class Score {
 	/**
 	 * The one edit op Phase 0 implements: move a note by whole semitones.
 	 *
-	 * Returns the index of the measure that changed, or `null` if nothing did
-	 * (unknown id, or the note is a rest). That return value is the contract the
+	 * Returns the index of the measure that changed (within *its own staff*;
+	 * see `Measure.index`'s own comment), or `null` if nothing did (unknown id,
+	 * or the note is a rest). That return value is the contract the
 	 * incremental redraw hangs off: the caller re-lays-out and repaints exactly
 	 * the measures an edit reports, and no others.
+	 *
+	 * Scope cut (M2 Slice 3): still returns a bare measure index, not a
+	 * `{staffIndex, measureIndex}` pair, even though `relayoutMeasure`/
+	 * `CanvasRenderer.redrawMeasure` now both need the pair to fully address a
+	 * measure. Every existing caller only ever edits staff 0, where the bare
+	 * index is already the whole answer; a caller editing a non-zero staff can
+	 * recover its `staffIndex` from `measureOfNote(id)?.staffIndex` (new this
+	 * slice) before calling `transposeNote`, so widening this return type is
+	 * not needed to make multi-staff edits addressable, only to make them
+	 * marginally more convenient. Left as its own follow-up rather than done
+	 * here, since it would touch every existing call site for no behaviour
+	 * change on the staff-0 case they all still are.
 	 */
 	transposeNote(id: NoteId, semitones: number): number | null {
 		const measure = this.#measureOfNote.get(id);

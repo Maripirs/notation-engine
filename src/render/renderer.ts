@@ -97,6 +97,14 @@ export class CanvasRenderer {
 	 * changed so the caller can redraw exactly those. Selection is a render-time
 	 * concern, not a model one: nothing about the music changes when a user
 	 * clicks a note.
+	 *
+	 * Scope cut (M2 Slice 3): still returns bare measure indices, not
+	 * `(staffIndex, index)` pairs, so a caller combining this with
+	 * `redrawMeasures` implicitly redraws staff 0 only. Every score before
+	 * this slice only ever had staff 0, so nothing regresses; a genuinely
+	 * multi-staff selection UI would need this widened the same way
+	 * `redrawMeasure`/`redrawMeasures` were, left for whoever first builds one
+	 * (M2 Slice 4+ territory, not this slice's own scope).
 	 */
 	setSelection(noteId: NoteId | null): number[] {
 		if (noteId === this.#selectedNoteId) return [];
@@ -137,22 +145,30 @@ export class CanvasRenderer {
 	 * ops puts all of them back, because layout assigns every one of those to
 	 * the measure that owns the pixels. Neighbouring measures are untouched
 	 * because regions never overlap horizontally.
+	 *
+	 * `staffIndex` (M2 Slice 3, default 0) completes the `(staffIndex, index)`
+	 * pair `LaidOutMeasure` now carries, so a multi-staff layout redraws
+	 * exactly one staff's one measure, leaving every other staff's own
+	 * measures (which may well reuse the same `index`, since each staff
+	 * numbers its own measures from 0) untouched. Every call site from before
+	 * this slice omits it and keeps redrawing staff 0, exactly as before.
 	 */
-	redrawMeasure(index: number): void {
+	redrawMeasure(index: number, staffIndex = 0): void {
 		this.lastRedrawnMeasures = [];
 		this.lastRedrawnRegions = [];
-		this.#redrawMeasureInternal(index);
+		this.#redrawMeasureInternal(index, staffIndex);
 	}
 
-	/** Repaint several measures, e.g. when moving a selection between them. */
-	redrawMeasures(indices: readonly number[]): void {
+	/** Repaint several measures of one staff, e.g. when moving a selection
+	 *  between them. See `redrawMeasure`'s own comment on `staffIndex`. */
+	redrawMeasures(indices: readonly number[], staffIndex = 0): void {
 		this.lastRedrawnMeasures = [];
 		this.lastRedrawnRegions = [];
-		for (const index of indices) this.#redrawMeasureInternal(index);
+		for (const index of indices) this.#redrawMeasureInternal(index, staffIndex);
 	}
 
-	#redrawMeasureInternal(index: number): void {
-		const measure = this.#layout.measures.find((m) => m.index === index);
+	#redrawMeasureInternal(index: number, staffIndex: number): void {
+		const measure = this.#layout.measures.find((m) => m.staffIndex === staffIndex && m.index === index);
 		if (!measure) return;
 		this.#paintBackground(measure.region);
 		this.#ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;

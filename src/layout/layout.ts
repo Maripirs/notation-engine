@@ -18,7 +18,7 @@
 // region-scoped redraw possible at all; that property still holds; it just no
 // longer comes from a naive fixed-plus-linear formula.
 
-import type { Measure, Note, NoteId, NoteValue, Score, Slur, TimeSignature } from '../model/score.js';
+import type { ClefType, Measure, Note, NoteId, NoteValue, Score, Slur, TimeSignature } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -137,7 +137,19 @@ const SPACING = {
 	 * none of that yet, so a constant generous enough for stems and a few
 	 * ledger lines on either side is the naive-but-correct stand-in.
 	 */
-	systemGap: 6
+	systemGap: 6,
+	/**
+	 * Blank between one staff's own whole laid-out block (every one of its
+	 * systems) and the next staff's, staff spaces (M2 Slice 3). A generous
+	 * fixed gap, the same naive-but-correct spirit as `systemGap`: real
+	 * multi-staff engraving instead stacks staves *tightly* within one shared
+	 * system (M2 Slice 4's own job, "Multi-staff system layout"), leaving only
+	 * as much room as each staff's own tallest ink needs. This is deliberately
+	 * not that: `layoutScore` lays each staff out as an independent,
+	 * self-contained block and stacks whole blocks, so this gap only has to
+	 * clear two whole staves' worth of margin, not two systems' worth.
+	 */
+	staffBlockGap: 10
 } as const;
 
 /**
@@ -326,24 +338,85 @@ const SLUR_NOTE_GAP = 0.4;
  *  between its two ends, not just connect two adjacent noteheads. */
 const SLUR_ROOF_CLEARANCE = 1.3;
 
-/** Diatonic index of E4, the bottom line of a treble staff. */
-const TREBLE_BOTTOM_LINE = diatonicIndex({ step: 'E', alter: 0, octave: 4 });
-/** Diatonic index of B4, the middle line, which decides stem direction. */
-const TREBLE_MIDDLE_LINE = diatonicIndex({ step: 'B', alter: 0, octave: 4 });
-/** Diatonic index of F5, the top line. */
-const TREBLE_TOP_LINE = diatonicIndex({ step: 'F', alter: 0, octave: 5 });
+/**
+ * The three diatonic staff positions everything clef-aware in this file
+ * hangs off: the bottom line, the middle line (which decides stem direction
+ * and ties/slurs' fallback direction), and the top line.
+ *
+ * Generalizes what were, before M2 Slice 3, three fixed treble-only module
+ * constants (`TREBLE_BOTTOM_LINE`/`_MIDDLE_LINE`/`_TOP_LINE`); every function
+ * that used to close over one of those directly now reads it off a
+ * `MeasureContext`'s own `lines` field (`ctx.lines.bottomLine`, etc.) or
+ * takes it as an explicit parameter where no `ctx` is in scope, so the same
+ * ledger-line, stem-direction and tie/slur-direction math already proven
+ * correct for treble applies unchanged to any clef, just against different
+ * reference lines.
+ */
+interface ClefLines {
+	readonly bottomLine: number;
+	readonly middleLine: number;
+	readonly topLine: number;
+}
 
-/** Staff positions of key-signature accidentals on a treble staff, in the order
- *  they are written. Other clefs put them elsewhere; other clefs are Phase 1. */
+/**
+ * `ClefLines` for each supported clef. `treble8` (the vocal-tenor "octave
+ * treble" clef) shares plain `treble`'s table exactly: it is notated on the
+ * very same lines and spaces (only the small "8" beneath the clef glyph
+ * differs; see `ClefType`'s own comment in `model/score.ts`), so nothing
+ * about note/ledger-line placement changes for it, only `layoutClef`'s own
+ * glyph choice.
+ */
+const CLEF_LINES: Readonly<Record<ClefType, ClefLines>> = {
+	treble: {
+		bottomLine: diatonicIndex({ step: 'E', alter: 0, octave: 4 }),
+		middleLine: diatonicIndex({ step: 'B', alter: 0, octave: 4 }),
+		topLine: diatonicIndex({ step: 'F', alter: 0, octave: 5 })
+	},
+	treble8: {
+		bottomLine: diatonicIndex({ step: 'E', alter: 0, octave: 4 }),
+		middleLine: diatonicIndex({ step: 'B', alter: 0, octave: 4 }),
+		topLine: diatonicIndex({ step: 'F', alter: 0, octave: 5 })
+	},
+	bass: {
+		bottomLine: diatonicIndex({ step: 'G', alter: 0, octave: 2 }),
+		middleLine: diatonicIndex({ step: 'D', alter: 0, octave: 3 }),
+		topLine: diatonicIndex({ step: 'A', alter: 0, octave: 3 })
+	}
+};
+
+/** Staff positions of key-signature accidentals, in the order they are
+ *  written. The *step* order is universal (every clef writes a sharp key
+ *  signature as F, C, G, D, A, E, B and a flat one as B, E, A, D, G, C, F);
+ *  which line or space each one actually lands on is clef-specific, hence
+ *  `KEY_SIGNATURE_OCTAVES` below rather than a single octave list here. */
 const KEY_SIGNATURE_POSITIONS: Readonly<Record<'sharp' | 'flat', readonly Step[]>> = {
 	sharp: ['F', 'C', 'G', 'D', 'A', 'E', 'B'],
 	flat: ['B', 'E', 'A', 'D', 'G', 'C', 'F']
 };
-const KEY_SIGNATURE_OCTAVES: Readonly<Record<'sharp' | 'flat', readonly number[]>> = {
-	// F5 C5 G5 D5 A4 E5 B4
-	sharp: [5, 5, 5, 5, 4, 5, 4],
-	// B4 E5 A4 D5 G4 C5 F4
-	flat: [4, 5, 4, 5, 4, 5, 4]
+/**
+ * Per-clef octave for each step in `KEY_SIGNATURE_POSITIONS`, i.e. which
+ * actual line/space that accidental lands on for that clef, standard
+ * engraving convention. `treble8` shares `treble`'s own table for the same
+ * reason `CLEF_LINES` does: identical notated positions, only the clef glyph
+ * differs.
+ */
+const KEY_SIGNATURE_OCTAVES: Readonly<Record<ClefType, Record<'sharp' | 'flat', readonly number[]>>> = {
+	treble: {
+		// F5 C5 G5 D5 A4 E5 B4
+		sharp: [5, 5, 5, 5, 4, 5, 4],
+		// B4 E5 A4 D5 G4 C5 F4
+		flat: [4, 5, 4, 5, 4, 5, 4]
+	},
+	treble8: {
+		sharp: [5, 5, 5, 5, 4, 5, 4],
+		flat: [4, 5, 4, 5, 4, 5, 4]
+	},
+	bass: {
+		// F3 C3 G3 D3 A2 E3 B2
+		sharp: [3, 3, 3, 3, 2, 3, 2],
+		// B3 E3 A3 D3 G2 C3 F2
+		flat: [3, 3, 3, 3, 2, 3, 2]
+	}
 };
 
 const NOTEHEAD_GLYPHS = {
@@ -415,22 +488,106 @@ const TIME_SIG_DIGITS = [
 ] as const satisfies readonly GlyphName[];
 
 /**
- * Lay a whole score out, casting measures off into systems (staff lines,
- * stacked vertically) as needed.
+ * Lay a whole score out: every staff, each cast off into its own systems
+ * (staff lines, stacked vertically) as needed, then the staves themselves
+ * stacked one below the next.
  *
- * Without `options.systemWidthPx` this keeps Phase 0's original behaviour:
- * one system, forever, however wide the score gets. With it, measures run
- * left to right until the next one would overflow the budget, then a new
- * system starts below (see `planSystems`). Either way the result is built the
- * same way: figure out which measures belong to which system, then lay out
- * each system's measures left to right with that system's own staff top.
+ * Without `options.systemWidthPx` a staff keeps Phase 0's original
+ * behaviour: one system, forever, however wide its music gets. With it,
+ * measures run left to right until the next one would overflow the budget,
+ * then a new system starts below (see `planSystems`). Either way, one
+ * staff's own result is built the same way `layoutScore` always built its
+ * one implicit staff: figure out which measures belong to which system,
+ * then lay out each system's measures left to right with that system's own
+ * staff top (`layoutOneStaff`, below).
+ *
+ * Multiple staves (M2 Slice 3) are laid out independently this way, one at a
+ * time, and simply stacked: each staff's whole self-contained block goes
+ * directly beneath the previous one's, separated by `SPACING.staffBlockGap`.
+ * This is a deliberately naive placeholder, not real multi-staff engraving
+ * (which interleaves staves *within* each system, tightly stacked, sharing
+ * one barline per system-column): that tight interleaving is M2 Slice 4's
+ * own scope ("Multi-staff system layout"), not this one's. What this slice
+ * needs is only that a multi-staff `Score` produces one real, non-
+ * overlapping, multi-staff `LaidOutScore` to prove `(staffIndex,
+ * measureIndex)` addressing and region-scoped redraw against, which naive
+ * stacking already does; a single-staff score (every score before this
+ * slice, and still the common case) is the zero-extra-staves degenerate
+ * case, running this loop once with nothing to stack, reproducing the exact
+ * same result `layoutScore` always produced.
  */
 export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutScore {
 	const ss = options.staffSpacePx ?? DEFAULTS.staffSpacePx;
 	const padding = options.paddingPx ?? DEFAULTS.paddingPx;
 	const fontSizePx = ss * STAFF_SPACES_PER_EM;
 
-	const systemPlans = planSystems(score, ss, padding, options.systemWidthPx);
+	const measures: LaidOutMeasure[] = [];
+	const systems: { measureIndices: number[]; topY: number; spacingScale: number; staffIndex: number }[] = [];
+	let width = 0;
+	let yOffset = 0;
+	let firstStaffTopY = 0;
+
+	for (let staffIndex = 0; staffIndex < score.staves.length; staffIndex++) {
+		const block = layoutOneStaff(score, staffIndex, options, ss, padding);
+		if (staffIndex === 0) firstStaffTopY = block.staffTopY;
+		width = Math.max(width, block.width);
+
+		// `dy === 0` (staff 0, and every single-staff score) skips
+		// `translateMeasure` entirely rather than calling it with a no-op
+		// shift: `layoutOneStaff` already produced the exact final result in
+		// that case, so re-wrapping it here would only allocate fresh, if
+		// numerically identical, objects for no reason.
+		const dy = yOffset;
+		if (dy === 0) {
+			measures.push(...block.measures);
+			systems.push(...block.systems);
+		} else {
+			for (const measure of block.measures) measures.push(translateMeasure(measure, dy));
+			for (const system of block.systems) systems.push({ ...system, topY: system.topY + dy });
+		}
+		yOffset += block.height + SPACING.staffBlockGap * ss;
+	}
+
+	return {
+		width,
+		// The last staff's own trailing gap was added but never used by
+		// anything below it; drop it so the canvas does not end in dead space.
+		height: score.staves.length === 0 ? 0 : yOffset - SPACING.staffBlockGap * ss,
+		staffSpacePx: ss,
+		staffTopY: firstStaffTopY,
+		fontSizePx,
+		measures,
+		systems
+	};
+}
+
+/**
+ * Lay out one staff's own measures, cast off into its own systems, as a
+ * self-contained block starting at `options.paddingPx` from its own top
+ * (i.e. exactly what `layoutScore` produced for the score's one implicit
+ * staff before M2 Slice 3). `layoutScore` calls this once per staff and
+ * stacks the results; see its own comment for why that stacking is a
+ * deliberately naive placeholder rather than real multi-staff layout.
+ */
+function layoutOneStaff(
+	score: Score,
+	staffIndex: number,
+	options: LayoutOptions,
+	ss: number,
+	padding: number
+): {
+	measures: LaidOutMeasure[];
+	systems: { measureIndices: number[]; topY: number; spacingScale: number; staffIndex: number }[];
+	width: number;
+	height: number;
+	staffTopY: number;
+} {
+	const staff = score.staves[staffIndex];
+	if (!staff) throw new Error(`layoutScore: no staff at index ${staffIndex}`);
+	const clef = staff.clef;
+	const lines = CLEF_LINES[clef];
+
+	const systemPlans = planSystems(score, staffIndex, ss, padding, options.systemWidthPx);
 
 	// Lay out against a provisional first staff top of 0 and translate
 	// everything afterwards. Ledger lines, stems and flags can reach well
@@ -444,19 +601,30 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	for (let systemIndex = 0; systemIndex < systemPlans.length; systemIndex++) {
 		const plan = systemPlans[systemIndex]!;
 		const isLastSystem = systemIndex === systemPlans.length - 1;
-		const spacingScale = systemSpacingScale(score, plan, ss, padding, options.systemWidthPx, isLastSystem);
+		const spacingScale = systemSpacingScale(
+			score,
+			staffIndex,
+			plan,
+			ss,
+			padding,
+			options.systemWidthPx,
+			isLastSystem
+		);
 		const staffTopY = systemTopY;
 		let x = padding;
 		for (const measureIndex of plan) {
-			const measure = score.measures[measureIndex]!;
+			const measure = staff.measures[measureIndex]!;
 			const laid = layoutMeasure(score, measure, {
 				ss,
 				staffTopY,
 				startX: x,
 				isSystemFirst: measureIndex === plan[0],
 				isScoreFirst: measureIndex === 0,
-				isLast: measureIndex === score.measures.length - 1,
-				spacingScale
+				isLast: measureIndex === staff.measures.length - 1,
+				spacingScale,
+				staffIndex,
+				clef,
+				lines
 			});
 			measures.push(laid);
 			x = laid.region.x + laid.region.width;
@@ -482,17 +650,16 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	return {
 		width: contentWidth,
 		height: bottom - top + padding * 2,
-		staffSpacePx: ss,
-		// Layout is translation-invariant in y, so shifting a score laid out
+		// Layout is translation-invariant in y, so shifting a staff laid out
 		// with a first staff top of 0 by `shiftY` is the same as having laid
 		// it out at `shiftY` to begin with.
 		staffTopY: shiftY,
-		fontSizePx,
 		measures: measures.map((m) => translateMeasure(m, shiftY)),
 		systems: systems.map((s) => ({
 			measureIndices: s.measureIndices,
 			topY: s.topY + shiftY,
-			spacingScale: s.spacingScale
+			spacingScale: s.spacingScale,
+			staffIndex
 		}))
 	};
 }
@@ -535,6 +702,7 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
  */
 function systemSpacingScale(
 	score: Score,
+	staffIndex: number,
 	plan: readonly number[],
 	ss: number,
 	padding: number,
@@ -543,14 +711,15 @@ function systemSpacingScale(
 ): number {
 	if (systemWidthPx === undefined || isLastSystem) return 1;
 
+	const staffMeasures = score.staves[staffIndex]!.measures;
 	let naturalWidth = 0;
 	let advanceSpaces = 0;
 	for (const measureIndex of plan) {
-		const measure = score.measures[measureIndex]!;
-		naturalWidth += probeMeasureWidth(score, measure, ss, {
+		const measure = staffMeasures[measureIndex]!;
+		naturalWidth += probeMeasureWidth(score, staffIndex, measure, ss, {
 			isSystemFirst: measureIndex === plan[0],
 			isScoreFirst: measureIndex === 0,
-			isLast: measureIndex === score.measures.length - 1
+			isLast: measureIndex === staffMeasures.length - 1
 		});
 		// Sum the shared *columns'* widths (M2 Slice 1), not every voice's
 		// every note's own advance: a two-voice measure's notes no longer form
@@ -593,21 +762,23 @@ function systemSpacingScale(
  */
 function planSystems(
 	score: Score,
+	staffIndex: number,
 	ss: number,
 	padding: number,
 	systemWidthPx: number | undefined
 ): number[][] {
-	if (systemWidthPx === undefined) return [score.measures.map((m) => m.index)];
+	const staffMeasures = score.staves[staffIndex]!.measures;
+	if (systemWidthPx === undefined) return [staffMeasures.map((m) => m.index)];
 
 	const availableWidth = systemWidthPx - 2 * padding;
 	const systems: number[][] = [];
 	let current: number[] = [];
 	let currentWidth = 0;
 
-	for (const measure of score.measures) {
+	for (const measure of staffMeasures) {
 		const isScoreFirst = measure.index === 0;
-		const isLast = measure.index === score.measures.length - 1;
-		const widthAsSystemFirst = probeMeasureWidth(score, measure, ss, {
+		const isLast = measure.index === staffMeasures.length - 1;
+		const widthAsSystemFirst = probeMeasureWidth(score, staffIndex, measure, ss, {
 			isSystemFirst: true,
 			isScoreFirst,
 			isLast
@@ -619,7 +790,7 @@ function planSystems(
 			continue;
 		}
 
-		const widthAsMidSystem = probeMeasureWidth(score, measure, ss, {
+		const widthAsMidSystem = probeMeasureWidth(score, staffIndex, measure, ss, {
 			isSystemFirst: false,
 			isScoreFirst: false,
 			isLast
@@ -648,11 +819,21 @@ function planSystems(
  */
 function probeMeasureWidth(
 	score: Score,
+	staffIndex: number,
 	measure: Measure,
 	ss: number,
 	flags: { isSystemFirst: boolean; isScoreFirst: boolean; isLast: boolean }
 ): number {
-	return layoutMeasure(score, measure, { ss, staffTopY: 0, startX: 0, ...flags }).region.width;
+	const clef = score.staves[staffIndex]!.clef;
+	return layoutMeasure(score, measure, {
+		ss,
+		staffTopY: 0,
+		startX: 0,
+		...flags,
+		staffIndex,
+		clef,
+		lines: CLEF_LINES[clef]
+	}).region.width;
 }
 
 /**
@@ -663,16 +844,35 @@ function probeMeasureWidth(
  * nominal staff band), so a neighbour with tall ledger lines still leaves the
  * right amount of room. The score's first and last systems are bounded by the
  * canvas itself, which is exactly the single-system check this replaces.
+ *
+ * `staffSystems`/`systemIndex` (M2 Slice 3) are already scoped to one staff's
+ * own systems (see `relayoutMeasure`, the only caller): `layout.systems` is
+ * now a merge of every staff's own systems concatenated together, so walking
+ * neighbours in that flat array directly would, at a staff's own first or
+ * last system, incorrectly treat an unrelated *other* staff's adjacent system
+ * as this one's neighbour. `layout.measures` itself has no such problem
+ * (every lookup below names an exact `(staffIndex, i)` pair), only the
+ * system-neighbour walk does.
  */
-function systemBounds(layout: LaidOutScore, systemIndex: number): { top: number; bottom: number } {
+function systemBounds(
+	layout: LaidOutScore,
+	staffIndex: number,
+	staffSystems: readonly { readonly measureIndices: readonly number[] }[],
+	systemIndex: number
+): { top: number; bottom: number } {
 	const extent = (measureIndices: readonly number[], pick: 'top' | 'bottom') =>
 		measureIndices.map((i) => {
-			const m = layout.measures.find((mm) => mm.index === i)!;
+			const m = layout.measures.find((mm) => mm.staffIndex === staffIndex && mm.index === i)!;
 			return pick === 'top' ? m.region.y : m.region.y + m.region.height;
 		});
 
-	const prev = layout.systems[systemIndex - 1];
-	const next = layout.systems[systemIndex + 1];
+	const prev = staffSystems[systemIndex - 1];
+	const next = staffSystems[systemIndex + 1];
+	// A staff's own last system falls back to the canvas edge, not the *next
+	// staff's* own first system, when one exists: known gap, flagged in
+	// `layoutScore`'s own comment on the naive block-stacking this slice
+	// builds (real per-staff overflow bounding across a staff boundary is
+	// M2 Slice 4 territory, once staves are actually interleaved per system).
 	return {
 		top: prev ? Math.max(...extent(prev.measureIndices, 'bottom')) : 0,
 		bottom: next ? Math.min(...extent(next.measureIndices, 'top')) : layout.height
@@ -711,27 +911,39 @@ function systemBounds(layout: LaidOutScore, systemIndex: number): { top: number;
  * the whole score, not just the one system this measure lives in, the same
  * as it always was: no new "relayout one system" fast path exists yet, so a
  * width-changing edit's cost is unchanged by this slice, not narrowed.
+ *
+ * `staffIndex` (M2 Slice 3, default 0) says *which staff's* `measureIndex`
+ * to re-lay-out, completing the `(staffIndex, measureIndex)` addressing pair
+ * `LaidOutMeasure` now carries; every call site from before this slice omits
+ * it and keeps editing staff 0, exactly as before.
  */
 export function relayoutMeasure(
 	score: Score,
 	layout: LaidOutScore,
 	measureIndex: number,
-	options: LayoutOptions = {}
+	options: LayoutOptions = {},
+	staffIndex = 0
 ): LaidOutScore | null {
-	const measure = score.measures[measureIndex];
-	const previous = layout.measures.find((m) => m.index === measureIndex);
-	const systemIndex = layout.systems.findIndex((s) => s.measureIndices.includes(measureIndex));
-	const system = layout.systems[systemIndex];
-	if (!measure || !previous || !system) return null;
+	const staff = score.staves[staffIndex];
+	const measure = staff?.measures[measureIndex];
+	const previous = layout.measures.find((m) => m.staffIndex === staffIndex && m.index === measureIndex);
+	const staffSystems = layout.systems.filter((s) => s.staffIndex === staffIndex);
+	const systemIndex = staffSystems.findIndex((s) => s.measureIndices.includes(measureIndex));
+	const system = staffSystems[systemIndex];
+	if (!staff || !measure || !previous || !system) return null;
 
+	const clef = staff.clef;
 	const laid = layoutMeasure(score, measure, {
 		ss: options.staffSpacePx ?? DEFAULTS.staffSpacePx,
 		staffTopY: system.topY,
 		startX: previous.region.x,
 		isSystemFirst: system.measureIndices[0] === measureIndex,
 		isScoreFirst: measureIndex === 0,
-		isLast: measureIndex === score.measures.length - 1,
-		spacingScale: system.spacingScale
+		isLast: measureIndex === staff.measures.length - 1,
+		spacingScale: system.spacingScale,
+		staffIndex,
+		clef,
+		lines: CLEF_LINES[clef]
 	});
 
 	// Sub-pixel tolerance: the same arithmetic run twice should agree exactly,
@@ -740,13 +952,15 @@ export function relayoutMeasure(
 	// The band this measure's system may use without spilling into a
 	// neighbouring system. For a single-system score this is exactly the
 	// canvas itself, i.e. the original single-system check.
-	const bounds = systemBounds(layout, systemIndex);
+	const bounds = systemBounds(layout, staffIndex, staffSystems, systemIndex);
 	const overflows = laid.region.y < bounds.top || laid.region.y + laid.region.height > bounds.bottom;
 	if (widthChanged || overflows) return null;
 
 	return {
 		...layout,
-		measures: layout.measures.map((m) => (m.index === measureIndex ? laid : m))
+		measures: layout.measures.map((m) =>
+			m.staffIndex === staffIndex && m.index === measureIndex ? laid : m
+		)
 	};
 }
 
@@ -770,6 +984,20 @@ interface MeasureContext {
 	 * the same natural spacing it always has.
 	 */
 	readonly spacingScale?: number;
+	/** Which staff (`Score.staves`) this measure belongs to (M2 Slice 3's
+	 *  `(staffIndex, measureIndex)` addressing scheme): 0 for a single-staff
+	 *  score, the default and still-common case. Every `score.keyFifthsAt`/
+	 *  `timeAt`/`endBarlineAt` call in this file reads this rather than the
+	 *  implicit-staff-0 default those methods otherwise fall back to. */
+	readonly staffIndex: number;
+	/** `staves[staffIndex]`'s own clef: drives `layoutClef`'s glyph and the
+	 *  key-signature octave table (`KEY_SIGNATURE_OCTAVES`); see `lines` for
+	 *  the derived line/ledger positions it also determines. */
+	readonly clef: ClefType;
+	/** `CLEF_LINES[clef]`, precomputed once per measure rather than looked up
+	 *  repeatedly: every note/ledger/stem-direction calculation below reads
+	 *  this instead of a treble-only constant. */
+	readonly lines: ClefLines;
 }
 
 function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): LaidOutMeasure {
@@ -783,16 +1011,17 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// values, never `score.keyFifths`/`score.time` directly, since those two
 	// name only the score's *starting* values and ignore anything a measure
 	// changed since.
-	const keyFifths = score.keyFifthsAt(measure.index);
-	const time = score.timeAt(measure.index);
+	const keyFifths = score.keyFifthsAt(measure.index, ctx.staffIndex);
+	const time = score.timeAt(measure.index, ctx.staffIndex);
 	// Whether *this* measure is the one where the key (or time) actually
 	// changes, as opposed to merely being in whatever key an earlier measure
 	// set. Measure 0 never "changes" anything, since there is no earlier
 	// measure to differ from; its key/time come from the score's initial
 	// values instead, drawn unconditionally below via `isScoreFirst`/
 	// `isSystemFirst`.
-	const keyChangedHere = measure.index > 0 && keyFifths !== score.keyFifthsAt(measure.index - 1);
-	const timeChangedHere = measure.index > 0 && !timeSignaturesEqual(time, score.timeAt(measure.index - 1));
+	const keyChangedHere = measure.index > 0 && keyFifths !== score.keyFifthsAt(measure.index - 1, ctx.staffIndex);
+	const timeChangedHere =
+		measure.index > 0 && !timeSignaturesEqual(time, score.timeAt(measure.index - 1, ctx.staffIndex));
 
 	// The clef, key signature and (for the score's true first measure, or any
 	// later measure whose time signature just changed) time signature belong
@@ -831,7 +1060,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			cursor,
 			keyFifths,
 			ctx,
-			keyChangedHere ? score.keyFifthsAt(measure.index - 1) : undefined
+			keyChangedHere ? score.keyFifthsAt(measure.index - 1, ctx.staffIndex) : undefined
 		);
 		if (ctx.isScoreFirst || timeChangedHere) {
 			cursor = layoutTimeSignature(ops, cursor, time.beats, time.beatType, ctx);
@@ -839,7 +1068,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	} else if (keyChangedHere || timeChangedHere) {
 		cursor += SPACING.headerGap * ss;
 		if (keyChangedHere) {
-			cursor = layoutKeySignature(ops, cursor, keyFifths, ctx, score.keyFifthsAt(measure.index - 1));
+			cursor = layoutKeySignature(ops, cursor, keyFifths, ctx, score.keyFifthsAt(measure.index - 1, ctx.staffIndex));
 		}
 		if (timeChangedHere) {
 			cursor = layoutTimeSignature(ops, cursor, time.beats, time.beatType, ctx);
@@ -884,7 +1113,9 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// straight through to its ordinary single-flag stem.
 	const beamGroups: BeamGroup[] = [];
 	for (const [voice, voiceNotes] of notesByVoiceGroups) {
-		beamGroups.push(...computeBeamGroups(voiceNotes, time, voiceStemOverride(voice, multiVoice)));
+		beamGroups.push(
+			...computeBeamGroups(voiceNotes, time, ctx.lines.middleLine, voiceStemOverride(voice, multiVoice))
+		);
 	}
 	const beamGroupOfNote = new Map<NoteId, BeamGroup>();
 	for (const group of beamGroups) {
@@ -1056,7 +1287,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// the switch below as *this* measure's resolved type in the normal case,
 	// but the branch exists anyway so a boundary genuinely resolving to it
 	// (which only happens via that lookahead) draws nothing, not a stray line.
-	const endBarline = score.endBarlineAt(measure.index);
+	const endBarline = score.endBarlineAt(measure.index, ctx.staffIndex);
 	const thin = ED.thinBarlineThickness * ss;
 	const thick = ED.thickBarlineThickness * ss;
 	const mainThickness =
@@ -1147,7 +1378,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		if (!point) continue; // a rest, which can never be tied
 
 		if (note.tiedToId !== null) {
-			const curvesBelow = tieCurvesBelow(point);
+			const curvesBelow = tieCurvesBelow(point, ctx.lines.middleLine);
 			const x0 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxNE[0] * ss + TIE_NOTE_GAP * ss;
 			const target =
 				score.measureOfNote(note.tiedToId) === measure ? placements.get(note.tiedToId) : undefined;
@@ -1168,7 +1399,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			// This note is the receiving end of a tie begun in an earlier
 			// measure: draw only the incoming half, starting from this
 			// measure's own left edge.
-			const curvesBelow = tieCurvesBelow(point);
+			const curvesBelow = tieCurvesBelow(point, ctx.lines.middleLine);
 			const x1 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxSW[0] * ss - TIE_NOTE_GAP * ss;
 			pushTieCurve(ops, startX, point.y, x1, point.y, curvesBelow, tiedFrom.id, ctx);
 		}
@@ -1194,12 +1425,24 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		const startMeasure = score.measureOfNote(slur.startNoteId);
 		const endMeasure = score.measureOfNote(slur.endNoteId);
 		if (!startMeasure || !endMeasure) continue;
+		// M2 Slice 3: `index` alone is only unique *within* a staff (see
+		// `Measure.index`'s own comment), so this measure's own `staffIndex`
+		// has to agree with the slur's before its numeric `index` range check
+		// means anything; without this, a staff whose own measures happen to
+		// number into the same range as another staff's slurred measures
+		// could incorrectly draw part of that slur, leaking ink outside the
+		// region a redraw of *this* measure is allowed to touch. Slurs are
+		// scoped to a single staff today anyway (`notesInOrder`'s own scope
+		// cut), so `startMeasure`/`endMeasure` always agree with each other on
+		// `staffIndex`; checking against `startMeasure`'s is enough.
+		if (measure.staffIndex !== startMeasure.staffIndex) continue;
 		if (measure.index < startMeasure.index || measure.index > endMeasure.index) continue;
 
 		const spanNotes = slurSpanNotes(score, slur);
 		const curvesBelow =
 			stemDirectionForNotes(
-				spanNotes.flatMap((spanNote) => (spanNote.pitch ? [diatonicIndex(spanNote.pitch)] : []))
+				spanNotes.flatMap((spanNote) => (spanNote.pitch ? [diatonicIndex(spanNote.pitch)] : [])),
+				ctx.lines.middleLine
 			) === 'up';
 		const roofY = slurRoofY(spanNotes, curvesBelow, ctx);
 
@@ -1224,6 +1467,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 
 	return {
 		index: measure.index,
+		staffIndex: ctx.staffIndex,
 		region: measureRegion(ops, startX, measureWidth, staffTopY, ss),
 		ops,
 		notes
@@ -1266,16 +1510,34 @@ function layoutRepeatStartBarline(ops: DrawOp[], x: number, staffTopY: number, c
  * property `layoutAugmentationDots` relies on for a note's own dots.
  */
 function pushRepeatDots(ops: DrawOp[], x: number, ctx: MeasureContext): void {
-	ops.push({ kind: 'glyph', glyph: 'repeatDot', x, y: staffY(TREBLE_MIDDLE_LINE + 1, ctx) });
-	ops.push({ kind: 'glyph', glyph: 'repeatDot', x, y: staffY(TREBLE_MIDDLE_LINE - 1, ctx) });
+	ops.push({ kind: 'glyph', glyph: 'repeatDot', x, y: staffY(ctx.lines.middleLine + 1, ctx) });
+	ops.push({ kind: 'glyph', glyph: 'repeatDot', x, y: staffY(ctx.lines.middleLine - 1, ctx) });
 }
 
+/**
+ * The clef glyph itself (M2 Slice 3 generalizes this from a single
+ * always-`gClef` draw): a G clef sitting on G4's line for `treble`, the same
+ * G clef with SMuFL's own `gClef8vb` shape (the small "8" below) for
+ * `treble8`, or an F clef sitting on F3's line for `bass`. `treble8`'s
+ * notehead/ledger/key-signature math is otherwise identical to `treble`'s
+ * (see `CLEF_LINES`'s own comment); this is the one place that difference
+ * actually shows up.
+ */
 function layoutClef(ops: DrawOp[], x: number, ctx: MeasureContext): number {
+	if (ctx.clef === 'bass') {
+		// The F clef's origin sits on the line of the F it names, the second
+		// line from the top of a bass staff, with its two dots straddling it.
+		const y = staffY(diatonicIndex({ step: 'F', alter: 0, octave: 3 }), ctx);
+		ops.push({ kind: 'glyph', glyph: 'fClef', x, y });
+		return x + (GLYPH_METRICS.fClef.advance + SPACING.headerGap) * ctx.ss;
+	}
+	const glyph: GlyphName = ctx.clef === 'treble8' ? 'gClef8vb' : 'gClef';
 	// The G clef's origin sits on the line of the G it names, the second line
-	// from the bottom of a treble staff.
+	// from the bottom of a treble staff, for both plain treble and treble8
+	// (they share the same staff position, see `CLEF_LINES`).
 	const y = staffY(diatonicIndex({ step: 'G', alter: 0, octave: 4 }), ctx);
-	ops.push({ kind: 'glyph', glyph: 'gClef', x, y });
-	return x + (GLYPH_METRICS.gClef.advance + SPACING.headerGap) * ctx.ss;
+	ops.push({ kind: 'glyph', glyph, x, y });
+	return x + (GLYPH_METRICS[glyph].advance + SPACING.headerGap) * ctx.ss;
 }
 
 /**
@@ -1302,7 +1564,7 @@ function layoutKeySignature(
 	const kind = fifths > 0 ? 'sharp' : 'flat';
 	const glyph: GlyphName = kind === 'sharp' ? 'accidentalSharp' : 'accidentalFlat';
 	const steps = KEY_SIGNATURE_POSITIONS[kind];
-	const octaves = KEY_SIGNATURE_OCTAVES[kind];
+	const octaves = KEY_SIGNATURE_OCTAVES[ctx.clef][kind];
 	for (let i = 0; i < Math.min(Math.abs(fifths), 7); i++) {
 		const step = steps[i];
 		const octave = octaves[i];
@@ -1332,7 +1594,7 @@ function layoutKeyCancellation(
 ): number {
 	const oldKind = previousFifths > 0 ? 'sharp' : 'flat';
 	const oldSteps = KEY_SIGNATURE_POSITIONS[oldKind].slice(0, Math.min(Math.abs(previousFifths), 7));
-	const oldOctaves = KEY_SIGNATURE_OCTAVES[oldKind];
+	const oldOctaves = KEY_SIGNATURE_OCTAVES[ctx.clef][oldKind];
 	const newKind = fifths > 0 ? 'sharp' : 'flat';
 	const newSteps: ReadonlySet<Step> =
 		fifths === 0
@@ -1573,7 +1835,7 @@ function layoutNote(
 
 	// Ledger lines only land on line positions (see `layoutLedgerLines`), so
 	// the same parity check says whether this note itself sits on a line.
-	const onLine = (d - TREBLE_BOTTOM_LINE) % 2 === 0;
+	const onLine = (d - ctx.lines.bottomLine) % 2 === 0;
 	layoutAugmentationDots(
 		ops,
 		noteX + GLYPH_METRICS[headGlyph].advance * ss,
@@ -1595,7 +1857,7 @@ function layoutNote(
 	if (note.value !== 'whole') {
 		up = beamed
 			? beamDirection === 'up'
-			: stemDirectionForNotes([d], voiceStemOverride(note.voice, multiVoice)) === 'up';
+			: stemDirectionForNotes([d], ctx.lines.middleLine, voiceStemOverride(note.voice, multiVoice)) === 'up';
 		if (!beamed) {
 			layoutStemAndFlag(ops, noteX, y, headGlyph, note.value, note.id, ctx, up);
 		}
@@ -1611,7 +1873,7 @@ function layoutNote(
 	return {
 		cursor: cellX + advance + collisionShift,
 		placement,
-		inkRight: noteInkRight(noteX, headGlyph, d, up, ss),
+		inkRight: noteInkRight(noteX, headGlyph, d, up, ss, ctx.lines),
 		collisionShift
 	};
 }
@@ -1679,13 +1941,14 @@ function noteInkRight(
 	headGlyph: GlyphName,
 	d: number,
 	up: boolean | null,
-	ss: number
+	ss: number,
+	lines: ClefLines
 ): number {
 	let right = noteX + GLYPH_METRICS[headGlyph].bBoxNE[0] * ss;
 	// Ledger lines only ever land on line positions and only extend past a
 	// note outside the staff's own top/bottom lines; this mirrors
 	// `layoutLedgerLines`'s own loop bounds.
-	if (d >= TREBLE_TOP_LINE + 2 || d <= TREBLE_BOTTOM_LINE - 2) {
+	if (d >= lines.topLine + 2 || d <= lines.bottomLine - 2) {
 		right = Math.max(right, noteX + GLYPH_METRICS[headGlyph].advance * ss + ED.legerLineExtension * ss);
 	}
 	if (up !== null) {
@@ -1747,8 +2010,8 @@ function layoutLedgerLines(
 	};
 	// Ledger lines only ever land on line positions, which are the diatonic
 	// indices with the same parity as the staff lines themselves.
-	for (let position = TREBLE_TOP_LINE + 2; position <= d; position += 2) push(position);
-	for (let position = TREBLE_BOTTOM_LINE - 2; position >= d; position -= 2) push(position);
+	for (let position = ctx.lines.topLine + 2; position <= d; position += 2) push(position);
+	for (let position = ctx.lines.bottomLine - 2; position >= d; position -= 2) push(position);
 }
 
 function layoutStemAndFlag(
@@ -1894,6 +2157,7 @@ function beatDurationWholes(time: TimeSignature): number {
 function computeBeamGroups(
 	notes: readonly Note[],
 	time: TimeSignature,
+	middleLine: number,
 	voiceOverride?: 'up' | 'down'
 ): BeamGroup[] {
 	const beatWholes = beatDurationWholes(time);
@@ -1934,6 +2198,7 @@ function computeBeamGroups(
 		notes: group,
 		direction: stemDirectionForNotes(
 			group.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : [])),
+			middleLine,
 			voiceOverride
 		)
 	}));
@@ -1977,12 +2242,13 @@ function computeBeamGroups(
  */
 function stemDirectionForNotes(
 	diatonicIndices: readonly number[],
+	middleLine: number,
 	voiceOverride?: 'up' | 'down'
 ): 'up' | 'down' {
 	if (voiceOverride) return voiceOverride;
 	if (diatonicIndices.length === 0) return 'down';
 
-	const displacement = (d: number) => d - TREBLE_MIDDLE_LINE;
+	const displacement = (d: number) => d - middleLine;
 	const maxAbsDisplacement = Math.max(...diatonicIndices.map((d) => Math.abs(displacement(d))));
 	const farthest = diatonicIndices.filter((d) => Math.abs(displacement(d)) === maxAbsDisplacement);
 
@@ -2142,8 +2408,8 @@ function pushBeamSegment(
  * `null`), so it falls back to `stemDirectionForNotes` on its own diatonic
  * index, the same single-note rule a stem would have used.
  */
-function tieCurvesBelow(point: NotePlacement): boolean {
-	return point.up ?? stemDirectionForNotes([point.d]) === 'up';
+function tieCurvesBelow(point: NotePlacement, middleLine: number): boolean {
+	return point.up ?? stemDirectionForNotes([point.d], middleLine) === 'up';
 }
 
 /**
@@ -2246,8 +2512,8 @@ function slurSpanNotes(score: Score, slur: Slur): Note[] {
 function slurRoofY(spanNotes: readonly Note[], curvesBelow: boolean, ctx: MeasureContext): number {
 	const diatonics = spanNotes.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : []));
 	const extreme = curvesBelow
-		? Math.min(TREBLE_BOTTOM_LINE, ...diatonics)
-		: Math.max(TREBLE_TOP_LINE, ...diatonics);
+		? Math.min(ctx.lines.bottomLine, ...diatonics)
+		: Math.max(ctx.lines.topLine, ...diatonics);
 	const edgeY = staffY(extreme, ctx);
 	return curvesBelow ? edgeY + SLUR_ROOF_CLEARANCE * ctx.ss : edgeY - SLUR_ROOF_CLEARANCE * ctx.ss;
 }
@@ -2303,9 +2569,9 @@ function pushGlyph(
 	return x + GLYPH_METRICS[glyph].advance * ctx.ss;
 }
 
-/** Canvas y of a diatonic staff position, for a treble staff. */
+/** Canvas y of a diatonic staff position, for `ctx`'s own clef (`ctx.lines`). */
 function staffY(diatonic: number, ctx: MeasureContext): number {
-	return ctx.staffTopY + 4 * ctx.ss - (diatonic - TREBLE_BOTTOM_LINE) * (ctx.ss / 2);
+	return ctx.staffTopY + 4 * ctx.ss - (diatonic - ctx.lines.bottomLine) * (ctx.ss / 2);
 }
 
 function clampAlter(alter: number): -1 | 0 | 1 {
@@ -2371,6 +2637,7 @@ function measureRegion(
 function translateMeasure(measure: LaidOutMeasure, dy: number): LaidOutMeasure {
 	return {
 		index: measure.index,
+		staffIndex: measure.staffIndex,
 		region: { ...measure.region, y: measure.region.y + dy },
 		// A curve op has no single `y` field (it has four: `y0`/`cy0`/`cy1`/`y1`),
 		// so the generic `{ ...op, y: op.y + dy }` shift used for `rect`/`glyph`

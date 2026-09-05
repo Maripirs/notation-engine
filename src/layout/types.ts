@@ -84,7 +84,18 @@ export interface LaidOutNote {
 }
 
 export interface LaidOutMeasure {
+	/** Position within its own staff, 0-based. See `staffIndex`: before M2
+	 *  Slice 3 this was a single score-wide flat address (every score had one
+	 *  implicit staff), and a single-staff score (the common case, and every
+	 *  score before this slice) is the `staffIndex`-always-0 degenerate case
+	 *  with this field's meaning unchanged. */
 	readonly index: number;
+	/** Which staff (`Score.staves`) this measure belongs to (M2 Slice 3's
+	 *  `(staffIndex, index)` addressing scheme, replacing `index` alone).
+	 *  `relayoutMeasure` and `CanvasRenderer.redrawMeasure`/`redrawMeasures`
+	 *  both take this alongside a measure index to redraw exactly one staff's
+	 *  one measure, independently of every other staff's own measures. */
+	readonly staffIndex: number;
 	/**
 	 * The exact rectangle `CanvasRenderer.redrawMeasure` clears and repaints.
 	 *
@@ -132,10 +143,18 @@ export interface LaidOutScore {
 	 * Recorded here, not just used internally, so `relayoutMeasure` can re-lay
 	 * a single measure out at its system's already-decided scale without
 	 * recomputing the whole system's justification on every incremental edit.
+	 *
+	 * `staffIndex` (M2 Slice 3) says which staff this system belongs to: this
+	 * array is now a merge of every staff's own systems (each staff is cast
+	 * off into systems independently), not one staff's alone, so a
+	 * `measureIndices` entry is only unique *within* the same `staffIndex`,
+	 * the same reason `LaidOutMeasure` itself needs the pair, not `index`
+	 * alone.
 	 */
 	readonly systems: readonly {
 		readonly measureIndices: readonly number[];
 		readonly topY: number;
 		readonly spacingScale: number;
+		readonly staffIndex: number;
 	}[];
 }

@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	createAccidentalShowcaseScore,
 	createBarlineShowcaseScore,
+	createClefShowcaseScore,
 	createDemoScore,
 	createDurationShowcaseScore,
 	createKeyTimeChangeShowcaseScore,
@@ -10,7 +11,8 @@ import {
 	createTwoVoiceShowcaseScore,
 	createVoiceClashShowcaseScore
 } from '../demo-score.js';
-import { buildScore, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
+import { parsePitch } from '../model/pitch.js';
+import { buildScore, type ClefType, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
 import { ENGRAVING_DEFAULTS as ED, GLYPH_METRICS } from '../render/glyph-metrics.js';
 import type { GlyphName } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
@@ -1854,5 +1856,214 @@ describe('voice-to-voice collision avoidance (M2 Slice 2)', () => {
 		expect(layout.measures).toHaveLength(2);
 		const glyphs = layout.measures[1]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
 		expect(glyphs).toContain('accidentalSharp'); // voice 2's C#5
+	});
+});
+
+describe('clefs (M2 Slice 3)', () => {
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+
+	const findGlyph = (ops: readonly DrawOp[], glyph: GlyphName) =>
+		ops.find((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === glyph)!;
+	const noteheadYs = (ops: readonly DrawOp[]) =>
+		ops.flatMap((op) => (op.kind === 'glyph' && op.glyph === 'noteheadBlack' ? [op.y] : []));
+
+	/**
+	 * Canvas y of a single `noteheadBlack` note laid out alone under `clef`.
+	 * Only ever used to compare *within* one clef's own single-note score
+	 * (e.g. the `treble8`-vs-`treble` and bass-ledger-line tests below), never
+	 * across two different pitches: two separate `layoutScore` calls can (and,
+	 * for pitches needing different amounts of ledger-line clearance, do)
+	 * settle on different `shiftY` translations, so their raw canvas `y`
+	 * values are not directly comparable to each other. Tests that need to
+	 * compare *two different pitches'* positions instead lay both out
+	 * together, in one shared measure/one shared `layoutScore` call, so they
+	 * share the same `shiftY` (see `noteheadYs`, and this describe block's own
+	 * line-spacing and key-signature tests).
+	 */
+	function soloNoteheadY(clef: ClefType, pitch: string): number {
+		const layout = layoutScore(buildScore([[[pitch, 'quarter']]], { clef }), options);
+		return findGlyph(layout.measures[0]!.ops, 'noteheadBlack').y;
+	}
+
+	it('places a note on the correct line for treble, bass and treble8, all at the standard 2-space line spacing', () => {
+		// Bottom line, middle line, top line for each clef, all three notes in
+		// one measure (one `layoutScore` call, so all three share the same
+		// vertical `shiftY` and their `y`s are directly comparable). treble8
+		// shares plain treble's exact positions (only its clef glyph differs;
+		// see `ClefType`'s own comment in model/score.ts), so it is included
+		// here as a positive check that it really does, not skipped as
+		// redundant.
+		const cases: readonly (readonly [ClefType, string, string, string])[] = [
+			['treble', 'E4', 'B4', 'F5'],
+			['bass', 'G2', 'D3', 'A3'],
+			['treble8', 'E4', 'B4', 'F5']
+		];
+		for (const [clef, bottom, middle, top] of cases) {
+			const layout = layoutScore(
+				buildScore([[[bottom, 'quarter'], [middle, 'quarter'], [top, 'quarter']]], { clef }),
+				options
+			);
+			const [bottomY, middleY, topY] = noteheadYs(layout.measures[0]!.ops);
+			// Canvas y grows downward, so the top line's note has the smallest y;
+			// every adjacent staff line is exactly 2 staff spaces (one line's
+			// worth) apart, the same geometry the existing (treble-only)
+			// ledger-line tests above already rely on.
+			expect(middleY! - topY!).toBeCloseTo(2 * ss, 6);
+			expect(bottomY! - middleY!).toBeCloseTo(2 * ss, 6);
+		}
+	});
+
+	it('treble8 places a note at the exact same y as plain treble; only the clef glyph differs', () => {
+		// A single, identical pitch in both clefs' own solo layout needs the
+		// exact same ledger-line clearance in each, so the two calls' own
+		// `shiftY` values agree and `soloNoteheadY`'s cross-call comparison is
+		// valid here (unlike comparing two *different* pitches across calls).
+		expect(soloNoteheadY('treble8', 'C5')).toBeCloseTo(soloNoteheadY('treble', 'C5'), 6);
+
+		const treble = layoutScore(buildScore([[['C5', 'quarter']]], { clef: 'treble' }), options);
+		const treble8 = layoutScore(buildScore([[['C5', 'quarter']]], { clef: 'treble8' }), options);
+		expect(findGlyph(treble.measures[0]!.ops, 'gClef')).toBeDefined();
+		expect(findGlyph(treble8.measures[0]!.ops, 'gClef8vb')).toBeDefined();
+	});
+
+	it('draws a bass clef (fClef) and places middle C on the first ledger line above the staff', () => {
+		const layout = layoutScore(buildScore([[['C4', 'quarter']]], { clef: 'bass' }), options);
+		const ops = layout.measures[0]!.ops;
+		expect(findGlyph(ops, 'fClef')).toBeDefined();
+		const ledgerRects = ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'rect' }> =>
+				op.kind === 'rect' && Math.abs(op.height - ED.legerLineThickness * ss) < 0.001
+		);
+		expect(ledgerRects).toHaveLength(1);
+		// The ledger line sits above the staff (smaller y than the top line),
+		// mirroring how the same note needs a ledger line *below* a treble
+		// staff (already covered by the "draws ledger lines only for notes off
+		// the staff" test above).
+		expect(ledgerRects[0]!.y).toBeLessThan(layout.staffTopY);
+	});
+
+	it('positions a key signature\'s sharps on the same line/space a real notehead of that letter would use, per clef', () => {
+		// The first written sharp is always F (`KEY_SIGNATURE_POSITIONS`); this
+		// checks the *musical* claim ("F# lands where an F would") rather than
+		// restating this file's own internal position table, so a wrong octave
+		// choice for a clef would actually fail it. The reference note is
+		// written as F# (matching the one-sharp key already in force), not
+		// plain F, so it draws no accidental of its own and its notehead's `y`
+		// alone is what gets compared to the key signature's; both are read
+		// from the *same* `layoutScore` call (one measure) so they share the
+		// same vertical `shiftY`, unlike comparing across two separate calls
+		// (see `soloNoteheadY`'s own comment on why that would not be valid).
+		const cases: readonly (readonly [ClefType, string])[] = [
+			['treble', 'F#5'],
+			['bass', 'F#3']
+		];
+		for (const [clef, fSharpPitch] of cases) {
+			const layout = layoutScore(buildScore([[[fSharpPitch, 'quarter']]], { clef, keyFifths: 1 }), options);
+			const ops = layout.measures[0]!.ops;
+			const keySharpY = findGlyph(ops, 'accidentalSharp').y;
+			const [noteY] = noteheadYs(ops);
+			expect(keySharpY).toBeCloseTo(noteY!, 6);
+		}
+	});
+
+	it('positions a key signature\'s flats on the same line/space a real notehead of that letter would use, per clef', () => {
+		// The first written flat is always B; same one-`layoutScore`-call
+		// reasoning as the sharps test above, with the reference note written
+		// as Bb (matching the one-flat key already in force) so it draws no
+		// accidental of its own.
+		const cases: readonly (readonly [ClefType, string])[] = [
+			['treble', 'Bb4'],
+			['bass', 'Bb3']
+		];
+		for (const [clef, bFlatPitch] of cases) {
+			const layout = layoutScore(buildScore([[[bFlatPitch, 'quarter']]], { clef, keyFifths: -1 }), options);
+			const ops = layout.measures[0]!.ops;
+			const keyFlatY = findGlyph(ops, 'accidentalFlat').y;
+			const [noteY] = noteheadYs(ops);
+			expect(keyFlatY).toBeCloseTo(noteY!, 6);
+		}
+	});
+
+	it('gives treble8 the exact same key-signature positions as plain treble', () => {
+		const treble = layoutScore(buildScore([[['C4', 'quarter']]], { clef: 'treble', keyFifths: 3 }), options);
+		const treble8 = layoutScore(buildScore([[['C4', 'quarter']]], { clef: 'treble8', keyFifths: 3 }), options);
+		const sharpYs = (l: LaidOutScore) =>
+			l.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' && op.glyph === 'accidentalSharp' ? [op.y] : []));
+		expect(sharpYs(treble8)).toEqual(sharpYs(treble));
+	});
+
+	it('renders the clef showcase (three staves, one per clef) without error, one system-opening clef glyph each', () => {
+		const score = createClefShowcaseScore();
+		const layout = layoutScore(score);
+		// Two measures per staff, three staves.
+		expect(layout.measures).toHaveLength(6);
+		const systemFirstMeasures = layout.measures.filter((m) => m.index === 0);
+		expect(systemFirstMeasures).toHaveLength(3);
+		const clefGlyphsOf = (staffIndex: number) =>
+			systemFirstMeasures
+				.find((m) => m.staffIndex === staffIndex)!
+				.ops.flatMap((op) => (op.kind === 'glyph' && (op.glyph === 'gClef' || op.glyph === 'fClef' || op.glyph === 'gClef8vb') ? [op.glyph] : []));
+		expect(clefGlyphsOf(0)).toEqual(['gClef']);
+		expect(clefGlyphsOf(1)).toEqual(['fClef']);
+		expect(clefGlyphsOf(2)).toEqual(['gClef8vb']);
+	});
+});
+
+describe('multi-staff redraw isolation (M2 Slice 3)', () => {
+	it('relayoutMeasure on one staff never touches another staff\'s measures, even when their indices collide', () => {
+		// Two staves, each with its own measure 0/1/2: staff-local indices
+		// collide on purpose (both staves have an "index 0", "index 1", ...),
+		// which is exactly the case a bare `index` lookup could not have
+		// disambiguated before this slice's `(staffIndex, index)` addressing.
+		const score = buildScore(
+			[
+				[
+					['C4', 'quarter'],
+					['D4', 'quarter'],
+					['E4', 'quarter'],
+					['F4', 'quarter']
+				],
+				[
+					['G4', 'quarter'],
+					['A4', 'quarter'],
+					['B4', 'quarter'],
+					['C5', 'quarter']
+				]
+			],
+			{ clef: 'treble' }
+		);
+		score.appendStaff('bass');
+		for (let i = 0; i < 2; i++) {
+			const m = score.appendMeasure(1);
+			for (const pitch of ['C3', 'D3', 'E3', 'F3']) {
+				score.appendNote(m, { pitch: parsePitch(pitch), value: 'quarter' });
+			}
+		}
+
+		const layout = layoutScore(score);
+		expect(layout.measures.filter((m) => m.staffIndex === 0)).toHaveLength(2);
+		expect(layout.measures.filter((m) => m.staffIndex === 1)).toHaveLength(2);
+
+		const target = score.staves[1]!.measures[1]!.notes[0]!;
+		const touched = score.transposeNote(target.id, 1);
+		expect(touched).toBe(1);
+
+		const updated = relayoutMeasure(score, layout, touched!, {}, 1);
+		expect(updated).not.toBeNull();
+
+		// Every measure except (staffIndex 1, index 1) is the exact same
+		// object, not merely an equal one: this is the same "untouched
+		// measures are not recomputed at all" identity check `relayoutMeasure`'s
+		// own single-staff test above uses, now proven across the new staff
+		// dimension too.
+		for (const m of updated!.measures) {
+			if (m.staffIndex === 1 && m.index === 1) {
+				expect(m).not.toBe(layout.measures.find((mm) => mm.staffIndex === 1 && mm.index === 1));
+			} else {
+				const before = layout.measures.find((mm) => mm.staffIndex === m.staffIndex && mm.index === m.index);
+				expect(m).toBe(before);
+			}
+		}
 	});
 });

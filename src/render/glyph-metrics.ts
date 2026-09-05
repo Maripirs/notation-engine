@@ -139,6 +139,24 @@ export const GLYPH_METRICS = {
 		bBoxNE: [2.684, 4.392],
 		anchors: {}
 	},
+	fClef: {
+		name: 'fClef',
+		codepoint: 0xE062,
+		description: 'F clef',
+		advance: 2.736,
+		bBoxSW: [-0.02, -2.54],
+		bBoxNE: [2.736, 1.048],
+		anchors: {}
+	},
+	gClef8vb: {
+		name: 'gClef8vb',
+		codepoint: 0xE052,
+		description: 'G clef ottava bassa',
+		advance: 2.656,
+		bBoxSW: [0, -3.512],
+		bBoxNE: [2.684, 4.392],
+		anchors: {}
+	},
 	restWhole: {
 		name: 'restWhole',
 		codepoint: 0xE4E3,

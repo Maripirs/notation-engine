@@ -15,7 +15,8 @@
 // into what the browser demo shows via `createFullDemoScore` instead of into
 // this fixture.
 
-import { buildScore, TRIPLET, type NoteId, type Score } from './model/score.js';
+import { parsePitch } from './model/pitch.js';
+import { buildScore, Score, TRIPLET, type NoteId, type NoteValue } from './model/score.js';
 
 export function createDemoScore(): Score {
 	return buildScore(
@@ -457,6 +458,67 @@ export function createVoiceClashShowcaseScore(): Score {
 		],
 		{ keyFifths: 1, time: { beats: 4, beatType: 4 } }
 	);
+}
+
+/**
+ * M2 Slice 3's clef showcase: one `Score` with three staves, one per new
+ * clef (treble, bass, treble8), each notating the exact same short phrase (a
+ * one-octave scale, C4 up to C5), so a human looking at the rendered PNG can
+ * see how the same written pitches land in very different places under each
+ * clef: middle C sits on a ledger line below the treble/treble8 staff and in
+ * the middle of the bass staff, while the octave's top C sits in the third
+ * space of a treble staff and requires two ledger lines above a bass one.
+ *
+ * Built directly against `Score`'s own `appendStaff`/`appendMeasure`/
+ * `appendNote` calls rather than `buildScore`'s compact per-staff literal:
+ * `buildScore` only ever populates one implicit staff (this slice
+ * deliberately did not extend its literal syntax to a multi-staff shape,
+ * since nothing outside this one showcase needs to build a multi-staff score
+ * by hand yet), so a genuinely multi-staff fixture goes through the same
+ * lower-level calls `buildScore` itself uses internally.
+ *
+ * Deliberately *not* folded into `createFullDemoScore`/`npm run dev`'s single
+ * combined score the way every other showcase is: doing so would need
+ * `appendMeasures` to merge a multi-staff source score into a (so far
+ * always single-staff) destination, real work with no payoff for this
+ * slice's own scope, whose acceptance criteria only ask for a demo that
+ * *shows* the three clefs rendering correctly, not one that stacks them
+ * alongside the rest of the frozen demo fixture. Per this slice's own scope
+ * note, it is "fine, and probably correct" for the demo to render staves
+ * like this rather than build real multi-staff system stacking (M2 Slice
+ * 4's job); this is verified instead by rasterizing `layoutScore` on this
+ * function's own three-staff score directly through node-canvas and
+ * inspecting the PNG by eye, this repo's usual no-browser-automation
+ * approach for anything visual.
+ */
+export function createClefShowcaseScore(): Score {
+	const score = new Score({ keyFifths: 0, time: { beats: 4, beatType: 4 } });
+	// `Score`'s own constructor already creates staff 0 as a plain treble
+	// staff; naming it explicitly here makes the showcase's three-clef intent
+	// visible at the call site rather than left implicit.
+	score.staves[0]!.clef = 'treble';
+	score.appendStaff('bass');
+	score.appendStaff('treble8');
+
+	const phrase: readonly (readonly [string, NoteValue])[] = [
+		['C4', 'quarter'],
+		['D4', 'quarter'],
+		['E4', 'quarter'],
+		['F4', 'quarter'],
+		['G4', 'quarter'],
+		['A4', 'quarter'],
+		['B4', 'quarter'],
+		['C5', 'quarter']
+	];
+	for (let staffIndex = 0; staffIndex < score.staves.length; staffIndex++) {
+		for (const half of [phrase.slice(0, 4), phrase.slice(4)]) {
+			const measure = score.appendMeasure(staffIndex);
+			for (const [pitch, value] of half) {
+				score.appendNote(measure, { pitch: parsePitch(pitch), value });
+			}
+		}
+	}
+	return score;
 }
 
 /** Copy every note of `source`'s measures onto the end of `score`, preserving

@@ -14,7 +14,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createDemoScore } from '../demo-score.js';
 import { layoutScore, relayoutMeasure } from '../layout/layout.js';
-import { buildScore } from '../model/score.js';
+import { parsePitch } from '../model/pitch.js';
+import { buildScore, Score } from '../model/score.js';
 import type { LaidOutScore, Rect } from '../layout/types.js';
 import { CanvasRenderer } from './renderer.js';
 
@@ -218,6 +219,68 @@ describe('CanvasRenderer region-scoped redraw', () => {
 		renderer.setLayout(updated);
 		renderer.redrawMeasure(1);
 		expect(recorder.calls.map((call) => call.y)).not.toEqual(baseline);
+	});
+});
+
+describe('CanvasRenderer region-scoped redraw across staves (M2 Slice 3)', () => {
+	// Same 2D "call falls inside/outside this rectangle" check the multi-
+	// system test above uses, needed here for the same reason: staves are now
+	// stacked vertically, so a later staff's measures sit at *overlapping* x
+	// ranges with an earlier staff's (every staff starts back at the left
+	// margin), differing only in y.
+	const withinBox = (rect: Rect, point: { x: number; right: number; y: number; bottom: number }, slack = 0.001) =>
+		point.x >= rect.x - slack &&
+		point.right <= rect.x + rect.width + slack &&
+		point.y >= rect.y - slack &&
+		point.bottom <= rect.y + rect.height + slack;
+
+	it("redraws only the touched staff's touched measure, leaving every other staff and measure untouched", () => {
+		// Two staves, each with three measures of its own: staff-local measure
+		// indices deliberately collide (both staves have their own "measure
+		// 0", "1", "2"), which is exactly the ambiguity `(staffIndex, index)`
+		// addressing exists to resolve; a bare `index` lookup could not have
+		// told these apart.
+		const score = new Score({ keyFifths: 0 });
+		score.appendStaff('bass');
+		for (const staffIndex of [0, 1] as const) {
+			for (let i = 0; i < 3; i++) {
+				const measure = score.appendMeasure(staffIndex);
+				for (const pitch of ['C4', 'D4', 'E4', 'F4']) {
+					score.appendNote(measure, { pitch: parsePitch(pitch), value: 'quarter' });
+				}
+			}
+		}
+
+		let layout = layoutScore(score);
+		const recorder = recordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, layout);
+		renderer.drawAll();
+		recorder.calls.length = 0;
+
+		// Touch staff 1 (bass), measure 1 (its own middle measure).
+		const target = score.staves[1]!.measures[1]!.notes[0]!;
+		const touched = score.transposeNote(target.id, 1);
+		expect(touched).toBe(1);
+
+		const updated = relayoutMeasure(score, layout, touched!, {}, 1);
+		expect(updated).not.toBeNull();
+		layout = updated!;
+		renderer.setLayout(layout);
+		renderer.redrawMeasure(touched!, 1);
+
+		const touchedRegion = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!.region;
+		expect(recorder.calls.length).toBeGreaterThan(0);
+		for (const call of recorder.calls) {
+			expect(withinBox(touchedRegion, call)).toBe(true);
+		}
+		// Every other (staffIndex, index) pair, on *both* staves, sees no
+		// intruding draw call: staff 0's measures (a different staff entirely)
+		// and staff 1's own measures 0 and 2 (same staff, different measure).
+		for (const m of layout.measures) {
+			if (m.staffIndex === 1 && m.index === 1) continue;
+			const intruders = recorder.calls.filter((call) => withinBox(m.region, call));
+			expect(intruders).toEqual([]);
+		}
 	});
 });
 

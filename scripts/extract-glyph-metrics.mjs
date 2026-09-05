@@ -38,8 +38,13 @@ const GLYPHS = [
 	'flag32ndDown',
 	'flag64thUp',
 	'flag64thDown',
-	// One clef. Multi-clef support is Phase 1 with the rest of engraving.
+	// Clefs. M2 Slice 3 adds bass and the vocal-tenor "octave treble" clefs
+	// alongside Phase 0's plain treble; `gClef8vb` is SMuFL's name for a G
+	// clef with the small "8" below it (treble8, see `ClefType`'s own
+	// comment in model/score.ts).
 	'gClef',
+	'fClef',
+	'gClef8vb',
 	// Rests, one per supported duration.
 	'restWhole',
 	'restHalf',
