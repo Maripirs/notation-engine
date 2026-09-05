@@ -211,7 +211,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       height spanning a multi-staff group, and each staff's own correct
       clef/key header; demo shows a two-staff grand-staff-style system
       with shared barlines and independent clefs.
-- [ ] **Slice 5 — Part grouping + braces/brackets.** `Part` (from
+- [x] **Slice 5 — Part grouping + braces/brackets.** `Part` (from
       slice 3) gains a brace (curly, for a keyboard-style grouped pair)
       or bracket (square, for a choir/ensemble group) drawn spanning
       its staves' full height at the start of each system, plus a part
@@ -1131,3 +1131,32 @@ divisi splits). Unscoped.
   despite very different rhythmic density per staff. 236 tests pass (up
   from 229); bench unchanged (0.277-0.326ms scoped edit vs
   0.953-26.407ms full redraw across 4-124 measures).
+- 2026-09-05: M2 Slice 5 (part grouping + braces/brackets) done, in one
+  subagent run with no interruption. `Part` (Slice 3) now draws a curly
+  brace (exactly 2 contiguous staves) or square bracket (3+ contiguous
+  staves), spanning the group's full outer height at every system, plus a
+  part-name label at system 1 only. Bracket assembles from Bravura's
+  fixed-size hook glyphs plus a plain rect spine (keeps corners crisp at
+  any span); brace is a single glyph stretched via a new per-op font-size
+  override, scaled uniformly rather than SMuFL's non-uniform
+  recommendation, safe since a 2-staff span is always the same fixed
+  size. Both decorations live in a new `LaidOutScore.partDecorations`
+  array outside every measure's own ops/region, specifically to avoid
+  blowing one staff's region into a rectangle overlapping every other
+  staff's row at the shared x, which would break region-scoped redraw;
+  nothing edits a `Part`'s grouping/name, so `drawAll()` paints these
+  once and `redrawMeasure` never touches them. A named multi-staff Part
+  labels its group once, centred; a named single-staff Part labels its
+  own row, letting an SATB score's four per-voice labels coexist with
+  one broader unnamed bracket-only Part spanning all four. Scope cuts:
+  non-contiguous groupings skip the connector (label still draws), a
+  solo staff draws no glyph, the reserved header width isn't fed into
+  `systemWidthPx` budgeting (a documented combination gap), and label
+  width is a character-count heuristic (no real text-metric API in
+  layout). Claude reviewed the full diff, re-ran `npm run glyphs` to
+  confirm the new brace/bracket metrics reproduce byte-for-byte, ran
+  check/test/build/bench directly, and independently rendered both the
+  SATB bracket showcase (four labelled voices, one bracket) and a
+  2-staff piano-brace case to confirm by eye before committing. 244
+  tests pass (up from 236); bench unchanged (0.274-0.326ms scoped edit
+  vs 0.964-26.515ms full redraw across 4-124 measures).
