@@ -108,7 +108,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       one curve over/under the run. Acceptance: unit test for a
       multi-note slur's endpoints and curve direction (above vs below
       based on stem direction); demo shows a slur over a short run.
-- [ ] **Slice 7 — Mid-score key/time signature changes.** `Score.time`/
+- [x] **Slice 7 — Mid-score key/time signature changes.** `Score.time`/
       `keyFifths` become per-measure (or change-list) rather than one
       score-wide value; layout draws a courtesy signature at the
       change and at the system break before it if one falls there.
@@ -431,4 +431,64 @@ divisi splits). Unscoped.
   the arc actually looks like a slur (clears the notes it spans, curves the
   documented direction, and the barline-crossing slur's two segments meet
   without a visible gap).
-</content>
+- 2026-09-04: Slice 7 (mid-score key/time changes) done. `Measure` gains
+  optional `keyFifths`/`time` fields, `undefined` meaning "same as the
+  previous measure" (or the score's initial `Score.keyFifths`/`time` for
+  measure 0); `Score.keyFifthsAt`/`timeAt` walk back to the nearest earlier
+  measure's explicit value so no caller has to. `buildScore`'s `measures`
+  array now accepts, alongside a plain `MeasureSpec` tuple-array, a
+  `MeasureBuildSpec` object (`{ notes, keyFifths?, time? }`) for a measure
+  that changes one or both; a hand-written `isMeasureBuildSpec` guard tells
+  the two apart, not an inline `Array.isArray` check, because TypeScript's
+  narrowing for `Array.isArray` cannot exclude a *readonly* array type from a
+  union (worked out only after `npm run check` failed on it), and every
+  other spec type in this file is deliberately readonly. `layout.ts`'s every
+  read of `score.keyFifths`/`score.time` (the key-aware accidental
+  suppression, `computeBeamGroups`'s beat math, the header itself) now reads
+  `score.keyFifthsAt(measure.index)`/`timeAt(measure.index)` instead.
+
+  `layoutMeasure` draws a courtesy signature at the measure a change lands
+  on: the key and/or time signature, independently (only whichever actually
+  changed), whether or not that measure opens a system. A key change also
+  draws cancellation naturals for any of the old key's accidentals the new
+  key drops (worked out as the correct convention, not skipped: D major to G
+  major cancels only the C#, since the F# carries over; D major to C major
+  cancels both; a sharp-to-flat change cancels every old accidental), tested
+  and eyeballed via a rendered PNG. A change landing at a measure that also
+  opens a system is handled by the same existing "repeat key at system
+  start" logic, now reading the walked-back key instead of the score's
+  initial one, so it shows the changed key correctly with no separate code
+  path; a time signature, never repeated at a system start before this
+  slice, gained that case explicitly since nothing else covered it. Deliberate
+  scope cut, called out in `layoutMeasure`'s own comment: real engraving also
+  announces a change one system early, at the end of the system just before
+  it, when the change would otherwise land exactly at a system break; this
+  does not do that (it would need a measure's layout to know about a
+  *different* measure's eventual system membership, which nothing here
+  currently threads through), so every change still lands with correct
+  glyphs at its own measure, just without that extra advance notice.
+
+  13 new tests (4 model: `keyFifthsAt`/`timeAt` walk-back, a `MeasureBuildSpec`
+  with no change recording none, `validateMeasure` catching the exact bug a
+  wrong per-measure time signature would let through; 9 layout: full new
+  signature at a key change, both cancellation cases, a time change's own
+  courtesy signature, both changing together, no restatement at an
+  unrelated later measure, a change landing on a forced new system, beam
+  grouping actually following the new time signature, and the new showcase's
+  render) bring the suite to 179 (up from 166); `check`/`build` are green
+  and `bench` is unchanged (0.107-0.150ms scoped edit vs 0.661-10.546ms full
+  redraw across 4-124 measures, matching Slice 6's 0.113-0.148ms/
+  0.674-10.606ms; the bench's own fixture has no key/time changes, so this
+  was never expected to move). `createKeyTimeChangeShowcaseScore` (G major
+  4/4 -> D major 4/4 -> D major 3/4) folds into `createFullDemoScore` the
+  same way every other showcase does; `appendMeasures` now also copies a
+  copied measure's `keyFifths`/`time` (already-absolute values, so they
+  carry over unchanged regardless of where a showcase lands in the combined
+  score). The full demo score was rasterized through real node-canvas
+  directly and inspected by eye: the key change shows two sharps drawn
+  inline mid-system with no clef, and the time change's measure (which also
+  happens to open the demo's last system at this width) shows both the
+  repeated key and the new 3/4 together. Also fixed in passing: this file
+  ended in a stray, unmatched `</content>` line, evidently a leaked wrapper
+  artifact from an earlier session's edit; removed since it was never valid
+  Markdown and had nothing to open it.

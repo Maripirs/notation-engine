@@ -3,6 +3,7 @@ import {
 	createAccidentalShowcaseScore,
 	createDemoScore,
 	createDurationShowcaseScore,
+	createKeyTimeChangeShowcaseScore,
 	createSlurShowcaseScore,
 	createTieShowcaseScore
 } from '../demo-score.js';
@@ -1021,5 +1022,181 @@ describe('slurs', () => {
 		// second slur's incoming half.
 		expect(curvesOf(layout.measures[0]!.ops)).toHaveLength(2);
 		expect(curvesOf(layout.measures[1]!.ops)).toHaveLength(1);
+	});
+});
+
+describe('key and time changes', () => {
+	it('draws the new key signature in full at the measure where the key changes, no clef repeated', () => {
+		const score = buildScore(
+			[
+				[['G4', 'quarter']],
+				{ notes: [['G4', 'quarter']], keyFifths: 2 } // G major (1 sharp) -> D major (2 sharps)
+			],
+			{ keyFifths: 1 }
+		);
+		const layout = layoutScore(score);
+		const firstGlyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(firstGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(1);
+
+		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
+		// D major's full two-sharp signature is restated, not just the newly
+		// added C#: a courtesy signature is always the whole new key, the same
+		// as the score's very first measure states a whole key from nothing.
+		expect(changeGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
+		expect(changeGlyphs).not.toContain('accidentalNatural'); // nothing dropped, nothing to cancel
+		expect(changeGlyphs).not.toContain('gClef'); // this measure does not open a system
+	});
+
+	it('cancels a dropped accidental with a natural when the key change removes it', () => {
+		const score = buildScore(
+			[
+				[['G4', 'quarter']],
+				{ notes: [['G4', 'quarter']], keyFifths: 0 } // G major (F#) -> C major (no sharps)
+			],
+			{ keyFifths: 1 }
+		);
+		const layout = layoutScore(score);
+		// C major itself draws no accidentals of its own, so the only key-
+		// signature glyph the change measure needs is the natural cancelling
+		// the old F#; the note's own head is the only other glyph it draws.
+		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
+		expect(changeGlyphs.filter((g) => g === 'accidentalNatural')).toHaveLength(1);
+		expect(changeGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(0);
+	});
+
+	it('cancels only the dropped accidental, not one the new key still shares', () => {
+		// D major (F#, C#) -> G major (F#): F# carries straight over and needs
+		// no natural; only C# is dropped and needs cancelling.
+		const score = buildScore(
+			[
+				[['G4', 'quarter']],
+				{ notes: [['G4', 'quarter']], keyFifths: 1 }
+			],
+			{ keyFifths: 2 }
+		);
+		const layout = layoutScore(score);
+		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
+		expect(changeGlyphs.filter((g) => g === 'accidentalNatural')).toHaveLength(1);
+		expect(changeGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(1); // G major's own F#
+	});
+
+	it('draws the new time signature at the measure where the time changes', () => {
+		const score = buildScore([
+			[
+				['C4', 'quarter'],
+				['D4', 'quarter'],
+				['E4', 'quarter'],
+				['F4', 'quarter']
+			],
+			{
+				notes: [
+					['C4', 'quarter'],
+					['D4', 'quarter'],
+					['E4', 'quarter']
+				],
+				time: { beats: 3, beatType: 4 }
+			}
+		]);
+		const layout = layoutScore(score);
+		expect(glyphsOf(layout.measures[0]!.ops)).toContain('timeSig4');
+		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
+		expect(changeGlyphs).toContain('timeSig3');
+		expect(changeGlyphs).toContain('timeSig4');
+	});
+
+	it('draws both a courtesy key and time signature when both change at the same measure', () => {
+		const score = buildScore(
+			[
+				[
+					['G4', 'quarter'],
+					['A4', 'quarter'],
+					['B4', 'quarter'],
+					['C5', 'quarter']
+				],
+				{
+					keyFifths: 2,
+					time: { beats: 3, beatType: 4 },
+					notes: [
+						['D5', 'quarter'],
+						['E5', 'quarter'],
+						['F#5', 'quarter']
+					]
+				}
+			],
+			{ keyFifths: 1 }
+		);
+		const layout = layoutScore(score);
+		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
+		expect(changeGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
+		expect(changeGlyphs).toContain('timeSig3');
+	});
+
+	it('does not restate a courtesy signature at a later measure with no change of its own', () => {
+		const score = buildScore(
+			[[['G4', 'quarter']], { notes: [['G4', 'quarter']], keyFifths: 2 }, [['G4', 'quarter']]],
+			{ keyFifths: 1 }
+		);
+		const layout = layoutScore(score);
+		// Measure 2 is neither a system's first measure nor a change of its
+		// own, so it draws no clef, key or time glyph at all, only its one note.
+		expect(glyphsOf(layout.measures[2]!.ops)).toEqual(['noteheadBlack']);
+	});
+
+	it('still shows the changed key (and clef) when the change lands on a new system\'s own first measure', () => {
+		// An unreasonably tight budget forces every measure onto its own
+		// system, so measure 1 (the key change) also happens to open a system:
+		// exactly the case the existing "repeat key at system start" logic has
+		// to get right once the key it repeats can itself have just changed.
+		const score = buildScore(
+			[
+				[['G4', 'half'], ['A4', 'half']],
+				{ notes: [['G4', 'half'], ['A4', 'half']], keyFifths: 2 }
+			],
+			{ keyFifths: 1 }
+		);
+		const layout = layoutScore(score, { staffSpacePx: 11, systemWidthPx: 1 });
+		expect(layout.systems[1]!.measureIndices).toEqual([1]);
+		const glyphs = glyphsOf(layout.measures[1]!.ops);
+		expect(glyphs).toContain('gClef');
+		expect(glyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
+	});
+
+	it('groups beams by the new time signature after a mid-score change', () => {
+		// Six eighths under 4/4's simple quarter beat form three two-note
+		// beams; the same six eighths under 6/8's compound dotted-quarter beat
+		// form two three-note beams instead.
+		const ss = 10;
+		const beamHeight = ED.beamThickness * ss;
+		const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
+		const beamRects = (ops: readonly DrawOp[]) =>
+			ops.filter(isRect).filter((op) => Math.abs(op.height - beamHeight) < 0.001);
+
+		const sixEighths: readonly (readonly [string, NoteValue])[] = [
+			['D4', 'eighth'],
+			['E4', 'eighth'],
+			['F4', 'eighth'],
+			['G4', 'eighth'],
+			['A4', 'eighth'],
+			['B4', 'eighth']
+		];
+		const score = buildScore(
+			[[...sixEighths], { notes: [...sixEighths], time: { beats: 6, beatType: 8 } }],
+			{ time: { beats: 4, beatType: 4 } }
+		);
+		const layout = layoutScore(score, { staffSpacePx: ss });
+		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(3);
+		expect(beamRects(layout.measures[1]!.ops)).toHaveLength(2);
+	});
+
+	it('renders the key/time-change showcase, valid measures and all', () => {
+		const score = createKeyTimeChangeShowcaseScore();
+		for (const measure of score.measures) {
+			expect(validateMeasure(measure, score.timeAt(measure.index)).valid).toBe(true);
+		}
+		const layout = layoutScore(score);
+		// Measure 1 is the key change (D major, 2 sharps); measure 3 is the
+		// time change (3/4).
+		expect(glyphsOf(layout.measures[1]!.ops).filter((g) => g === 'accidentalSharp')).toHaveLength(2);
+		expect(glyphsOf(layout.measures[3]!.ops)).toContain('timeSig3');
 	});
 });

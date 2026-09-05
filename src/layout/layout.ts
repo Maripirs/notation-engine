@@ -459,24 +459,72 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	const ops: DrawOp[] = [];
 	const notes: LaidOutNote[] = [];
 
-	// The clef, key signature and (for the score's true first measure only)
-	// time signature belong to the *system-opening measure's* ops, not to some
-	// separate header object. That is what makes redrawing that measure
-	// self-contained: clearing its region wipes the clef, and drawing its ops
-	// puts the clef back. A header owned by nobody would be erased by the
-	// first edit in that measure and never repainted.
+	// The key and time signature actually in force at this measure, walking
+	// back through any earlier measure's explicit change (`Score.keyFifthsAt`/
+	// `timeAt`); every use of "the key" or "the time" below reads these local
+	// values, never `score.keyFifths`/`score.time` directly, since those two
+	// name only the score's *starting* values and ignore anything a measure
+	// changed since.
+	const keyFifths = score.keyFifthsAt(measure.index);
+	const time = score.timeAt(measure.index);
+	// Whether *this* measure is the one where the key (or time) actually
+	// changes, as opposed to merely being in whatever key an earlier measure
+	// set. Measure 0 never "changes" anything, since there is no earlier
+	// measure to differ from; its key/time come from the score's initial
+	// values instead, drawn unconditionally below via `isScoreFirst`/
+	// `isSystemFirst`.
+	const keyChangedHere = measure.index > 0 && keyFifths !== score.keyFifthsAt(measure.index - 1);
+	const timeChangedHere = measure.index > 0 && !timeSignaturesEqual(time, score.timeAt(measure.index - 1));
+
+	// The clef, key signature and (for the score's true first measure, or any
+	// later measure whose time signature just changed) time signature belong
+	// to the *system-opening measure's* ops, not to some separate header
+	// object. That is what makes redrawing that measure self-contained:
+	// clearing its region wipes the clef, and drawing its ops puts the clef
+	// back. A header owned by nobody would be erased by the first edit in
+	// that measure and never repainted.
 	//
 	// Every system's first measure repeats the clef and key signature, real
-	// engraving's rule for a new staff line. The time signature is different:
-	// it is not repeated at each system, only stated once at the score's true
-	// first measure (and again if it ever changed, which Phase 0 never does).
+	// engraving's rule for a new staff line; using `keyFifths` (the walked-
+	// back value) here rather than `score.keyFifths` is what makes a later
+	// system correctly show a key that changed since the score's start. The
+	// time signature is different: it is not repeated at each system, only
+	// stated once at the score's true first measure, and again wherever it
+	// actually changes.
+	//
+	// A key or time change that falls at a measure which is *not* its
+	// system's first also needs its own courtesy signature, announced right
+	// where it takes effect: this is the "mid-system" branch below. Real
+	// engraving convention also anticipates a change one system early, at the
+	// end of the system just before it, when the change would otherwise land
+	// exactly at a system break; this deliberately does not do that (it would
+	// need `layoutMeasure` to know about a *different* measure's system
+	// membership, which none of its inputs currently carry), so a change
+	// landing at a system's first measure is announced only there, not also
+	// trailed at the previous system's end. Flagged here as the scope this
+	// slice punts on; every change still lands with the right glyphs at the
+	// right measure, which is what the acceptance criteria ask for.
 	let cursor = startX;
 	if (ctx.isSystemFirst) {
 		cursor += SPACING.headerGap * ss;
 		cursor = layoutClef(ops, cursor, ctx);
-		cursor = layoutKeySignature(ops, cursor, score.keyFifths, ctx);
-		if (ctx.isScoreFirst) {
-			cursor = layoutTimeSignature(ops, cursor, score.time.beats, score.time.beatType, ctx);
+		cursor = layoutKeySignature(
+			ops,
+			cursor,
+			keyFifths,
+			ctx,
+			keyChangedHere ? score.keyFifthsAt(measure.index - 1) : undefined
+		);
+		if (ctx.isScoreFirst || timeChangedHere) {
+			cursor = layoutTimeSignature(ops, cursor, time.beats, time.beatType, ctx);
+		}
+	} else if (keyChangedHere || timeChangedHere) {
+		cursor += SPACING.headerGap * ss;
+		if (keyChangedHere) {
+			cursor = layoutKeySignature(ops, cursor, keyFifths, ctx, score.keyFifthsAt(measure.index - 1));
+		}
+		if (timeChangedHere) {
+			cursor = layoutTimeSignature(ops, cursor, time.beats, time.beatType, ctx);
 		}
 	}
 	cursor += SPACING.measureLeadIn * ss;
@@ -490,7 +538,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// draws the shared stems and beam afterwards, once every member's position
 	// is known. A note with no beamable neighbour is not in any group here and
 	// falls straight through to its ordinary single-flag stem.
-	const beamGroups = computeBeamGroups(measure.notes, score.time);
+	const beamGroups = computeBeamGroups(measure.notes, time);
 	const beamGroupOfNote = new Map<NoteId, BeamGroup>();
 	for (const group of beamGroups) {
 		for (const note of group.notes) beamGroupOfNote.set(note.id, group);
@@ -518,7 +566,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			notes,
 			cursor,
 			note,
-			score.keyFifths,
+			keyFifths,
 			ctx,
 			beamDirection,
 			lastStatedAlterForStep,
@@ -699,18 +747,31 @@ function layoutClef(ops: DrawOp[], x: number, ctx: MeasureContext): number {
 	return x + (GLYPH_METRICS.gClef.advance + SPACING.headerGap) * ctx.ss;
 }
 
+/**
+ * Draw a key signature's accidentals, optionally preceded by whichever
+ * cancellation naturals a change from `previousFifths` needs (see
+ * `layoutKeyCancellation`). `previousFifths` is only ever passed when this
+ * call is drawing an actual change (`layoutMeasure`'s `keyChangedHere`); the
+ * ordinary "restate the current key" calls (every system's own first measure,
+ * whether or not the key ever changed) omit it, since restating a key that
+ * was already in force cancels nothing.
+ */
 function layoutKeySignature(
 	ops: DrawOp[],
 	x: number,
 	fifths: number,
-	ctx: MeasureContext
+	ctx: MeasureContext,
+	previousFifths?: number
 ): number {
-	if (fifths === 0) return x;
+	let cursor = x;
+	if (previousFifths !== undefined && previousFifths !== fifths) {
+		cursor = layoutKeyCancellation(ops, cursor, previousFifths, fifths, ctx);
+	}
+	if (fifths === 0) return cursor;
 	const kind = fifths > 0 ? 'sharp' : 'flat';
 	const glyph: GlyphName = kind === 'sharp' ? 'accidentalSharp' : 'accidentalFlat';
 	const steps = KEY_SIGNATURE_POSITIONS[kind];
 	const octaves = KEY_SIGNATURE_OCTAVES[kind];
-	let cursor = x;
 	for (let i = 0; i < Math.min(Math.abs(fifths), 7); i++) {
 		const step = steps[i];
 		const octave = octaves[i];
@@ -718,6 +779,60 @@ function layoutKeySignature(
 		cursor = pushGlyph(ops, glyph, cursor, staffY(diatonicIndex({ step, alter: 0, octave }), ctx), ctx);
 	}
 	return cursor + SPACING.headerGap * ctx.ss;
+}
+
+/**
+ * Draw the natural signs cancelling whichever of `previousFifths`'s
+ * accidentals `fifths`'s key does not also carry, standard convention for a
+ * key change: e.g. D major (F#, C#) to G major (F#) cancels only the C#, since
+ * the F# carries straight over unchanged; D major to C major cancels both; a
+ * change from a sharp key to a flat key (or vice versa) cancels every one of
+ * the old key's accidentals, since the two signatures never share a step's
+ * sign. Drawn in the old signature's own written order, immediately before
+ * the new signature's own accidentals (or alone, if the new key is C major
+ * and has none of its own to follow).
+ */
+function layoutKeyCancellation(
+	ops: DrawOp[],
+	x: number,
+	previousFifths: number,
+	fifths: number,
+	ctx: MeasureContext
+): number {
+	const oldKind = previousFifths > 0 ? 'sharp' : 'flat';
+	const oldSteps = KEY_SIGNATURE_POSITIONS[oldKind].slice(0, Math.min(Math.abs(previousFifths), 7));
+	const oldOctaves = KEY_SIGNATURE_OCTAVES[oldKind];
+	const newKind = fifths > 0 ? 'sharp' : 'flat';
+	const newSteps: ReadonlySet<Step> =
+		fifths === 0
+			? new Set()
+			: new Set(KEY_SIGNATURE_POSITIONS[newKind].slice(0, Math.min(Math.abs(fifths), 7)));
+
+	let cursor = x;
+	for (let i = 0; i < oldSteps.length; i++) {
+		const step = oldSteps[i]!;
+		// This step needs no natural when the new key alters it the same way:
+		// same sign (both sharp or both flat) and still within the new key's own
+		// accidental count.
+		if (newKind === oldKind && newSteps.has(step)) continue;
+		const octave = oldOctaves[i]!;
+		cursor = pushGlyph(
+			ops,
+			'accidentalNatural',
+			cursor,
+			staffY(diatonicIndex({ step, alter: 0, octave }), ctx),
+			ctx
+		);
+	}
+	return cursor > x ? cursor + SPACING.headerGap * ctx.ss : cursor;
+}
+
+/** Whether two time signatures name the same meter, for deciding whether a
+ *  measure's effective time signature actually *changed* from the previous
+ *  measure's (`layoutMeasure`'s `timeChangedHere`), not just whether the two
+ *  object references differ. */
+function timeSignaturesEqual(a: TimeSignature, b: TimeSignature): boolean {
+	return a.beats === b.beats && a.beatType === b.beatType;
 }
 
 function layoutTimeSignature(

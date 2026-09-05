@@ -227,6 +227,54 @@ export function createSlurShowcaseScore(): Score {
 	);
 }
 
+/**
+ * Slice 7's key/time-change showcase: a key change (G major -> D major, one
+ * more sharp) partway through, then a time change (4/4 -> 3/4) further along,
+ * each landing at its own measure and announced there by an inline courtesy
+ * signature (see `layoutMeasure`'s key/time-change handling). Still starts in
+ * G major 4/4 like the other showcases.
+ */
+export function createKeyTimeChangeShowcaseScore(): Score {
+	return buildScore(
+		[
+			[
+				['G4', 'quarter'],
+				['A4', 'quarter'],
+				['B4', 'quarter'],
+				['C5', 'quarter']
+			],
+			{
+				// Key change to D major (2 sharps): F# carries straight over from
+				// G major, C# is the accidental the key signature newly implies.
+				keyFifths: 2,
+				notes: [
+					['D5', 'quarter'],
+					['C5', 'quarter'],
+					['B4', 'quarter'],
+					['A4', 'quarter']
+				]
+			},
+			[
+				['G4', 'quarter'],
+				['A4', 'quarter'],
+				['B4', 'quarter'],
+				['C5', 'quarter']
+			],
+			{
+				// Time change to 3/4, still in D major (no key field here, so it
+				// carries forward unchanged per `Score.keyFifthsAt`'s walk-back).
+				time: { beats: 3, beatType: 4 },
+				notes: [
+					['D5', 'quarter'],
+					['E5', 'quarter'],
+					['F#5', 'quarter']
+				]
+			}
+		],
+		{ keyFifths: 1, time: { beats: 4, beatType: 4 } }
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
@@ -244,6 +292,12 @@ function appendMeasures(score: Score, source: Score): void {
 	const copiedIdOf = new Map<NoteId, NoteId>();
 	for (const measure of source.measures) {
 		const copy = score.appendMeasure();
+		// A per-measure key/time change is already an absolute value (not a
+		// delta from the source score's own initial one), so it carries over
+		// unchanged regardless of where this showcase lands in the combined
+		// score or what key/time was already in force there.
+		copy.keyFifths = measure.keyFifths;
+		copy.time = measure.time;
 		for (const note of measure.notes) {
 			const copiedNote = score.appendNote(copy, {
 				pitch: note.pitch,
@@ -267,9 +321,10 @@ function appendMeasures(score: Score, source: Score): void {
 
 /**
  * What `npm run dev` actually shows: the Phase 0 fixture followed by Slice 1's
- * duration showcase, Slice 4's accidental showcase, Slice 5's tie showcase
- * and Slice 6's slur showcase, so a human can see all four render without
- * disturbing `createDemoScore`'s frozen shape (see the comment on it above).
+ * duration showcase, Slice 4's accidental showcase, Slice 5's tie showcase,
+ * Slice 6's slur showcase and Slice 7's key/time-change showcase, so a human
+ * can see all five render without disturbing `createDemoScore`'s frozen shape
+ * (see the comment on it above).
  */
 export function createFullDemoScore(): Score {
 	const score = createDemoScore();
@@ -277,5 +332,6 @@ export function createFullDemoScore(): Score {
 	appendMeasures(score, createAccidentalShowcaseScore());
 	appendMeasures(score, createTieShowcaseScore());
 	appendMeasures(score, createSlurShowcaseScore());
+	appendMeasures(score, createKeyTimeChangeShowcaseScore());
 	return score;
 }

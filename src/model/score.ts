@@ -139,6 +139,16 @@ export class Measure {
 	/** Position in the score, 0-based. Kept in sync by `Score`. */
 	index: number;
 	readonly notes: Note[] = [];
+	/**
+	 * A key signature change taking effect starting at this measure.
+	 * `undefined` means "no change here": the key in force is whatever the
+	 * nearest earlier measure with an explicit value set, or the score's
+	 * initial `keyFifths` if none ever did. Callers should not walk that chain
+	 * themselves; `Score.keyFifthsAt` does it once, in one place.
+	 */
+	keyFifths?: number;
+	/** Same idea as `keyFifths`, for a time signature change. See `Score.timeAt`. */
+	time?: TimeSignature;
 
 	constructor(index: number) {
 		this.index = index;
@@ -189,6 +199,12 @@ export interface MeasureValidation {
  * Deliberately just reports: an under- or over-full measure is a modelling
  * error the caller (an importer, an edit op, a hand-built test fixture) needs
  * to know about, not something layout should silently pad or truncate to fix.
+ *
+ * `time` is taken as a plain parameter, not read off `measure` itself, because
+ * a measure only ever *changes* a time signature (`Measure.time`); the one
+ * actually in force at a given measure is `Score.timeAt(measure.index)`, which
+ * a caller in a score with any mid-score time changes needs to pass here
+ * rather than the score's single initial `time`.
  */
 export function validateMeasure(measure: Measure, time: TimeSignature): MeasureValidation {
 	const actualWholes = measureDurationWholes(measure);
@@ -225,7 +241,12 @@ export interface Slur {
 export class Score {
 	/** One clef for the whole score in Phase 0. Other clefs are Phase 1. */
 	readonly clef = 'treble' as const;
+	/** The key in force before any measure states its own change; equivalent to
+	 *  a change "at measure -1". Read this directly only when literally asking
+	 *  about the score's starting point; `keyFifthsAt` is what answers "what
+	 *  key is measure N actually in", which is what layout and validation need. */
 	keyFifths: number;
+	/** Same idea as `keyFifths`, for the time signature. See `timeAt`. */
 	time: TimeSignature;
 	readonly measures: Measure[] = [];
 	/** Every slur in the score, in the order `addSlur` was called. Layout reads
@@ -260,6 +281,35 @@ export class Score {
 		const measure = new Measure(this.measures.length);
 		this.measures.push(measure);
 		return measure;
+	}
+
+	/**
+	 * The key signature in force at `measureIndex`: that measure's own
+	 * `keyFifths` if it set one, otherwise the nearest earlier measure's,
+	 * otherwise the score's initial `keyFifths`. Every reader that needs "the
+	 * key right now" (layout's key-aware accidental suppression, the courtesy
+	 * key signature at a change) calls this rather than walking `measures`
+	 * itself, so the walk-back rule lives in exactly one place.
+	 */
+	keyFifthsAt(measureIndex: number): number {
+		for (let i = measureIndex; i >= 0; i--) {
+			const explicit = this.measures[i]?.keyFifths;
+			if (explicit !== undefined) return explicit;
+		}
+		return this.keyFifths;
+	}
+
+	/** Same walk-back as `keyFifthsAt`, for the time signature in force at
+	 *  `measureIndex`. Layout uses this for beat grouping and the courtesy time
+	 *  signature at a change; `validateMeasure` uses it to check a measure
+	 *  against the capacity that actually applies to it, not the score's
+	 *  initial one, once a measure has changed it. */
+	timeAt(measureIndex: number): TimeSignature {
+		for (let i = measureIndex; i >= 0; i--) {
+			const explicit = this.measures[i]?.time;
+			if (explicit !== undefined) return explicit;
+		}
+		return this.time;
 	}
 
 	/** Append a note (or rest) to a measure, returning it so callers can keep its id. */
@@ -405,6 +455,39 @@ export type MeasureSpec = readonly (readonly [
 ])[];
 
 /**
+ * A measure literal that also changes the key and/or time signature starting
+ * at this measure, for `buildScore`'s `measures` array wherever a plain
+ * `MeasureSpec` (a bare array) needs a key or time change alongside it.
+ *
+ * A separate wrapper object rather than a third element tacked onto
+ * `MeasureSpec` itself: a key or time change is a property of the *measure*,
+ * not of any one note in it, so bolting it onto the per-note tuple the way
+ * `tiedToNext` fits a single note would not have a sensible home there.
+ * `buildScore` tells the two apart with `isMeasureBuildSpec`, since a bare
+ * `MeasureSpec` is always an array and this is always a plain object.
+ */
+export interface MeasureBuildSpec {
+	readonly notes: MeasureSpec;
+	/** See `Measure.keyFifths`. Omit to keep whatever key was in force before this measure. */
+	readonly keyFifths?: number;
+	/** See `Measure.time`. Omit to keep whatever time signature was in force before this measure. */
+	readonly time?: TimeSignature;
+}
+
+/** `spec is MeasureBuildSpec`, distinguishing it from a bare `MeasureSpec` by
+ *  the one shape difference between them: a `MeasureBuildSpec` is a plain
+ *  object, a `MeasureSpec` is always an array. A hand-written guard rather
+ *  than an inline `Array.isArray(spec)` check at each call site, because
+ *  TypeScript's built-in narrowing for `Array.isArray` cannot exclude a
+ *  *readonly* array type from a union (a readonly array is not assignable to
+ *  the mutable `any[]` the guard checks against, so the non-array branch
+ *  would otherwise stay unnarrowed), and `MeasureSpec` is deliberately
+ *  readonly like every other spec type in this file. */
+function isMeasureBuildSpec(spec: MeasureSpec | MeasureBuildSpec): spec is MeasureBuildSpec {
+	return !Array.isArray(spec);
+}
+
+/**
  * One slur, addressed by the position of its two end notes rather than by an
  * id (a slur literal is built before any note has one). Each position is
  * `[measureIndex, noteIndex]`, both 0-based into the `measures` array passed
@@ -429,7 +512,7 @@ export interface SlurSpec {
  * MusicXML import replaces it as the real entry point, not this.
  */
 export function buildScore(
-	measures: readonly MeasureSpec[],
+	measures: readonly (MeasureSpec | MeasureBuildSpec)[],
 	options: ScoreOptions = {},
 	slurs: readonly SlurSpec[] = []
 ): Score {
@@ -444,7 +527,15 @@ export function buildScore(
 	const builtNotes: Note[] = [];
 	for (const spec of measures) {
 		const measure = score.appendMeasure();
-		for (const [pitch, value, extra] of spec) {
+		// A plain-object spec carries a key/time change alongside its notes;
+		// see `isMeasureBuildSpec`'s own comment for why this check is a
+		// hand-written guard rather than an inline `Array.isArray(spec)`.
+		if (isMeasureBuildSpec(spec)) {
+			measure.keyFifths = spec.keyFifths;
+			measure.time = spec.time;
+		}
+		const notes = isMeasureBuildSpec(spec) ? spec.notes : spec;
+		for (const [pitch, value, extra] of notes) {
 			const note = score.appendNote(measure, {
 				pitch: pitch === null ? null : parsePitch(pitch),
 				value,

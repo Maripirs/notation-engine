@@ -155,6 +155,60 @@ describe('measure duration validation', () => {
 	});
 });
 
+describe('key and time changes', () => {
+	it('keyFifthsAt inherits the previous measure when a measure states no change', () => {
+		const score = buildScore(
+			[
+				[['G4', 'quarter']],
+				[['G4', 'quarter']], // no change: still the score's initial key
+				{ notes: [['G4', 'quarter']], keyFifths: 2 }, // D major from here on
+				[['G4', 'quarter']] // no change: still D major
+			],
+			{ keyFifths: 1 }
+		);
+		expect(score.keyFifthsAt(0)).toBe(1);
+		expect(score.keyFifthsAt(1)).toBe(1);
+		expect(score.keyFifthsAt(2)).toBe(2);
+		expect(score.keyFifthsAt(3)).toBe(2);
+	});
+
+	it('timeAt inherits the previous measure the same way keyFifthsAt does', () => {
+		const score = buildScore([
+			[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter'], ['F4', 'quarter']],
+			[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter'], ['F4', 'quarter']],
+			{ notes: [['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter']], time: { beats: 3, beatType: 4 } },
+			[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter']]
+		]);
+		expect(score.timeAt(0)).toEqual({ beats: 4, beatType: 4 });
+		expect(score.timeAt(1)).toEqual({ beats: 4, beatType: 4 });
+		expect(score.timeAt(2)).toEqual({ beats: 3, beatType: 4 });
+		expect(score.timeAt(3)).toEqual({ beats: 3, beatType: 4 });
+	});
+
+	it('a MeasureBuildSpec with no keyFifths/time still builds a measure with no change recorded', () => {
+		// Wrapping a measure in `{ notes, ... }` should not itself count as a
+		// change; only an actually-present `keyFifths`/`time` field should.
+		const score = buildScore([{ notes: [['G4', 'quarter']] }], { keyFifths: 1 });
+		expect(score.measures[0]!.keyFifths).toBeUndefined();
+		expect(score.keyFifthsAt(0)).toBe(1);
+	});
+
+	it('validateMeasure against timeAt catches a measure that only validates under the wrong time signature', () => {
+		// Guards against the exact bug this API exists to prevent: reading the
+		// score's single initial `time` for every measure would validate this
+		// 3/4 measure as under-full (it does not fill 4/4), when it is in fact
+		// exactly full under the 3/4 it actually changed to.
+		const score = buildScore([
+			[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter'], ['F4', 'quarter']],
+			{ notes: [['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter']], time: { beats: 3, beatType: 4 } }
+		]);
+		const wrongTime = validateMeasure(score.measures[1]!, score.time);
+		expect(wrongTime.valid).toBe(false);
+		const rightTime = validateMeasure(score.measures[1]!, score.timeAt(1));
+		expect(rightTime.valid).toBe(true);
+	});
+});
+
 describe('ties', () => {
 	it('resolves extra.tiedToNext across a barline to the next note in the same voice', () => {
 		const score = buildScore([
