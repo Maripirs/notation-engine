@@ -9,7 +9,7 @@
 import bravuraUrl from '../assets/bravura/Bravura.woff2?url';
 import {
 	CanvasRenderer,
-	createDemoScore,
+	createFullDemoScore,
 	hitTest,
 	layoutScore,
 	loadSmuflFont,
@@ -49,7 +49,7 @@ function systemWidthForViewport(): number {
 	return Math.max(200, bodyContentWidth - CANVAS_BORDER_PX);
 }
 
-const score = createDemoScore();
+const score = createFullDemoScore();
 let layoutOptions = { staffSpacePx: 11, systemWidthPx: systemWidthForViewport() };
 let layout: LaidOutScore = layoutScore(score, layoutOptions);
 let selected: NoteId | null = null;

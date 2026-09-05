@@ -13,7 +13,7 @@
 
 export const NOTATION_ENGINE_VERSION = '0.0.1';
 
-export { createDemoScore } from './demo-score.js';
+export { createDemoScore, createDurationShowcaseScore, createFullDemoScore } from './demo-score.js';
 export * from './model/index.js';
 export * from './layout/index.js';
 export * from './render/index.js';

@@ -12,7 +12,7 @@
 // Phase 0 needs from spacing is only that measures have stable, non-overlapping
 // horizontal bands, which is what makes region-scoped redraw possible at all.
 
-import type { Measure, Note, Score } from '../model/score.js';
+import type { Measure, Note, NoteValue, Score } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -57,6 +57,10 @@ const SPACING = {
 	noteSlopePerWhole: 9,
 	/** Gap between an accidental and the notehead it belongs to. */
 	accidentalGap: 0.3,
+	/** Gap between a notehead (or rest) and its first augmentation dot. */
+	dotGap: 0.2,
+	/** Gap between two augmentation dots on the same note. */
+	dotSpacing: 0.3,
 	/** Blank at the start of a measure's note area, after the clef or barline.
 	 *  Wide enough that a down-stem first note, whose stem is the leftmost ink
 	 *  it draws, does not crowd the barline. */
@@ -104,15 +108,34 @@ const NOTEHEAD_GLYPHS = {
 	whole: 'noteheadWhole',
 	half: 'noteheadHalf',
 	quarter: 'noteheadBlack',
-	eighth: 'noteheadBlack'
-} as const satisfies Record<string, GlyphName>;
+	eighth: 'noteheadBlack',
+	'16th': 'noteheadBlack',
+	'32nd': 'noteheadBlack',
+	'64th': 'noteheadBlack'
+} as const satisfies Record<NoteValue, GlyphName>;
 
 const REST_GLYPHS = {
 	whole: 'restWhole',
 	half: 'restHalf',
 	quarter: 'restQuarter',
-	eighth: 'rest8th'
-} as const satisfies Record<string, GlyphName>;
+	eighth: 'rest8th',
+	'16th': 'rest16th',
+	'32nd': 'rest32nd',
+	'64th': 'rest64th'
+} as const satisfies Record<NoteValue, GlyphName>;
+
+/**
+ * Flag glyphs for the durations that need one. Whole, half and quarter notes
+ * never carry a flag. A beamed group replaces an eighth-and-shorter note's
+ * individual flag with a shared beam; until Slice 2 builds that grouping,
+ * every one of these values draws its own flag regardless of neighbours.
+ */
+const FLAG_GLYPHS: Readonly<Partial<Record<NoteValue, { up: GlyphName; down: GlyphName }>>> = {
+	eighth: { up: 'flag8thUp', down: 'flag8thDown' },
+	'16th': { up: 'flag16thUp', down: 'flag16thDown' },
+	'32nd': { up: 'flag32ndUp', down: 'flag32ndDown' },
+	'64th': { up: 'flag64thUp', down: 'flag64thDown' }
+};
 
 const ACCIDENTAL_GLYPHS = {
 	'-1': 'accidentalFlat',
@@ -531,6 +554,9 @@ function layoutNote(
 		// staff; the glyph origins encode which, so one y works for all four.
 		const y = ctx.staffTopY + (note.value === 'whole' ? 1 : 2) * ss;
 		ops.push({ kind: 'glyph', glyph, x: cellX, y, noteId: note.id });
+		// A rest has no line/space of its own to nudge a dot off of, so its dot
+		// sits at the rest's own y with no vertical adjustment.
+		layoutAugmentationDots(ops, cellX + GLYPH_METRICS[glyph].advance * ss, y, false, note.dots, ctx);
 		notes.push({ id: note.id, bounds: glyphBounds(glyph, cellX, y, ss, 0.25) });
 		return cellX + advance;
 	}
@@ -555,12 +581,52 @@ function layoutNote(
 	ops.push({ kind: 'glyph', glyph: headGlyph, x: noteX, y, noteId: note.id });
 	layoutLedgerLines(ops, noteX, headGlyph, d, note.id, ctx);
 
+	// Ledger lines only land on line positions (see `layoutLedgerLines`), so
+	// the same parity check says whether this note itself sits on a line.
+	const onLine = (d - TREBLE_BOTTOM_LINE) % 2 === 0;
+	layoutAugmentationDots(
+		ops,
+		noteX + GLYPH_METRICS[headGlyph].advance * ss,
+		y,
+		onLine,
+		note.dots,
+		ctx
+	);
+
 	if (note.value !== 'whole') {
-		layoutStemAndFlag(ops, noteX, y, headGlyph, d, note.value === 'eighth', note.id, ctx);
+		layoutStemAndFlag(ops, noteX, y, headGlyph, d, note.value, note.id, ctx);
 	}
 
 	notes.push({ id: note.id, bounds: glyphBounds(headGlyph, noteX, y, ss, 0.3) });
 	return cellX + advance;
+}
+
+/**
+ * Draw a note's augmentation dots, right of the notehead (or rest) per SMuFL
+ * convention.
+ *
+ * A dot sitting on a staff line reads as if it is touching the line, so when
+ * the note it belongs to sits on a line, the dot is nudged up into the space
+ * above instead of drawn at the note's own height. `onLine` is `false` for
+ * rests, which have no line/space of their own to nudge off of.
+ */
+function layoutAugmentationDots(
+	ops: DrawOp[],
+	startX: number,
+	glyphY: number,
+	onLine: boolean,
+	dots: number,
+	ctx: MeasureContext
+): void {
+	if (dots === 0) return;
+	const { ss } = ctx;
+	const y = onLine ? glyphY - ss / 2 : glyphY;
+	const dotAdvance = GLYPH_METRICS.augmentationDot.advance * ss;
+	let x = startX + SPACING.dotGap * ss;
+	for (let i = 0; i < dots; i++) {
+		ops.push({ kind: 'glyph', glyph: 'augmentationDot', x, y });
+		x += dotAdvance + SPACING.dotSpacing * ss;
+	}
 }
 
 function layoutLedgerLines(
@@ -597,7 +663,7 @@ function layoutStemAndFlag(
 	noteY: number,
 	headGlyph: GlyphName,
 	d: number,
-	hasFlag: boolean,
+	value: NoteValue,
 	noteId: string,
 	ctx: MeasureContext
 ): void {
@@ -623,10 +689,12 @@ function layoutStemAndFlag(
 		noteId
 	});
 
-	if (!hasFlag) return;
-	// Unbeamed eighths get a flag. Beaming (deciding which notes group, then
-	// solving beam angle and stem lengths together) is Phase 1.
-	const glyph: GlyphName = up ? 'flag8thUp' : 'flag8thDown';
+	const flagGlyphs = FLAG_GLYPHS[value];
+	if (!flagGlyphs) return;
+	// Unbeamed eighth-and-shorter notes get a flag. Beaming (deciding which
+	// notes group, then solving beam angle and stem lengths together) is
+	// Phase 1's Slice 2.
+	const glyph: GlyphName = up ? flagGlyphs.up : flagGlyphs.down;
 	const flagAnchor = glyphMetrics(glyph).anchors[up ? 'stemUpNW' : 'stemDownSW'];
 	if (!flagAnchor) return;
 	ops.push({

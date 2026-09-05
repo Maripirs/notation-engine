@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { createDemoScore } from '../demo-score.js';
-import { buildScore } from '../model/score.js';
+import { createDemoScore, createDurationShowcaseScore } from '../demo-score.js';
+import { buildScore, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
-import type { LaidOutScore } from './types.js';
+import type { DrawOp, LaidOutScore } from './types.js';
+
+const NOTE_VALUES: readonly NoteValue[] = ['whole', 'half', 'quarter', 'eighth', '16th', '32nd', '64th'];
+
+/** Glyph names an ops list draws, in order, dropping the plain rects. */
+const glyphsOf = (ops: readonly DrawOp[]) =>
+	ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
 
 const overlaps = (a: { x: number; width: number }, b: { x: number; width: number }) =>
 	a.x < b.x + b.width && b.x < a.x + a.width;
@@ -224,5 +230,125 @@ describe('layoutScore with systemWidthPx (multi-system)', () => {
 		// before this feature existed, one system regardless of score width.
 		const layout = layoutScore(createDemoScore(), { staffSpacePx: 11 });
 		expect(layout.systems).toEqual([{ measureIndices: [0, 1, 2, 3], topY: layout.staffTopY }]);
+	});
+});
+
+describe('duration rendering', () => {
+	const NOTEHEAD_FOR: Readonly<Record<NoteValue, string>> = {
+		whole: 'noteheadWhole',
+		half: 'noteheadHalf',
+		quarter: 'noteheadBlack',
+		eighth: 'noteheadBlack',
+		'16th': 'noteheadBlack',
+		'32nd': 'noteheadBlack',
+		'64th': 'noteheadBlack'
+	};
+	const REST_FOR: Readonly<Record<NoteValue, string>> = {
+		whole: 'restWhole',
+		half: 'restHalf',
+		quarter: 'restQuarter',
+		eighth: 'rest8th',
+		'16th': 'rest16th',
+		'32nd': 'rest32nd',
+		'64th': 'rest64th'
+	};
+	// C4 sits below the treble staff's middle line, so its stem (and any flag)
+	// point up: see `layoutStemAndFlag`'s `up = d < TREBLE_MIDDLE_LINE` rule.
+	const FLAG_UP_FOR: Readonly<Partial<Record<NoteValue, string>>> = {
+		eighth: 'flag8thUp',
+		'16th': 'flag16thUp',
+		'32nd': 'flag32ndUp',
+		'64th': 'flag64thUp'
+	};
+
+	it.each(NOTE_VALUES)('draws the %s notehead, and its flag if it has one', (value) => {
+		const layout = layoutScore(buildScore([[['C4', value]]]));
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs).toContain(NOTEHEAD_FOR[value]);
+		const flag = FLAG_UP_FOR[value];
+		if (flag) expect(glyphs).toContain(flag);
+		else expect(glyphs.some((g) => g.startsWith('flag'))).toBe(false);
+	});
+
+	it.each(NOTE_VALUES)('draws the %s rest glyph', (value) => {
+		const layout = layoutScore(buildScore([[[null, value]]]));
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs).toContain(REST_FOR[value]);
+	});
+
+	it.each(NOTE_VALUES)('draws one augmentation dot for a single-dotted %s', (value) => {
+		const layout = layoutScore(buildScore([[['C4', value, { dots: 1 }]]]));
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.filter((g) => g === 'augmentationDot')).toHaveLength(1);
+	});
+
+	it.each(NOTE_VALUES)('draws two augmentation dots for a double-dotted %s', (value) => {
+		const layout = layoutScore(buildScore([[['C4', value, { dots: 2 }]]]));
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.filter((g) => g === 'augmentationDot')).toHaveLength(2);
+	});
+
+	it('draws a dot after a dotted rest too', () => {
+		const layout = layoutScore(buildScore([[[null, 'quarter', { dots: 1 }]]]));
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.filter((g) => g === 'augmentationDot')).toHaveLength(1);
+	});
+
+	it('nudges a dot up into the space above when its note sits on a line', () => {
+		// B4 sits on the treble staff's middle line.
+		const onLine = layoutScore(buildScore([[['B4', 'quarter', { dots: 1 }]]]));
+		const onLineOps = onLine.measures[0]!.ops;
+		const onLineHead = onLineOps.find((op) => op.kind === 'glyph' && op.glyph === 'noteheadBlack')!;
+		const onLineDot = onLineOps.find((op) => op.kind === 'glyph' && op.glyph === 'augmentationDot')!;
+		expect(onLineDot.y).toBeLessThan(onLineHead.y);
+
+		// D4 sits in the leger space below the staff (no leger line of its own,
+		// unlike C4 which sits on one), so its dot needs no nudge.
+		const inSpace = layoutScore(buildScore([[['D4', 'quarter', { dots: 1 }]]]));
+		const inSpaceOps = inSpace.measures[0]!.ops;
+		const inSpaceHead = inSpaceOps.find((op) => op.kind === 'glyph' && op.glyph === 'noteheadBlack')!;
+		const inSpaceDot = inSpaceOps.find((op) => op.kind === 'glyph' && op.glyph === 'augmentationDot')!;
+		expect(inSpaceDot.y).toBeCloseTo(inSpaceHead.y, 6);
+	});
+
+	it.each(NOTE_VALUES)('gives a triplet %s two-thirds the spacing of a plain one', (value) => {
+		// Not pinning down exact numbers: Phase 1's real optical spacing (Slice 9)
+		// replaces the linear-in-duration term this relies on. Only the relative
+		// ordering matters here, which is what the demo's triplet measure leans on
+		// to render at all: a shorter effective duration must claim less width.
+		const straight = layoutScore(buildScore([[['C4', value]]]));
+		const triplet = layoutScore(buildScore([[['C4', value, { tuplet: TRIPLET }]]]));
+		expect(triplet.measures[0]!.region.width).toBeLessThan(straight.measures[0]!.region.width);
+	});
+
+	it('validates both duration-showcase measures against 4/4 capacity', () => {
+		// The measures `npm run dev` shows to demonstrate this slice's new
+		// durations (see `createDurationShowcaseScore`) are exactly the kind of
+		// hand-built literal `validateMeasure` exists to catch a mistake in;
+		// this pins down that they are in fact capacity-valid.
+		const score = createDurationShowcaseScore();
+		for (const measure of score.measures) {
+			expect(validateMeasure(measure, score.time).valid).toBe(true);
+		}
+	});
+
+	it('renders the duration showcase with every new glyph, a dot, and a triplet group', () => {
+		const score = createDurationShowcaseScore();
+		const layout = layoutScore(score);
+		const firstMeasureGlyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(firstMeasureGlyphs).toEqual(
+			expect.arrayContaining([
+				'augmentationDot',
+				'flag8thUp',
+				'flag16thDown',
+				'flag32ndDown',
+				'flag64thDown'
+			])
+		);
+		// The second measure is a full bar of quarter-note triplets: six notes,
+		// each carrying the triplet ratio, none of them a binary fraction of a
+		// beat on its own.
+		expect(score.measures[1]!.notes).toHaveLength(6);
+		expect(score.measures[1]!.notes.every((n) => n.tuplet !== null)).toBe(true);
 	});
 });

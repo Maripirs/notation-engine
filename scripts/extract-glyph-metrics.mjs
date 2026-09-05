@@ -24,12 +24,20 @@ const glyphNames = JSON.parse(readFileSync(join(assets, 'glyphnames.json'), 'utf
 // The glyphs Phase 0 actually draws. Every one of these is exercised by the
 // demo score, so an entry going stale shows up immediately rather than rotting.
 const GLYPHS = [
-	// Noteheads and the flag for unbeamed eighths (beaming is Phase 1).
+	// Noteheads and flags for unbeamed eighth-and-shorter notes (beaming, which
+	// replaces per-note flags with shared beams for consecutive short notes, is
+	// Phase 1's Slice 2).
 	'noteheadWhole',
 	'noteheadHalf',
 	'noteheadBlack',
 	'flag8thUp',
 	'flag8thDown',
+	'flag16thUp',
+	'flag16thDown',
+	'flag32ndUp',
+	'flag32ndDown',
+	'flag64thUp',
+	'flag64thDown',
 	// One clef. Multi-clef support is Phase 1 with the rest of engraving.
 	'gClef',
 	// Rests, one per supported duration.
@@ -37,10 +45,15 @@ const GLYPHS = [
 	'restHalf',
 	'restQuarter',
 	'rest8th',
+	'rest16th',
+	'rest32nd',
+	'rest64th',
 	// Accidentals: the three that a +/-1 semitone transpose can produce.
 	'accidentalSharp',
 	'accidentalFlat',
 	'accidentalNatural',
+	// Augmentation dot, for dotted durations.
+	'augmentationDot',
 	// Time signature digits. 0-9 rather than just the demo's 4, because the
 	// model lets a caller pick any beats/beat-type and a missing digit would
 	// be a silent hole in the render.

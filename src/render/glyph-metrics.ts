@@ -76,6 +76,60 @@ export const GLYPH_METRICS = {
 		bBoxNE: [1.224, 3.232],
 		anchors: { stemDownSW: [0, 0.132] }
 	},
+	flag16thUp: {
+		name: 'flag16thUp',
+		codepoint: 0xE242,
+		description: 'Combining flag 2 (16th) above',
+		advance: 1.116,
+		bBoxSW: [0, -3.252],
+		bBoxNE: [1.116, 0.008],
+		anchors: { stemUpNW: [0, -0.088] }
+	},
+	flag16thDown: {
+		name: 'flag16thDown',
+		codepoint: 0xE243,
+		description: 'Combining flag 2 (16th) below',
+		advance: 1.168,
+		bBoxSW: [0, -0.036],
+		bBoxNE: [1.164, 3.248],
+		anchors: { stemDownSW: [0, 0.128] }
+	},
+	flag32ndUp: {
+		name: 'flag32ndUp',
+		codepoint: 0xE244,
+		description: 'Combining flag 3 (32nd) above',
+		advance: 1.048,
+		bBoxSW: [0, -3.248],
+		bBoxNE: [1.044, 0.596],
+		anchors: { stemUpNW: [0, 0.376] }
+	},
+	flag32ndDown: {
+		name: 'flag32ndDown',
+		codepoint: 0xE245,
+		description: 'Combining flag 3 (32nd) below',
+		advance: 1.096,
+		bBoxSW: [0, -0.688],
+		bBoxNE: [1.092, 3.248],
+		anchors: { stemDownSW: [0, -0.448] }
+	},
+	flag64thUp: {
+		name: 'flag64thUp',
+		codepoint: 0xE246,
+		description: 'Combining flag 4 (64th) above',
+		advance: 1.048,
+		bBoxSW: [0, -3.248],
+		bBoxNE: [1.044, 1.388],
+		anchors: { stemUpNW: [0, 1.172] }
+	},
+	flag64thDown: {
+		name: 'flag64thDown',
+		codepoint: 0xE247,
+		description: 'Combining flag 4 (64th) below',
+		advance: 1.1,
+		bBoxSW: [0, -1.504],
+		bBoxNE: [1.092, 3.248],
+		anchors: { stemDownSW: [0, -1.244] }
+	},
 	gClef: {
 		name: 'gClef',
 		codepoint: 0xE050,
@@ -121,6 +175,33 @@ export const GLYPH_METRICS = {
 		bBoxNE: [0.988, 0.696],
 		anchors: {}
 	},
+	rest16th: {
+		name: 'rest16th',
+		codepoint: 0xE4E7,
+		description: '16th (semiquaver) rest',
+		advance: 1.28,
+		bBoxSW: [0, -2],
+		bBoxNE: [1.28, 0.716],
+		anchors: {}
+	},
+	rest32nd: {
+		name: 'rest32nd',
+		codepoint: 0xE4E8,
+		description: '32nd (demisemiquaver) rest',
+		advance: 1.452,
+		bBoxSW: [0, -2],
+		bBoxNE: [1.452, 1.704],
+		anchors: {}
+	},
+	rest64th: {
+		name: 'rest64th',
+		codepoint: 0xE4E9,
+		description: '64th (hemidemisemiquaver) rest',
+		advance: 1.696,
+		bBoxSW: [0, -3.012],
+		bBoxNE: [1.692, 1.72],
+		anchors: {}
+	},
 	accidentalSharp: {
 		name: 'accidentalSharp',
 		codepoint: 0xE262,
@@ -146,6 +227,15 @@ export const GLYPH_METRICS = {
 		advance: 0.672,
 		bBoxSW: [0, -1.34],
 		bBoxNE: [0.672, 1.364],
+		anchors: {}
+	},
+	augmentationDot: {
+		name: 'augmentationDot',
+		codepoint: 0xE1E7,
+		description: 'Augmentation dot',
+		advance: 0.4,
+		bBoxSW: [0, -0.2],
+		bBoxNE: [0.4, 0.2],
 		anchors: {}
 	},
 	timeSig0: {
