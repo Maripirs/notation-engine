@@ -359,6 +359,8 @@ export const ENGRAVING_DEFAULTS = {
 	thinBarlineThickness: 0.16,
 	thickBarlineThickness: 0.5,
 	barlineSeparation: 0.4,
+	beamThickness: 0.5,
+	beamSpacing: 0.25,
 } as const;
 
 /**

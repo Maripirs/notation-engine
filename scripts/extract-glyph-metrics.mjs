@@ -24,9 +24,9 @@ const glyphNames = JSON.parse(readFileSync(join(assets, 'glyphnames.json'), 'utf
 // The glyphs Phase 0 actually draws. Every one of these is exercised by the
 // demo score, so an entry going stale shows up immediately rather than rotting.
 const GLYPHS = [
-	// Noteheads and flags for unbeamed eighth-and-shorter notes (beaming, which
-	// replaces per-note flags with shared beams for consecutive short notes, is
-	// Phase 1's Slice 2).
+	// Noteheads and flags for unbeamed eighth-and-shorter notes. Beamed groups
+	// (Phase 1's Slice 2) replace these flags with beam rects instead, so no
+	// new glyphs were needed for beaming itself.
 	'noteheadWhole',
 	'noteheadHalf',
 	'noteheadBlack',
@@ -71,8 +71,8 @@ const GLYPHS = [
 
 // Engraving defaults are line thicknesses and extensions the font *recommends*
 // for things drawn as plain rectangles rather than glyphs (staff lines, stems,
-// ledger lines, barlines). Using the font's own numbers is what keeps our
-// hand-drawn strokes visually consistent with its glyph shapes.
+// ledger lines, barlines, beams). Using the font's own numbers is what keeps
+// our hand-drawn strokes visually consistent with its glyph shapes.
 const ENGRAVING_DEFAULTS = [
 	'staffLineThickness',
 	'stemThickness',
@@ -80,7 +80,9 @@ const ENGRAVING_DEFAULTS = [
 	'legerLineExtension',
 	'thinBarlineThickness',
 	'thickBarlineThickness',
-	'barlineSeparation'
+	'barlineSeparation',
+	'beamThickness',
+	'beamSpacing'
 ];
 
 // The stem attachment anchors we use. SMuFL publishes many more per notehead

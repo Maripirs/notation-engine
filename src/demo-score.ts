@@ -47,12 +47,15 @@ export function createDemoScore(): Score {
 }
 
 /**
- * Slice 1's duration-model showcase: two measures, still in G major 4/4, that
- * between them draw every duration value this slice added (16th, 32nd, 64th),
- * a double-dotted and a single-dotted note, and a full measure of triplets.
+ * Slice 1's duration-model showcase, extended by Slice 2 with a third measure
+ * of beamed eighths. Three measures, still in G major 4/4, that between them
+ * draw every duration value Slice 1 added (16th, 32nd, 64th), a double-dotted
+ * and a single-dotted note, a full measure of triplets, and (Slice 2) a
+ * measure of plain eighth-note pairs so a human looking at `npm run dev` sees
+ * an actual beam, not stacked individual flags.
  *
  * Each measure's notes are chosen to sum to exactly the time signature's
- * capacity (`validateMeasure` passes on both), the same discipline a real
+ * capacity (`validateMeasure` passes on all three), the same discipline a real
  * score needs and the thing this slice's capacity check exists to catch when
  * it is violated by mistake.
  */
@@ -64,6 +67,12 @@ export function createDurationShowcaseScore(): Score {
 				// 28, the eighth 8, the 16th 4, the 32nd 2, the 64th 1, summing to
 				// 43. The rests fill the remaining 21 (a quarter's 16, a 16th's 4,
 				// a 64th's 1) out to a full 64.
+				//
+				// This measure is also, unplanned but instructive, Slice 2's first
+				// beaming example: the eighth lands alone in its beat and keeps its
+				// individual flag, while the 16th/32nd/64th land together in the
+				// next beat and beam, with a secondary beam over the 16th+32nd pair
+				// and a tertiary beam over the 32nd+64th pair.
 				['G4', 'quarter', { dots: 2 }],
 				['A4', 'eighth'],
 				['B4', '16th'],
@@ -77,13 +86,31 @@ export function createDurationShowcaseScore(): Score {
 				// Two groups of three triplet quarters, each group taking the time
 				// of two quarters, fill the measure the way a written "3" over each
 				// group's bracket would in real notation (the bracket itself is a
-				// later slice; the duration math is this one's).
+				// later slice; the duration math is this one's). Quarters are never
+				// beam-eligible, so this measure has no beaming to demonstrate.
 				['F#5', 'quarter', { tuplet: TRIPLET }],
 				['E5', 'quarter', { tuplet: TRIPLET }],
 				['D5', 'quarter', { tuplet: TRIPLET }],
 				['C5', 'quarter', { tuplet: TRIPLET }],
 				['B4', 'quarter', { tuplet: TRIPLET }],
 				['A4', 'quarter', { tuplet: TRIPLET }]
+			],
+			[
+				// An ascending then descending scale in plain eighths: eight notes,
+				// each pair sharing a quarter-note beat, so 4/4's beat-based
+				// grouping (Slice 2) draws four separate two-note beams rather than
+				// one beam across the whole bar. The clean, single-level case
+				// `flag8thUp`/`flag8thDown`'s glyphs at the top of this file exist
+				// to draw when there is no beamable neighbour, here rendered as a
+				// beam instead.
+				['G4', 'eighth'],
+				['A4', 'eighth'],
+				['B4', 'eighth'],
+				['C5', 'eighth'],
+				['D5', 'eighth'],
+				['C5', 'eighth'],
+				['B4', 'eighth'],
+				['A4', 'eighth']
 			]
 		],
 		{ keyFifths: 1, time: { beats: 4, beatType: 4 } }

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { createDemoScore, createDurationShowcaseScore } from '../demo-score.js';
 import { buildScore, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
+import { ENGRAVING_DEFAULTS as ED } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
 import type { DrawOp, LaidOutScore } from './types.js';
 
@@ -321,7 +322,7 @@ describe('duration rendering', () => {
 		expect(triplet.measures[0]!.region.width).toBeLessThan(straight.measures[0]!.region.width);
 	});
 
-	it('validates both duration-showcase measures against 4/4 capacity', () => {
+	it('validates every duration-showcase measure against 4/4 capacity', () => {
 		// The measures `npm run dev` shows to demonstrate this slice's new
 		// durations (see `createDurationShowcaseScore`) are exactly the kind of
 		// hand-built literal `validateMeasure` exists to catch a mistake in;
@@ -332,23 +333,155 @@ describe('duration rendering', () => {
 		}
 	});
 
-	it('renders the duration showcase with every new glyph, a dot, and a triplet group', () => {
+	it('renders the duration showcase with every new glyph, a dot, a beam, and a triplet group', () => {
 		const score = createDurationShowcaseScore();
 		const layout = layoutScore(score);
 		const firstMeasureGlyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(firstMeasureGlyphs).toEqual(
-			expect.arrayContaining([
-				'augmentationDot',
-				'flag8thUp',
-				'flag16thDown',
-				'flag32ndDown',
-				'flag64thDown'
-			])
-		);
+		// The eighth lands alone in its beat (Slice 2's grouping pass, see
+		// `computeBeamGroups`) and keeps its individual flag; the 16th/32nd/64th
+		// right after it share the next beat and beam together instead, so none
+		// of their individual flag glyphs are drawn any more.
+		expect(firstMeasureGlyphs).toEqual(expect.arrayContaining(['augmentationDot', 'flag8thUp']));
+		expect(
+			firstMeasureGlyphs.some(
+				(g) => g.startsWith('flag16th') || g.startsWith('flag32nd') || g.startsWith('flag64th')
+			)
+		).toBe(false);
+
 		// The second measure is a full bar of quarter-note triplets: six notes,
 		// each carrying the triplet ratio, none of them a binary fraction of a
-		// beat on its own.
+		// beat on its own. Quarters are never beam-eligible, so nothing here
+		// beams regardless of the triplet grouping.
 		expect(score.measures[1]!.notes).toHaveLength(6);
 		expect(score.measures[1]!.notes.every((n) => n.tuplet !== null)).toBe(true);
+
+		// The third measure is eight plain eighths, a beat's worth (two notes)
+		// at a time: 4/4 groups by the quarter beat, so this beams as four
+		// separate two-note beams, not one beam across the whole bar, and draws
+		// no flag glyphs at all.
+		const thirdMeasureGlyphs = glyphsOf(layout.measures[2]!.ops);
+		expect(thirdMeasureGlyphs.some((g) => g.startsWith('flag'))).toBe(false);
+	});
+});
+
+describe('beaming', () => {
+	// A fixed staff space size makes the engraving-default thicknesses below
+	// round, distinct numbers instead of whatever `DEFAULTS.staffSpacePx`
+	// happens to be, which is what makes identifying a stem/beam rect by exact
+	// width/height reliable rather than a fuzzy size heuristic.
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+	const stemWidth = ED.stemThickness * ss;
+	const beamHeight = ED.beamThickness * ss;
+
+	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
+
+	/** A note's stem: the one rect width that is unique among everything else
+	 *  `layoutMeasure` draws (staff lines, ledger lines, barlines, beams all
+	 *  use different constants from `ENGRAVING_DEFAULTS`), so this identifies
+	 *  a stem regardless of whether it belongs to a beamed group or a single
+	 *  note's own flag. */
+	const stemRects = (ops: readonly DrawOp[]) =>
+		ops.filter(isRect).filter((op) => Math.abs(op.width - stemWidth) < 0.001);
+
+	/** A beam segment: the one rect height unique to beams. Matches every
+	 *  level (primary, secondary, ...) and both full segments and beamlet
+	 *  stubs, since all of them share the font's one beam thickness. */
+	const beamRects = (ops: readonly DrawOp[]) =>
+		ops.filter(isRect).filter((op) => Math.abs(op.height - beamHeight) < 0.001);
+
+	// Pitches in this section stay within the staff (E4-F5) and off the key
+	// signature's altered steps (C major, the `buildScore` default), so
+	// nothing here draws a ledger line or an accidental to complicate the
+	// rect/glyph counts above.
+
+	it('beams a pair of eighths sharing a quarter-note beat in 4/4, with no individual flags', () => {
+		const layout = layoutScore(buildScore([[['D4', 'eighth'], ['E4', 'eighth']]]), options);
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.some((g) => g.startsWith('flag'))).toBe(false);
+		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(2);
+		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(1);
+	});
+
+	it('does not beam two eighths that fall in different beats, even with no rest between them', () => {
+		// A quarter rest (one full beat) then a dotted eighth rest push the two
+		// eighths that follow to start at 0.4375 and 0.5625 wholes: the first is
+		// still in beat 1 ([0.25, 0.5)), the second has already crossed into
+		// beat 2 ([0.5, 0.75)). Adjacent notes, no rest directly between them,
+		// but a beat boundary falls between their start positions, so they must
+		// not beam.
+		const layout = layoutScore(
+			buildScore([[[null, 'quarter'], [null, 'eighth', { dots: 1 }], ['D4', 'eighth'], ['E4', 'eighth']]]),
+			options
+		);
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.filter((g) => g.startsWith('flag'))).toHaveLength(2);
+		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(0);
+		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(2);
+	});
+
+	it('groups by the dotted-quarter beat in 6/8, not the eighth', () => {
+		// Six eighths in 6/8 form two three-note beams (one per dotted-quarter
+		// beat), not six individual flags or one six-note beam across the bar.
+		const score = buildScore(
+			[[['D4', 'eighth'], ['E4', 'eighth'], ['F4', 'eighth'], ['G4', 'eighth'], ['A4', 'eighth'], ['B4', 'eighth']]],
+			{ time: { beats: 6, beatType: 8 } }
+		);
+		const layout = layoutScore(score, options);
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.some((g) => g.startsWith('flag'))).toBe(false);
+		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(6);
+		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(2);
+	});
+
+	it('breaks a beam group at a rest, leaving a beamed pair and a singleton', () => {
+		// Beat 0: eighth, eighth (beams together). Beat 1: eighth rest, eighth
+		// (the rest breaks the group, so the lone eighth after it falls back to
+		// its own individual flag rather than beaming with the pair before it).
+		const score = buildScore([
+			[
+				['D4', 'eighth'],
+				['E4', 'eighth'],
+				[null, 'eighth'],
+				['F4', 'eighth'],
+				['G4', 'quarter'],
+				['A4', 'quarter']
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.filter((g) => g.startsWith('flag'))).toHaveLength(1);
+		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(1);
+		// Two beamed stems, the singleton eighth's own, and the two trailing
+		// quarter notes' stems (quarters always get a stem, just never a flag):
+		// five stems total.
+		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(5);
+	});
+
+	it('gives a mixed eighth/16th group a full-group primary beam and a secondary beam over just the 16ths', () => {
+		// One beat: an eighth followed by two 16ths (1/8 + 1/16 + 1/16 = 1/4).
+		const score = buildScore([[['D4', 'eighth'], ['E4', '16th'], ['F4', '16th']]]);
+		const layout = layoutScore(score, options);
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs.some((g) => g.startsWith('flag'))).toBe(false);
+		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(3);
+		// Primary beam (all three) plus a secondary beam over the two 16ths.
+		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(2);
+	});
+
+	it('draws one shared, flat beam for a group straddling the middle line', () => {
+		// B4 sits on the middle line itself (down, by the existing single-note
+		// split), D5 sits above it (also down); both notes therefore already
+		// agree on direction, so this is really checking that the beam comes
+		// out flat and shared rather than two independent per-note stems of
+		// different lengths landing at different heights.
+		const layout = layoutScore(buildScore([[['B4', 'eighth'], ['D5', 'eighth']]]), options);
+		const stems = stemRects(layout.measures[0]!.ops);
+		expect(stems).toHaveLength(2);
+		// A flat beam means both stems reach the same y on the beam side. Down
+		// stems hang from the notehead, so the beam is each stem's bottom edge:
+		// `y + height`.
+		const beamSideY = stems.map((s) => s.y + s.height);
+		expect(beamSideY[0]).toBeCloseTo(beamSideY[1]!, 6);
 	});
 });

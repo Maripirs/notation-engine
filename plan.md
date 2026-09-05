@@ -73,7 +73,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       triplet across `durationWholes`, notehead/flag selection, and
       measure-capacity validation (valid and invalid cases); demo
       measure shows one of each duration rendering correctly.
-- [ ] **Slice 2 — Automatic beaming.** Group consecutive eighth-and-
+- [x] **Slice 2 — Automatic beaming.** Group consecutive eighth-and-
       shorter notes within a beat (per time signature) into beams
       instead of individual flags; replaces `layoutStemAndFlag`'s
       per-note flag path for beamed groups. Acceptance: unit tests
@@ -203,4 +203,36 @@ divisi splits). Unscoped.
   reviewed the diff and ran the full check/test/build/bench suite
   directly before committing, rather than trusting the subagent's own
   report.
+- 2026-09-04: Slice 2 (automatic beaming) done. `layoutMeasure` now runs a
+  grouping pass (`computeBeamGroups`) before laying out stems: consecutive
+  eighth-and-shorter notes sharing a beat (the quarter beat in simple
+  meters, the dotted-quarter beat in compound ones) become one beam group;
+  a rest, a quarter-or-longer note, or a beat boundary breaks the group,
+  and a group of one falls back to its old individual flag. A beamed
+  group's stems share one direction (the average of the group's diatonic
+  positions against the middle line, mirroring the existing single-note
+  split) and one flat beam height, with secondary/tertiary beam segments
+  drawn only over the sub-run of notes whose own duration needs them
+  (16th/32nd/64th), including a fixed-width stub for an isolated note at a
+  deeper level with no same-level neighbour. Two deliberate
+  simplifications, both flagged in code comments for a later pass: the
+  beam is flat (real engraving angles it to follow the notes' contour),
+  and the stem-direction rule is the same simple middle-line split Slice 3
+  is scoped to replace, just applied to a group average instead of one
+  note. `beamThickness`/`beamSpacing` were added to the generated
+  `glyph-metrics.ts` (extracted from Bravura's own engraving defaults,
+  like every other line thickness this engine draws by hand) rather than
+  invented locally. `createDurationShowcaseScore` gained a third measure
+  (a plain ascending/descending eighth-note scale) so `npm run dev` shows
+  a clean single-level beam alongside the mixed 16th/32nd/64th group
+  Slice 1's showcase already happened to contain, which now beams instead
+  of drawing three stacked flags; the frozen `createDemoScore` fixture's
+  existing eighth pair (measure 3) also now renders as a beam with no
+  model changes, confirmed by direct inspection of its draw ops. 120
+  tests pass (up from 114), covering 4/4 and 6/8 grouping, a rest
+  splitting a group into a beamed pair plus a singleton, cross-beat
+  non-grouping, mixed-subdivision secondary beaming, and shared stem
+  direction; `check`/`build` are green and `bench` is unchanged
+  (0.11-0.15ms scoped edit vs 0.65-10.4ms full redraw across 4-124
+  measures).
 </content>

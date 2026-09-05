@@ -12,7 +12,7 @@
 // Phase 0 needs from spacing is only that measures have stable, non-overlapping
 // horizontal bands, which is what makes region-scoped redraw possible at all.
 
-import type { Measure, Note, NoteValue, Score } from '../model/score.js';
+import type { Measure, Note, NoteId, NoteValue, Score, TimeSignature } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -126,15 +126,31 @@ const REST_GLYPHS = {
 
 /**
  * Flag glyphs for the durations that need one. Whole, half and quarter notes
- * never carry a flag. A beamed group replaces an eighth-and-shorter note's
- * individual flag with a shared beam; until Slice 2 builds that grouping,
- * every one of these values draws its own flag regardless of neighbours.
+ * never carry a flag. A note eligible for beaming (see `computeBeamGroups`)
+ * only draws its flag glyph when it ends up alone, with no beamable
+ * neighbour in its beat; grouped with at least one neighbour, it gets a
+ * shared beam instead (`layoutBeamGroup`). This map's keys double as the
+ * membership test for "eligible for beaming at all".
  */
 const FLAG_GLYPHS: Readonly<Partial<Record<NoteValue, { up: GlyphName; down: GlyphName }>>> = {
 	eighth: { up: 'flag8thUp', down: 'flag8thDown' },
 	'16th': { up: 'flag16thUp', down: 'flag16thDown' },
 	'32nd': { up: 'flag32ndUp', down: 'flag32ndDown' },
 	'64th': { up: 'flag64thUp', down: 'flag64thDown' }
+};
+
+/**
+ * How many beams (or, unbeamed, flags) each duration draws: one for an
+ * eighth, two for a 16th, and so on. A beamed group's primary beam spans
+ * every member; its secondary and tertiary beams span only the sub-runs of
+ * consecutive notes whose own level reaches that high, same as this table
+ * says a single 16th needs two flags where a single eighth needs one.
+ */
+const BEAM_LEVELS: Readonly<Partial<Record<NoteValue, number>>> = {
+	eighth: 1,
+	'16th': 2,
+	'32nd': 3,
+	'64th': 4
 };
 
 const ACCIDENTAL_GLYPHS = {
@@ -421,9 +437,29 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	}
 	cursor += SPACING.measureLeadIn * ss;
 
-	for (const note of measure.notes) {
-		cursor = layoutNote(ops, notes, cursor, note, score.keyFifths, ctx);
+	// Deciding beam groups is a pass over the whole measure's notes (a group
+	// cannot be known note-by-note: whether the third eighth joins the first
+	// two depends on the beat it falls in), so it happens once here rather
+	// than inside `layoutNote`. A note that lands in a group of two or more
+	// skips its individual stem-and-flag in the main loop below and instead
+	// has its notehead position recorded in `placements`; `layoutBeamGroup`
+	// draws the shared stems and beam afterwards, once every member's position
+	// is known. A note with no beamable neighbour is not in any group here and
+	// falls straight through to its ordinary single-flag stem.
+	const beamGroups = computeBeamGroups(measure.notes, score.time);
+	const beamGroupOfNote = new Map<NoteId, BeamGroup>();
+	for (const group of beamGroups) {
+		for (const note of group.notes) beamGroupOfNote.set(note.id, group);
 	}
+	const placements = new Map<NoteId, NotePlacement>();
+
+	for (const note of measure.notes) {
+		const beamed = beamGroupOfNote.has(note.id);
+		const laid = layoutNote(ops, notes, cursor, note, score.keyFifths, ctx, beamed);
+		cursor = laid.cursor;
+		if (laid.placement) placements.set(note.id, laid.placement);
+	}
+	for (const group of beamGroups) layoutBeamGroup(ops, group, placements, ctx);
 	cursor += SPACING.measureTrailOut * ss;
 
 	// Staff lines are per measure, spanning exactly this measure's band, for the
@@ -537,14 +573,27 @@ function digitGlyphs(value: number): readonly GlyphName[] {
 		.map((digit) => TIME_SIG_DIGITS[Number(digit)] ?? 'timeSig0');
 }
 
+/**
+ * Where a beamed note's stem attaches, recorded so `layoutBeamGroup` can draw
+ * every member's stem and the connecting beam(s) once the whole group's
+ * positions are known, without redoing notehead placement itself.
+ */
+interface NotePlacement {
+	readonly noteX: number;
+	readonly y: number;
+	readonly headGlyph: GlyphName;
+	readonly d: number;
+}
+
 function layoutNote(
 	ops: DrawOp[],
 	notes: LaidOutNote[],
 	cellX: number,
 	note: Note,
 	keyFifths: number,
-	ctx: MeasureContext
-): number {
+	ctx: MeasureContext,
+	beamed: boolean
+): { cursor: number; placement: NotePlacement | null } {
 	const { ss } = ctx;
 	const advance = (SPACING.noteBase + SPACING.noteSlopePerWhole * note.durationWholes) * ss;
 
@@ -558,7 +607,7 @@ function layoutNote(
 		// sits at the rest's own y with no vertical adjustment.
 		layoutAugmentationDots(ops, cellX + GLYPH_METRICS[glyph].advance * ss, y, false, note.dots, ctx);
 		notes.push({ id: note.id, bounds: glyphBounds(glyph, cellX, y, ss, 0.25) });
-		return cellX + advance;
+		return { cursor: cellX + advance, placement: null };
 	}
 
 	const pitch = note.pitch;
@@ -593,12 +642,22 @@ function layoutNote(
 		ctx
 	);
 
+	// A beamed note's stem is drawn later, by `layoutBeamGroup`, once every
+	// member of its group has a recorded position: its length and direction
+	// depend on the whole group, not on this note alone. An unbeamed note
+	// (whole, or eighth-and-shorter with no beamable neighbour) keeps the
+	// simple single-note path it always had.
+	let placement: NotePlacement | null = null;
 	if (note.value !== 'whole') {
-		layoutStemAndFlag(ops, noteX, y, headGlyph, d, note.value, note.id, ctx);
+		if (beamed) {
+			placement = { noteX, y, headGlyph, d };
+		} else {
+			layoutStemAndFlag(ops, noteX, y, headGlyph, d, note.value, note.id, ctx);
+		}
 	}
 
 	notes.push({ id: note.id, bounds: glyphBounds(headGlyph, noteX, y, ss, 0.3) });
-	return cellX + advance;
+	return { cursor: cellX + advance, placement };
 }
 
 /**
@@ -669,7 +728,9 @@ function layoutStemAndFlag(
 ): void {
 	const { ss } = ctx;
 	// Below the middle line the stem goes up, on or above it the stem goes down.
-	// Phase 1 replaces this with the voice- and beam-aware rule.
+	// Slice 3 replaces this with the real single-voice rule (distance from the
+	// middle line, not just which side); `beamStemUp` below uses the same
+	// split for a beamed group's one shared direction in the meantime.
 	const up = d < TREBLE_MIDDLE_LINE;
 	const anchors = glyphMetrics(headGlyph).anchors;
 	const anchor = up ? anchors.stemUpSE : anchors.stemDownNW;
@@ -691,9 +752,10 @@ function layoutStemAndFlag(
 
 	const flagGlyphs = FLAG_GLYPHS[value];
 	if (!flagGlyphs) return;
-	// Unbeamed eighth-and-shorter notes get a flag. Beaming (deciding which
-	// notes group, then solving beam angle and stem lengths together) is
-	// Phase 1's Slice 2.
+	// This function only ever runs for a note with no beamable neighbour
+	// (`layoutMeasure` routes anything in a group of two or more to
+	// `layoutBeamGroup` instead), so an eighth-and-shorter note reaching here
+	// always draws its own flag.
 	const glyph: GlyphName = up ? flagGlyphs.up : flagGlyphs.down;
 	const flagAnchor = glyphMetrics(glyph).anchors[up ? 'stemUpNW' : 'stemDownSW'];
 	if (!flagAnchor) return;
@@ -704,6 +766,238 @@ function layoutStemAndFlag(
 		y: tipY + flagAnchor[1] * ss,
 		noteId
 	});
+}
+
+/** A run of consecutive beamable notes sharing one beam. Always two or more
+ *  members: `computeBeamGroups` never reports a group of one, since a lone
+ *  eligible note is indistinguishable from an ordinary unbeamed one. */
+interface BeamGroup {
+	readonly notes: readonly Note[];
+}
+
+/**
+ * How much duration one beat holds, as a fraction of a whole note, for
+ * deciding where a beam group must break.
+ *
+ * Simple meters (4/4, 3/4, 2/4, 2/2, ...) beam by the beat the time
+ * signature's denominator names: one beat is one note of that value. Compound
+ * meters (6/8, 9/8, 12/8) instead beam by the dotted-quarter beat: three
+ * eighths make one beat, not one. Telling them apart from `beats`/`beatType`
+ * alone is a real ambiguity at the edges (3/8 is sometimes beamed as a single
+ * three-eighth group and sometimes as three separate one-eighth beats
+ * depending on tempo and house style); this picks the simplest rule that gets
+ * the common cases right rather than modelling the full convention: `beatType
+ * === 8` and a `beats` count divisible by three and greater than three is
+ * compound, everything else is simple.
+ */
+function beatDurationWholes(time: TimeSignature): number {
+	const unit = 1 / time.beatType;
+	const isCompound = time.beatType === 8 && time.beats % 3 === 0 && time.beats > 3;
+	return isCompound ? unit * 3 : unit;
+}
+
+/**
+ * Partition a measure's notes into beam groups: runs of consecutive eighth-
+ * and-shorter notes that share a beat, per `beatDurationWholes`.
+ *
+ * A rest breaks a group (rests are never beamed to a neighbour, so a group
+ * never has to reason about beaming over one), and so does a quarter note or
+ * longer, and so does crossing a beat boundary. None of that makes a group of
+ * one: a single eligible note with no beamable neighbour is reported as
+ * nothing here and falls through to its ordinary individual flag in
+ * `layoutNote`/`layoutStemAndFlag`.
+ *
+ * Position within the measure is tracked in `durationWholes`, which already
+ * folds in dots and tuplet ratios, so a tupleted eighth lands in the same
+ * beat math as a plain one without this function needing to know tuplets
+ * exist.
+ */
+function computeBeamGroups(notes: readonly Note[], time: TimeSignature): BeamGroup[] {
+	const beatWholes = beatDurationWholes(time);
+	// A float position compared against a beat boundary with plain `<`/`floor`
+	// would occasionally misfire on the rounding noise a chain of additions
+	// accumulates; this tolerance is far tighter than any duration difference
+	// that could be musically real.
+	const EPS = 1e-9;
+
+	const groups: Note[][] = [];
+	let current: Note[] = [];
+	// The beat the notes in `current` fall in, so a new note can be compared
+	// against it without recomputing anything about the notes already grouped.
+	let currentBeat = -1;
+	let position = 0;
+
+	const flush = () => {
+		if (current.length >= 2) groups.push(current);
+		current = [];
+	};
+
+	for (const note of notes) {
+		const eligible = note.pitch !== null && note.value in FLAG_GLYPHS;
+		if (!eligible) {
+			flush();
+			position += note.durationWholes;
+			continue;
+		}
+		const beat = Math.floor((position + EPS) / beatWholes);
+		if (current.length > 0 && beat !== currentBeat) flush();
+		current.push(note);
+		currentBeat = beat;
+		position += note.durationWholes;
+	}
+	flush();
+
+	return groups.map((group) => ({ notes: group }));
+}
+
+/**
+ * A beamed group's one shared stem direction.
+ *
+ * Real engraving looks at which way the majority of notes want to point, with
+ * a tie broken by the note farthest from the middle line. This instead
+ * averages every member's diatonic position and applies the same
+ * middle-line split a single note uses (`layoutStemAndFlag`'s `up = d <
+ * TREBLE_MIDDLE_LINE`): simpler than a majority vote plus tie-break, and
+ * correct for the common case of a group that sits mostly on one side of the
+ * staff. Slice 3 (stem direction rules) is where this gets refined alongside
+ * the single-note rule it deliberately mirrors.
+ */
+function beamStemUp(notes: readonly Note[]): boolean {
+	const diatonics = notes.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : []));
+	const average = diatonics.reduce((sum, d) => sum + d, 0) / diatonics.length;
+	return average < TREBLE_MIDDLE_LINE;
+}
+
+/** The x a beamed note's stem occupies, matching `layoutStemAndFlag`'s own
+ *  placement so a beam group's stems line up with what an unbeamed note next
+ *  to them would have drawn. `null` when the notehead publishes no stem
+ *  anchor (Phase 0/1 only lacks one for `noteheadWhole`, which never reaches
+ *  here since whole notes are never beam-eligible). */
+function beamStemX(placement: NotePlacement, up: boolean, ss: number): number | null {
+	const anchors = glyphMetrics(placement.headGlyph).anchors;
+	const anchor = up ? anchors.stemUpSE : anchors.stemDownNW;
+	if (!anchor) return null;
+	const thickness = ED.stemThickness * ss;
+	return up ? placement.noteX + anchor[0] * ss - thickness : placement.noteX + anchor[0] * ss;
+}
+
+/**
+ * Draw one beam group: every member's stem, then the primary beam (spanning
+ * the whole group) and any secondary/tertiary beams (spanning only the
+ * sub-run of notes whose own duration needs that many beams, e.g. two 16ths
+ * next to a beamed eighth get a secondary beam over just the 16ths).
+ *
+ * The beam is flat, at a height set so the group's most extreme member gets
+ * exactly `STEM_LENGTH` and every other member's stem is at least that long,
+ * reaching up (or down) to the same beam. Real engraving angles the beam
+ * slightly to follow the notes' contour; a flat beam is this slice's
+ * deliberate simplification, left for a later pass to refine, since it is
+ * already correct enough to read as one beamed group rather than stacked
+ * flags.
+ */
+function layoutBeamGroup(
+	ops: DrawOp[],
+	group: BeamGroup,
+	placements: ReadonlyMap<NoteId, NotePlacement>,
+	ctx: MeasureContext
+): void {
+	const { ss } = ctx;
+	const members = group.notes.flatMap((note) => {
+		const placement = placements.get(note.id);
+		return placement ? [{ note, placement }] : [];
+	});
+	if (members.length < 2) return;
+
+	const up = beamStemUp(group.notes);
+	const beamY = up
+		? Math.min(...members.map((m) => m.placement.y - STEM_LENGTH * ss))
+		: Math.max(...members.map((m) => m.placement.y + STEM_LENGTH * ss));
+
+	const stemThickness = ED.stemThickness * ss;
+	for (const { note, placement } of members) {
+		const stemX = beamStemX(placement, up, ss);
+		if (stemX === null) continue;
+		const anchor = glyphMetrics(placement.headGlyph).anchors[up ? 'stemUpSE' : 'stemDownNW']!;
+		const attachY = placement.y - anchor[1] * ss;
+		ops.push({
+			kind: 'rect',
+			x: stemX,
+			y: Math.min(attachY, beamY),
+			width: stemThickness,
+			height: Math.abs(beamY - attachY),
+			noteId: note.id
+		});
+	}
+
+	const beamThickness = ED.beamThickness * ss;
+	// Centre-to-centre distance between adjacent beams: the font's own
+	// recommended gap plus the beam's own thickness.
+	const beamPitch = (ED.beamThickness + ED.beamSpacing) * ss;
+	const maxLevel = Math.max(...group.notes.map((n) => BEAM_LEVELS[n.value] ?? 1));
+
+	for (let level = 1; level <= maxLevel; level++) {
+		// Each additional beam stacks further from the noteheads than the last,
+		// same direction as the stems extend.
+		const barY = up
+			? beamY + (level - 1) * beamPitch
+			: beamY - (level - 1) * beamPitch - beamThickness;
+
+		let runStart = -1;
+		for (let i = 0; i <= members.length; i++) {
+			const atLevel = i < members.length && (BEAM_LEVELS[members[i]!.note.value] ?? 1) >= level;
+			if (atLevel && runStart === -1) runStart = i;
+			if (!atLevel && runStart !== -1) {
+				pushBeamSegment(ops, members, runStart, i - 1, barY, beamThickness, stemThickness, up, ss);
+				runStart = -1;
+			}
+		}
+	}
+}
+
+/**
+ * One beam segment (a rectangle) at a given level, spanning from the first to
+ * the last member of a run of notes that share that subdivision.
+ *
+ * `stemXOf` gives each member's stem's *left* edge, so a segment's width adds
+ * back `stemWidth` to reach the last member's right edge; using the beam's
+ * own (thicker) `beamHeight` for that padding instead would overshoot every
+ * segment's right end by the difference between the two.
+ *
+ * A run of one note (a lone 16th next to notes that only need the primary
+ * beam) has no neighbour to span to at this level; real engraving points its
+ * partial beam ("beamlet") toward whichever neighbour is more subdivided.
+ * This instead always points toward the next note in the group if there is
+ * one, otherwise back toward the previous one, a fixed stub width rather than
+ * that neighbour-duration comparison: simpler, and visually indistinguishable
+ * for the common case this slice targets (a single 16th next to an eighth).
+ */
+function pushBeamSegment(
+	ops: DrawOp[],
+	members: readonly { readonly note: Note; readonly placement: NotePlacement }[],
+	startIndex: number,
+	endIndex: number,
+	barY: number,
+	beamHeight: number,
+	stemWidth: number,
+	up: boolean,
+	ss: number
+): void {
+	const stemXOf = (i: number) => beamStemX(members[i]!.placement, up, ss) ?? members[i]!.placement.noteX;
+
+	if (startIndex === endIndex) {
+		const stubWidth = 0.9 * ss;
+		const towardNext = endIndex + 1 < members.length;
+		const anchorX = stemXOf(startIndex);
+		const x = towardNext ? anchorX : anchorX - stubWidth;
+		ops.push({ kind: 'rect', x, y: barY, width: stubWidth + stemWidth, height: beamHeight });
+		return;
+	}
+
+	const x0 = stemXOf(startIndex);
+	const x1 = stemXOf(endIndex);
+	const left = Math.min(x0, x1);
+	const right = Math.max(x0, x1);
+	ops.push({ kind: 'rect', x: left, y: barY, width: right - left + stemWidth, height: beamHeight });
 }
 
 function pushGlyph(
