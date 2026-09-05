@@ -182,7 +182,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       second-interval clash resolving to offset noteheads and an
       accidental clearing the other voice's stem/notehead; demo shows a
       close-interval two-voice passage with no overlapping noteheads.
-- [ ] **Slice 3 — Staff/Part model + clef generalization.** `Score`
+- [x] **Slice 3 — Staff/Part model + clef generalization.** `Score`
       gains real `Staff`/`Part` types (a part groups one or more
       staves, e.g. one SATB choir part or a piano's two staves);
       `Measure`'s flat global `index` addressing is replaced with a
@@ -1071,3 +1071,33 @@ divisi splits). Unscoped.
   seconds resolve to visibly offset noteheads with no overlap, and a
   cross-voice accidental clears a ledger line sharing its column instead
   of printing on top of it.
+- 2026-09-05: M2 Slice 3 (Staff/Part model + clef generalization) done, the
+  heaviest of M2's six slices. `Score` gains real `Staff` (own clef, own
+  `measures[]`) and `Part` (grouping only, no brace/bracket yet) types;
+  `Score.clef`/`measures` become convenience getters onto `staves[0]` so
+  every pre-slice score is the exact single-staff degenerate case, and
+  `appendMeasure`/`keyFifthsAt`/`timeAt`/`endBarlineAt` all gained an
+  additive `staffIndex = 0` parameter rather than a breaking signature
+  change. `clef` is now per-staff (treble/bass/treble8); the three
+  treble-only diatonic constants generalized into `CLEF_LINES[clef]` and
+  the key-signature octave table into `KEY_SIGNATURE_OCTAVES[clef]`.
+  `Measure`'s flat global `index` became a `(staffIndex, index)` pair,
+  threaded through `LaidOutMeasure`, `relayoutMeasure` and
+  `CanvasRenderer.redrawMeasure`/`redrawMeasures`; `layoutScore` lays each
+  staff out independently (reusing the prior single-staff algorithm via a
+  new `layoutOneStaff` helper) and stacks the results, a deliberately
+  naive placeholder left for Slice 4's real interleaved-per-system
+  stacking. A latent bug was caught while auditing the staff dimension:
+  the slur-drawing pass compared raw `measure.index` with no staff guard,
+  which could have let one staff draw part of another staff's slur once
+  local indices collided; fixed alongside. Handed to a subagent with an
+  explicit scope-boundary brief against Slices 4-5 (this repo's plan-vs-
+  code cross-check for staying inside scope); it completed in one run
+  with no interruption. Claude reviewed the full diff, re-ran `npm run
+  glyphs` to confirm the new `fClef`/`gClef8vb` metrics reproduce
+  byte-for-byte, ran check/test/build/bench directly, and independently
+  rendered the new clef showcase to confirm by eye (middle C on a ledger
+  line below treble/treble8, squarely mid-staff in bass; treble8 visually
+  identical to treble but for the small "8") before committing. 229 tests
+  pass (up from 215); bench unchanged (0.278-0.331ms scoped edit vs
+  0.918-25.725ms full redraw across 4-124 measures).
