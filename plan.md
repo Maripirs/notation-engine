@@ -1,6 +1,6 @@
 # Project Plan: notation-engine
 
-**Current milestone:** M1
+**Current milestone:** M2
 
 Roadmap and full decision record: `OMR_EDITOR_PLAN.md` milestone E13 in the
 `divisi-omr-editor` worktree. This file tracks notation-engine's own
@@ -40,7 +40,7 @@ region-scoped redraw of just the touched measure. Proves the core
 - [x] Confirm go/no-go to proceed to Phase 1 (per `OMR_EDITOR_PLAN.md` E13,
       recommendation is go; confirmed)
 
-### M1 — Phase 1: Single-voice engraving [?]
+### M1 — Phase 1: Single-voice engraving [x]
 
 Est. 2-3 months. Scoped 2026-09-04 (Claude, autonomously, human
 confirmation still pending) into 9 sequential slices below, each with its
@@ -132,33 +132,46 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       (this must not regress M0's core claim).
 
 **Tasks — Human:**
-- [ ] Review this scoping when back; it was done solo per the standing
+- [x] Review this scoping when back; it was done solo per the standing
       "keep making progress" instruction rather than left blocked.
 
-### M2 — Phase 2: Multi-voice / multi-staff [ ]
+### M2 — Phase 2: Multi-voice / multi-staff [~]
 
 Est. 2-3 months. Multiple voices per staff, SATB part grouping + braces,
 cross-staff beaming. Unscoped; needs its own pass off M1's outcome.
 
-### M3 — Phase 3: Pagination [ ]
+### M3 — Phase 3: Sound / playback [ ]
+
+Unscoped, est. TBD. Audio playback of the score (tempo model, note
+onset/duration scheduling, audio engine). Placed after M2 rather than
+right after M1: this is a choral-notation tool (SATB part grouping,
+divisi splits), so playback only becomes useful once multi-voice/
+multi-staff data exists, not with M1's single voice alone. Client-side
+only (Web Audio API, in-browser, same as the canvas renderer) — no
+server backend; one was considered and ruled out (2026-09-05) since
+nothing in scope needs server-rendered audio, a hosted soundfont
+library, or multi-user sync.
+
+### M4 — Phase 4: Pagination [ ]
 
 Est. 1-2 months. Casting measures into systems and systems into pages,
 system/page breaks, part-name indent. Unscoped; M0 already built basic
 measure-to-system casting-off as demo-driven layout work, not a start on
 this milestone's full scope (page casting-off, breaks, indent remain open).
 
-### M4 — Phase 4: Interaction layer [ ]
+### M5 — Phase 5: Interaction layer [ ]
 
 Est. 1-2 months. Own hit-testing, selection/playback cursors, follow-scroll,
 zoom, replacing what E2/E4/E7 currently read off OSMD
-(`GetNearestNote`/`osmd.cursors`/`MeasureList`). Unscoped.
+(`GetNearestNote`/`osmd.cursors`/`MeasureList`). Playback cursors depend on
+M3's audio engine existing. Unscoped.
 
-### M5 — Phase 5: Reparity with E2-E12 [ ]
+### M6 — Phase 6: Reparity with E2-E12 [ ]
 
 Est. 1-2 months. Re-port seam markers, measure-range selection, undo/redo;
 MusicXML import (Audiveris output) and export. Unscoped.
 
-### M6 — Phase 6: Real-world edge cases [ ]
+### M7 — Phase 7: Real-world edge cases [ ]
 
 Ongoing, open-ended. Lyrics, repeats/endings/codas, grace notes,
 articulations, cross-page ties, and the choral-scan edge cases already
@@ -696,3 +709,14 @@ divisi splits). Unscoped.
   M1's scope per the milestone's own framing. None of this blocks M2; all of
   it is either flagged in its owning slice's own code comments or listed here
   for whoever scopes M2 to see in one place.
+- 2026-09-05: Added M3 (sound/playback) to the roadmap between M2 and
+  pagination, discussed with the human directly (not a solo autonomous
+  call). Placed after M2 rather than right after M1 because this is a
+  choral-notation tool (SATB grouping, divisi splits per M2/M6), so a
+  player only serves the real use case once multi-voice data exists;
+  single-voice-only playback off M1 alone was judged not worth building
+  as a throwaway. Old M3-M6 renumbered to M4-M7 accordingly.
+- 2026-09-05: M1 approved and closed after human review (test/check/build
+  green, all 196 tests passing, all 9 slices' acceptance criteria verified).
+  M2 (multi-voice/multi-staff) is now current; needs its own scoping pass
+  off M1's outcome before task work starts.
