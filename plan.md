@@ -172,7 +172,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       rhythmically independent voices (e.g. a half-note voice against a
       running eighth-note voice) in one staff with correct stems and no
       overlapping ink.
-- [ ] **Slice 2 — Voice-to-voice collision avoidance.** Extends M1
+- [x] **Slice 2 — Voice-to-voice collision avoidance.** Extends M1
       slice 4's single-voice accidental/ink collision logic across
       voices: noteheads from two voices landing on the same or adjacent
       beat within a second of each other get offset (one nudged right,
@@ -1045,3 +1045,29 @@ divisi splits). Unscoped.
   cross-voice notehead/accidental collision avoidance is Slice 2, not
   this one. 209 tests pass (up from 196); bench unchanged (0.28-0.33ms
   scoped edit vs 0.91-25.8ms full redraw across 4-124 measures).
+- 2026-09-05: M2 Slice 2 (voice-to-voice collision avoidance) done. Handed
+  to a subagent, which restructured `layoutMeasure`'s column walk (voice-
+  by-voice -> columns left to right, voices ascending within a column,
+  giving voice 2 visibility into voice 1's just-drawn ink at a shared
+  onset) but was interrupted twice by transient host-sleep infra, and its
+  own attempt to resume itself hit the same interruption a third time.
+  Rather than spawn a fourth attempt, Claude picked up its diff directly:
+  added the notehead-clash test (a second-interval pair resolving to a
+  full notehead's-width nudge, voice 2 always the one that yields, per
+  the same one-sided convention Slice 1's stem-direction override already
+  set), the cross-voice accidental-clearance test (extending M1 Slice 4's
+  `previousInkRight` mechanism to also check ink an earlier-processed
+  voice deposited in the same column, geometry asserted with the same
+  "closes to exactly the minimum" style Slice 4's own test used), two
+  tests confirming the new checks don't over-fire (an interval wider than
+  a second, and a second-apart pair already cleared by ordinary column
+  spacing), a new `createVoiceClashShowcaseScore` folded into
+  `createFullDemoScore`, and ran the full check/test/build/bench suite
+  directly before committing, the same rigor M1 Slice 1's own interrupted-
+  subagent recovery used. 215 tests pass (up from 209); check/build are
+  green and bench is unchanged (0.279-0.335ms scoped edit vs
+  0.912-25.624ms full redraw across 4-124 measures). The showcase was
+  rasterized through node-canvas directly and inspected by eye: parallel
+  seconds resolve to visibly offset noteheads with no overlap, and a
+  cross-voice accidental clears a ledger line sharing its column instead
+  of printing on top of it.
