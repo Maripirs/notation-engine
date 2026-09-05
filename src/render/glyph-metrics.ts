@@ -238,6 +238,15 @@ export const GLYPH_METRICS = {
 		bBoxNE: [0.4, 0.2],
 		anchors: {}
 	},
+	repeatDot: {
+		name: 'repeatDot',
+		codepoint: 0xE044,
+		description: 'Single repeat dot',
+		advance: 0.4,
+		bBoxSW: [0, -0.2],
+		bBoxNE: [0.4, 0.2],
+		anchors: {}
+	},
 	timeSig0: {
 		name: 'timeSig0',
 		codepoint: 0xE080,

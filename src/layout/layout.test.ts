@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
 	createAccidentalShowcaseScore,
+	createBarlineShowcaseScore,
 	createDemoScore,
 	createDurationShowcaseScore,
 	createKeyTimeChangeShowcaseScore,
@@ -1198,5 +1199,146 @@ describe('key and time changes', () => {
 		// time change (3/4).
 		expect(glyphsOf(layout.measures[1]!.ops).filter((g) => g === 'accidentalSharp')).toHaveLength(2);
 		expect(glyphsOf(layout.measures[3]!.ops)).toContain('timeSig3');
+	});
+});
+
+describe('barline types', () => {
+	// Every barline rect (thin or thick) spans the full staff height, `4 * ss`;
+	// nothing else drawn (staff lines, ledger lines, stems, beams) shares that
+	// height, so filtering on it isolates barline ink from everything else a
+	// measure draws without having to know any barline's x position up front.
+	const ss = 10;
+	const isBarlineRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> =>
+		op.kind === 'rect' && Math.abs(op.height - 4 * ss) < 0.001;
+	const barlineRects = (ops: readonly DrawOp[]) => ops.filter(isBarlineRect);
+	const repeatDots = (ops: readonly DrawOp[]) =>
+		ops.filter((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'repeatDot');
+
+	it('draws a normal barline as a single thin line', () => {
+		const score = buildScore([[['G4', 'quarter']], [['G4', 'quarter']], [['G4', 'quarter']]]);
+		const layout = layoutScore(score, { staffSpacePx: ss });
+		// Measure 0's own end (mid-score) defaults to 'normal': exactly one line.
+		const bars = barlineRects(layout.measures[0]!.ops);
+		expect(bars).toHaveLength(1);
+		expect(bars[0]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
+	});
+
+	it('draws a double barline as two thin lines close together', () => {
+		const score = buildScore([
+			{ notes: [['G4', 'quarter']], endBarline: 'double' },
+			[['G4', 'quarter']]
+		]);
+		const layout = layoutScore(score, { staffSpacePx: ss });
+		const bars = barlineRects(layout.measures[0]!.ops).sort((a, b) => a.x - b.x);
+		expect(bars).toHaveLength(2);
+		expect(bars[0]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
+		expect(bars[1]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
+		// The gap between them is the font's own recommended separation, the
+		// same spacing a final barline's thin-then-thick pair already uses.
+		const gap = bars[1]!.x - (bars[0]!.x + bars[0]!.width);
+		expect(gap).toBeCloseTo(ED.barlineSeparation * ss, 6);
+	});
+
+	it('draws a final barline as thin-then-thick, reachable both automatically and explicitly', () => {
+		// Automatic: the score's true last measure, no annotation at all.
+		const automatic = layoutScore(buildScore([[['G4', 'quarter']]]), { staffSpacePx: ss });
+		// Explicit: the same shape, requested by name.
+		const explicit = layoutScore(
+			buildScore([{ notes: [['G4', 'quarter']], endBarline: 'final' }]),
+			{ staffSpacePx: ss }
+		);
+		for (const layout of [automatic, explicit]) {
+			const bars = barlineRects(layout.measures[0]!.ops).sort((a, b) => a.x - b.x);
+			expect(bars).toHaveLength(2);
+			expect(bars[0]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
+			expect(bars[1]!.width).toBeCloseTo(ED.thickBarlineThickness * ss, 6);
+			// The thick line is the outer (rightmost) one, same as before this
+			// slice's ctx.isLast-only version of this shape.
+			expect(bars[1]!.x).toBeGreaterThan(bars[0]!.x);
+		}
+	});
+
+	it('an explicit endBarline on the last measure overrides the automatic final default', () => {
+		const layout = layoutScore(
+			buildScore([{ notes: [['G4', 'quarter']], endBarline: 'double' }]),
+			{ staffSpacePx: ss }
+		);
+		const bars = barlineRects(layout.measures[0]!.ops).sort((a, b) => a.x - b.x);
+		expect(bars).toHaveLength(2);
+		expect(bars[0]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
+		expect(bars[1]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6); // both thin, not final's thin+thick
+	});
+
+	it('draws a repeatEnd as two dots then a thick line', () => {
+		const score = buildScore([
+			{ notes: [['G4', 'quarter']], endBarline: 'repeatEnd' },
+			[['G4', 'quarter']]
+		]);
+		const layout = layoutScore(score, { staffSpacePx: ss });
+		const ops = layout.measures[0]!.ops;
+		const bars = barlineRects(ops);
+		expect(bars).toHaveLength(1);
+		expect(bars[0]!.width).toBeCloseTo(ED.thickBarlineThickness * ss, 6);
+		const dots = repeatDots(ops);
+		expect(dots).toHaveLength(2);
+		// Both dots sit left of (before) the thick line, and at the same x as
+		// each other: two dots stacked vertically, not side by side.
+		for (const dot of dots) expect(dot.x).toBeLessThan(bars[0]!.x);
+		expect(dots[0]!.x).toBeCloseTo(dots[1]!.x, 6);
+		// One dot in the staff space above the middle line, one below, straddling it.
+		const middleY = layout.staffTopY + 2 * ss;
+		expect(Math.min(dots[0]!.y, dots[1]!.y)).toBeCloseTo(middleY - ss / 2, 6);
+		expect(Math.max(dots[0]!.y, dots[1]!.y)).toBeCloseTo(middleY + ss / 2, 6);
+	});
+
+	it('draws a repeatStart as a thick line then two dots, at the measure it opens', () => {
+		// A third measure keeps measure 1 from also being the score's true last
+		// measure, which would otherwise add its own automatic 'final' pair at
+		// its *end* on top of the 'repeatStart' ink this test isolates at its
+		// *start*.
+		const score = buildScore([
+			[['G4', 'quarter']],
+			{ notes: [['G4', 'quarter']], startBarline: 'repeatStart' },
+			[['G4', 'quarter']]
+		]);
+		const layout = layoutScore(score, { staffSpacePx: ss });
+		// The boundary's only barline is owned by measure 1 (the one that opens
+		// the repeat), not measure 0: measure 0 draws no barline rect of its own.
+		expect(barlineRects(layout.measures[0]!.ops)).toHaveLength(0);
+
+		const ops = layout.measures[1]!.ops;
+		// Two bars total: the repeat-start's own thick line at this measure's
+		// start, plus its own (mid-score, so 'normal') thin line at its end.
+		const bars = barlineRects(ops).sort((a, b) => a.x - b.x);
+		expect(bars).toHaveLength(2);
+		const openingBar = bars[0]!;
+		expect(openingBar.width).toBeCloseTo(ED.thickBarlineThickness * ss, 6);
+		const dots = repeatDots(ops);
+		expect(dots).toHaveLength(2);
+		// Dots sit right of (after) the thick line here, the mirror of repeatEnd.
+		for (const dot of dots) expect(dot.x).toBeGreaterThan(openingBar.x);
+		// Both the thick line and the dots sit at this measure's own left edge,
+		// well before any note (a real measure region always starts there).
+		expect(openingBar.x).toBeCloseTo(layout.measures[1]!.region.x, 3);
+	});
+
+	it('this slice draws barline shapes only, no repeat-playback semantics', () => {
+		// Nothing in the model or layout resolves a repeatStart/repeatEnd pair
+		// into a jump, a repeat count, or an ending bracket; a repeatEnd with no
+		// matching repeatStart anywhere in the score (as here) still lays out
+		// without error, exactly as a purely visual mark should.
+		const score = buildScore([{ notes: [['G4', 'quarter']], endBarline: 'repeatEnd' }]);
+		expect(() => layoutScore(score)).not.toThrow();
+	});
+
+	it('renders the barline showcase, valid measures and all', () => {
+		const score = createBarlineShowcaseScore();
+		for (const measure of score.measures) {
+			expect(validateMeasure(measure, score.timeAt(measure.index)).valid).toBe(true);
+		}
+		const layout = layoutScore(score, { staffSpacePx: ss });
+		expect(barlineRects(layout.measures[0]!.ops)).toHaveLength(2); // double
+		expect(repeatDots(layout.measures[2]!.ops)).toHaveLength(2); // repeatStart's own
+		expect(repeatDots(layout.measures[3]!.ops)).toHaveLength(2); // repeatEnd's own
 	});
 });

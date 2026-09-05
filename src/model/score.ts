@@ -49,6 +49,22 @@ export const TRIPLET: TupletRatio = { actualNotes: 3, normalNotes: 2 };
 /** Opaque, stable identifier for a note. Hit-testing and edits address notes by id. */
 export type NoteId = string;
 
+/**
+ * The shapes a barline can draw. `normal` is a single thin line (every
+ * boundary's default); `double` is two thin lines close together, marking a
+ * section boundary with no repeat or ending implied; `final` is thin-then-
+ * thick, the score's own closing barline; `repeatStart`/`repeatEnd` are a
+ * thick line plus two dots, opening or closing a repeated section (see
+ * `Measure.startBarline`/`endBarline` for which measure owns which end of the
+ * boundary, and why they are two separate fields rather than one).
+ *
+ * This slice draws each shape and nothing more: no repeat-playback semantics
+ * (jumping back to a `repeatStart` when a `repeatEnd` is reached, counting
+ * endings) exist anywhere in this model. That is real, but separate, work for
+ * whichever later phase adds a player.
+ */
+export type BarlineType = 'normal' | 'double' | 'final' | 'repeatStart' | 'repeatEnd';
+
 export interface NoteSpec {
 	/** `null` means a rest. Rests are notes with no pitch rather than a separate type,
 	 *  because every other property (duration, voice, position in the measure, being
@@ -149,6 +165,42 @@ export class Measure {
 	keyFifths?: number;
 	/** Same idea as `keyFifths`, for a time signature change. See `Score.timeAt`. */
 	time?: TimeSignature;
+	/**
+	 * The barline at the boundary *after* this measure: `'normal'`, `'double'`,
+	 * `'final'` or `'repeatEnd'`. `'repeatStart'` is deliberately not a valid
+	 * value here; see `startBarline` for why that one belongs to the measure it
+	 * opens instead. `undefined` means "no explicit choice": `Score.endBarlineAt`
+	 * resolves that to `'normal'`, except for the score's true last measure,
+	 * which resolves to `'final'` instead so every score still ends with a
+	 * final barline with no annotation required (this is exactly what
+	 * `ctx.isLast` hardcoded before `BarlineType` existed). Read through
+	 * `Score.endBarlineAt`, never this field directly: a `repeatStart` on the
+	 * *next* measure also overrides whatever this field says, and that walk
+	 * lives in one place, the same discipline `keyFifthsAt`/`timeAt` already
+	 * follow for key/time changes.
+	 */
+	endBarline?: BarlineType;
+	/**
+	 * A repeat-start barline (thick line, then two dots) at the *start* of
+	 * this measure, opening a repeated section. The only barline type
+	 * conventionally attached to the start of a measure rather than the end
+	 * (mirroring MusicXML's `<barline location="left">` vs `"right">`), which
+	 * is why it gets its own field instead of living in `endBarline`: a plain
+	 * union field for "the barline here" would have to pick one measure to
+	 * belong to, and `endBarline`'s owner (the measure just before the
+	 * boundary) is wrong for a mark that engraving convention reads as
+	 * belonging to what comes *after* it.
+	 *
+	 * Despite living on this measure's own model, the ink is still drawn by
+	 * whichever measure's `layoutMeasure` call lays out *this* measure (i.e.
+	 * this one, at its own start), not by the previous measure: that keeps the
+	 * "a measure's ops are everything a repaint of it needs to put back"
+	 * invariant intact without a second draw pass or a lookahead into a
+	 * neighbour's ops. The previous measure still needs a one-field lookahead
+	 * of its own, into *this* field, to know to skip drawing its own default
+	 * end barline at the same boundary; see `Score.endBarlineAt`.
+	 */
+	startBarline?: 'repeatStart';
 
 	constructor(index: number) {
 		this.index = index;
@@ -312,6 +364,32 @@ export class Score {
 		return this.time;
 	}
 
+	/**
+	 * The barline actually drawn at the boundary after `measureIndex`.
+	 *
+	 * Unlike `keyFifthsAt`/`timeAt`, a barline never *inherits* forward from an
+	 * earlier measure: each boundary is decided fresh from just the two
+	 * measures touching it. Two rules apply, in order. First, if the
+	 * *following* measure opens with `startBarline: 'repeatStart'`, that wins
+	 * regardless of what this measure's own `endBarline` says: a repeat start
+	 * is conventionally attached to the measure it opens (see
+	 * `Measure.startBarline`'s own comment), and the two fields could
+	 * otherwise disagree about who draws a boundary that only ever has one
+	 * physical barline. Second, an unset `endBarline` resolves to `'normal'`,
+	 * except at the score's true last measure, where it resolves to `'final'`
+	 * instead, preserving the behaviour `ctx.isLast` hardcoded before
+	 * `BarlineType` existed: every score still ends with a final barline with
+	 * no explicit annotation required, but a score that *does* annotate its
+	 * last measure (e.g. `endBarline: 'double'`) is honoured over the
+	 * automatic default.
+	 */
+	endBarlineAt(measureIndex: number): BarlineType {
+		if (this.measures[measureIndex + 1]?.startBarline === 'repeatStart') return 'repeatStart';
+		const explicit = this.measures[measureIndex]?.endBarline;
+		if (explicit !== undefined) return explicit;
+		return measureIndex === this.measures.length - 1 ? 'final' : 'normal';
+	}
+
 	/** Append a note (or rest) to a measure, returning it so callers can keep its id. */
 	appendNote(measure: Measure, spec: NoteSpec): Note {
 		const note = new Note(`n${this.#nextNoteId++}`, spec);
@@ -472,6 +550,10 @@ export interface MeasureBuildSpec {
 	readonly keyFifths?: number;
 	/** See `Measure.time`. Omit to keep whatever time signature was in force before this measure. */
 	readonly time?: TimeSignature;
+	/** See `Measure.endBarline`. Omit for the default (`'normal'`, or `'final'` at the score's last measure). */
+	readonly endBarline?: BarlineType;
+	/** See `Measure.startBarline`. Omit for no repeat-start mark at this measure's own start. */
+	readonly startBarline?: 'repeatStart';
 }
 
 /** `spec is MeasureBuildSpec`, distinguishing it from a bare `MeasureSpec` by
@@ -533,6 +615,8 @@ export function buildScore(
 		if (isMeasureBuildSpec(spec)) {
 			measure.keyFifths = spec.keyFifths;
 			measure.time = spec.time;
+			measure.endBarline = spec.endBarline;
+			measure.startBarline = spec.startBarline;
 		}
 		const notes = isMeasureBuildSpec(spec) ? spec.notes : spec;
 		for (const [pitch, value, extra] of notes) {

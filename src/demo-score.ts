@@ -275,6 +275,68 @@ export function createKeyTimeChangeShowcaseScore(): Score {
 	);
 }
 
+/**
+ * Slice 8's barline showcase: a double barline marking a section boundary,
+ * then (after a plain measure) a repeat-start/repeat-end pair around a short
+ * repeated phrase. Still G major 4/4 like the other showcases. `'normal'` and
+ * `'final'` need no showcase measure of their own: every ordinary boundary in
+ * this demo is already `'normal'` by default, and the whole demo's true last
+ * measure already draws `'final'` the same way it always has.
+ *
+ * The plain measure between the double barline and the repeat start is not
+ * padding: `Score.endBarlineAt` resolves a boundary to `'repeatStart'`
+ * whenever the *following* measure opens with one, regardless of what the
+ * *preceding* measure's own `endBarline` asked for (see its own comment for
+ * why that precedence is correct). Putting the double barline directly before
+ * the repeat-start measure would silently lose the double barline to that
+ * rule; the plain measure keeps the two marks on two different boundaries so
+ * both actually render.
+ */
+export function createBarlineShowcaseScore(): Score {
+	return buildScore(
+		[
+			{
+				// A double barline: no repeat, just a visible section break.
+				endBarline: 'double',
+				notes: [
+					['G4', 'quarter'],
+					['A4', 'quarter'],
+					['B4', 'quarter'],
+					['C5', 'quarter']
+				]
+			},
+			[
+				['D5', 'quarter'],
+				['E5', 'quarter'],
+				['F#5', 'quarter'],
+				['G5', 'quarter']
+			],
+			{
+				// Opens the repeated section: a thick line then two dots, at this
+				// measure's own start.
+				startBarline: 'repeatStart',
+				notes: [
+					['G5', 'quarter'],
+					['F#5', 'quarter'],
+					['E5', 'quarter'],
+					['D5', 'quarter']
+				]
+			},
+			{
+				// Closes it: two dots then a thick line, at this measure's own end.
+				endBarline: 'repeatEnd',
+				notes: [
+					['D5', 'quarter'],
+					['E5', 'quarter'],
+					['F#5', 'quarter'],
+					['G5', 'quarter']
+				]
+			}
+		],
+		{ keyFifths: 1, time: { beats: 4, beatType: 4 } }
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
@@ -298,6 +360,17 @@ function appendMeasures(score: Score, source: Score): void {
 		// score or what key/time was already in force there.
 		copy.keyFifths = measure.keyFifths;
 		copy.time = measure.time;
+		// Same reasoning as keyFifths/time above: a barline choice is already an
+		// absolute value with no score-wide default to reinterpret, so it
+		// carries over unchanged. The one exception, an *unset* endBarline on
+		// the source's own last measure, is not something to special-case here:
+		// once folded in, that measure is no longer the combined score's last
+		// measure (unless this happens to be the final showcase appended), so
+		// `Score.endBarlineAt`'s own default naturally resolves it to 'normal'
+		// instead of 'final', exactly as it would for any other measure that
+		// stopped being the score's last one.
+		copy.endBarline = measure.endBarline;
+		copy.startBarline = measure.startBarline;
 		for (const note of measure.notes) {
 			const copiedNote = score.appendNote(copy, {
 				pitch: note.pitch,
@@ -322,9 +395,9 @@ function appendMeasures(score: Score, source: Score): void {
 /**
  * What `npm run dev` actually shows: the Phase 0 fixture followed by Slice 1's
  * duration showcase, Slice 4's accidental showcase, Slice 5's tie showcase,
- * Slice 6's slur showcase and Slice 7's key/time-change showcase, so a human
- * can see all five render without disturbing `createDemoScore`'s frozen shape
- * (see the comment on it above).
+ * Slice 6's slur showcase, Slice 7's key/time-change showcase and Slice 8's
+ * barline showcase, so a human can see all six render without disturbing
+ * `createDemoScore`'s frozen shape (see the comment on it above).
  */
 export function createFullDemoScore(): Score {
 	const score = createDemoScore();
@@ -333,5 +406,6 @@ export function createFullDemoScore(): Score {
 	appendMeasures(score, createTieShowcaseScore());
 	appendMeasures(score, createSlurShowcaseScore());
 	appendMeasures(score, createKeyTimeChangeShowcaseScore());
+	appendMeasures(score, createBarlineShowcaseScore());
 	return score;
 }

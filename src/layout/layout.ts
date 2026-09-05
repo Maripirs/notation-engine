@@ -527,6 +527,13 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			cursor = layoutTimeSignature(ops, cursor, time.beats, time.beatType, ctx);
 		}
 	}
+	// A repeat-start barline belongs to *this* measure's own start (see
+	// `Measure.startBarline`'s comment on why it is not the previous measure's
+	// end barline), so it draws here, inside this measure's own ops, before
+	// the ordinary lead-in space a first note's stem needs.
+	if (measure.startBarline === 'repeatStart') {
+		cursor = layoutRepeatStartBarline(ops, cursor, staffTopY, ctx);
+	}
 	cursor += SPACING.measureLeadIn * ss;
 
 	// Deciding beam groups is a pass over the whole measure's notes (a group
@@ -583,9 +590,24 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// same reason the header is: a region-scoped repaint has to be able to put
 	// back every pixel it cleared, and a staff line drawn once across the whole
 	// system could not be.
-	const barlineThickness = (ctx.isLast ? ED.thickBarlineThickness : ED.thinBarlineThickness) * ss;
+	//
+	// `Score.endBarlineAt` is what used to be the bare `ctx.isLast` check: it
+	// resolves this measure's own `endBarline` (defaulting to `'final'` at the
+	// score's true last measure, `'normal'` everywhere else), unless the
+	// *following* measure opens with its own `startBarline: 'repeatStart'`, in
+	// which case that wins and this measure draws no end barline at all (the
+	// next measure's own start already drew the boundary's only barline; see
+	// `Measure.startBarline`). `'repeatStart'` therefore never actually reaches
+	// the switch below as *this* measure's resolved type in the normal case,
+	// but the branch exists anyway so a boundary genuinely resolving to it
+	// (which only happens via that lookahead) draws nothing, not a stray line.
+	const endBarline = score.endBarlineAt(measure.index);
+	const thin = ED.thinBarlineThickness * ss;
+	const thick = ED.thickBarlineThickness * ss;
+	const mainThickness =
+		endBarline === 'repeatStart' ? 0 : endBarline === 'final' || endBarline === 'repeatEnd' ? thick : thin;
 	const barlineX = cursor;
-	const measureWidth = barlineX + barlineThickness - startX;
+	const measureWidth = barlineX + mainThickness - startX;
 	const lineThickness = ED.staffLineThickness * ss;
 	for (let line = 0; line < 5; line++) {
 		ops.unshift({
@@ -597,10 +619,18 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		});
 	}
 
-	// A final barline is thin-then-thick. Cheap to draw and it is the difference
-	// between "a score" and "a fragment" at a glance.
-	if (ctx.isLast) {
-		const thin = ED.thinBarlineThickness * ss;
+	// Every shape but `'repeatStart'` ends in one "main" line at `barlineX`
+	// itself (thin for `'normal'`/`'double'`, thick for `'final'`/`'repeatEnd'`,
+	// computed above as `mainThickness`); `'double'` and `'final'` additionally
+	// draw a second thin line just to its left, and `'repeatEnd'` draws its two
+	// dots there instead. Both extras fit inside the blank space
+	// `SPACING.measureTrailOut` already reserves after the last note (checked
+	// against this file's own constants: `ED.barlineSeparation` plus either a
+	// thin line's or a dot's width is well under `measureTrailOut`), so neither
+	// changes `measureWidth` the way `'repeatStart'`'s own leading ink does at
+	// this measure's start: only the shapes that grow *forward*, past
+	// `barlineX`, need the width formula above to know about them.
+	if (endBarline === 'final' || endBarline === 'double') {
 		ops.push({
 			kind: 'rect',
 			x: barlineX - ED.barlineSeparation * ss - thin,
@@ -609,13 +639,19 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			height: 4 * ss
 		});
 	}
-	ops.push({
-		kind: 'rect',
-		x: barlineX,
-		y: staffTopY,
-		width: barlineThickness,
-		height: 4 * ss
-	});
+	if (endBarline === 'repeatEnd') {
+		const dotAdvance = GLYPH_METRICS.repeatDot.advance * ss;
+		pushRepeatDots(ops, barlineX - ED.barlineSeparation * ss - dotAdvance, ctx);
+	}
+	if (endBarline !== 'repeatStart') {
+		ops.push({
+			kind: 'rect',
+			x: barlineX,
+			y: staffTopY,
+			width: mainThickness,
+			height: 4 * ss
+		});
+	}
 
 	// Ties: two same-pitch notes sounding as one continuous note, connected by
 	// a curve from the first notehead to the second. A tie fully contained in
@@ -737,6 +773,46 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		ops,
 		notes
 	};
+}
+
+/**
+ * A repeat-start barline: a thick line, then (moving further into the measure
+ * it opens) two dots. Drawn at `x` (the cursor right after this measure's own
+ * header, before its ordinary lead-in space), returning the cursor position
+ * past it.
+ *
+ * Deliberately just the thick line plus dots, not the thin-then-thick pair
+ * some engravings additionally draw before a repeat sign's dots: this
+ * slice's own scope (see `Measure.startBarline`'s comment) is a single,
+ * unambiguous shape per `BarlineType`, and this is the shape the acceptance
+ * criteria describe. `ED.barlineSeparation` (already the gap between a
+ * `'final'`/`'double'` boundary's two lines) is reused here too, for the gap
+ * both after the thick line and after the dots, rather than inventing a
+ * second spacing constant for what is the same kind of "barline-adjacent
+ * clearance".
+ */
+function layoutRepeatStartBarline(ops: DrawOp[], x: number, staffTopY: number, ctx: MeasureContext): number {
+	const { ss } = ctx;
+	const thick = ED.thickBarlineThickness * ss;
+	const sep = ED.barlineSeparation * ss;
+	ops.push({ kind: 'rect', x, y: staffTopY, width: thick, height: 4 * ss });
+	const dotsX = x + thick + sep;
+	pushRepeatDots(ops, dotsX, ctx);
+	return dotsX + GLYPH_METRICS.repeatDot.advance * ss + sep;
+}
+
+/**
+ * The two dots of a repeat barline (`repeatStart`/`repeatEnd`), stacked at
+ * the same x, one in the staff space just above the middle line and one in
+ * the space just below it: standard engraving position, independent of
+ * whichever notes happen to be nearby. `repeatDot`'s bounding box is centred
+ * on its own origin (like `augmentationDot`'s), so placing it at exactly
+ * `staffY(...)` centres the dot there with no extra offset math, the same
+ * property `layoutAugmentationDots` relies on for a note's own dots.
+ */
+function pushRepeatDots(ops: DrawOp[], x: number, ctx: MeasureContext): void {
+	ops.push({ kind: 'glyph', glyph: 'repeatDot', x, y: staffY(TREBLE_MIDDLE_LINE + 1, ctx) });
+	ops.push({ kind: 'glyph', glyph: 'repeatDot', x, y: staffY(TREBLE_MIDDLE_LINE - 1, ctx) });
 }
 
 function layoutClef(ops: DrawOp[], x: number, ctx: MeasureContext): number {

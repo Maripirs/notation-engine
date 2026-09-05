@@ -115,7 +115,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       Acceptance: unit test for a score with a key change and a time
       change, each landing at the right measure with correct courtesy
       glyphs; demo score includes one of each.
-- [ ] **Slice 8 — Barline types.** Model gains a `BarlineType` field
+- [x] **Slice 8 — Barline types.** Model gains a `BarlineType` field
       (normal/double/final/repeat-start/repeat-end) per measure
       boundary; layout draws each variant (final already exists via
       `ctx.isLast`, generalize it). Acceptance: unit test rendering
@@ -492,3 +492,71 @@ divisi splits). Unscoped.
   ended in a stray, unmatched `</content>` line, evidently a leaked wrapper
   artifact from an earlier session's edit; removed since it was never valid
   Markdown and had nothing to open it.
+- 2026-09-04: Slice 8 (barline types) done. `BarlineType` is
+  `'normal' | 'double' | 'final' | 'repeatStart' | 'repeatEnd'`. `Measure`
+  gets two fields, not one: `endBarline` (the boundary after this measure:
+  `'normal'`/`'double'`/`'final'`/`'repeatEnd'`) and `startBarline`
+  (`'repeatStart'` only). A repeat start is conventionally attached to the
+  measure it *opens*, not the one before it (MusicXML's own `<barline
+  location="left">` vs `"right">`), which is why it needed its own field
+  rather than one more value squeezed into `endBarline`. `Score.endBarlineAt`
+  resolves a boundary the same way `keyFifthsAt`/`timeAt` resolve a key or
+  time (one method, one place), with two rules: the *next* measure's
+  `startBarline: 'repeatStart'` always wins over this measure's own
+  `endBarline` (a boundary has one physical barline; the two fields could
+  otherwise disagree about who draws it), and an unset `endBarline` resolves
+  to `'final'` only at the score's true last measure, preserving `ctx.isLast`'s
+  old hardcoded behaviour with no annotation required, but yielding to an
+  explicit choice (e.g. `endBarline: 'double'` on the last measure) when one
+  is made. `buildScore`'s `MeasureBuildSpec` grows both fields, following
+  Slice 7's per-measure-options-object pattern rather than a fourth mechanism.
+
+  Layout keeps barline ink owned entirely by the measure whose region it
+  falls inside, same as `ctx.isLast` always did: `'double'`/`'final'` draw a
+  second thin line just left of the main barline, inside the blank space
+  `measureTrailOut` already reserves (so neither changes measure width, just
+  like today's final pair never did); `'repeatEnd'` draws two dots in that
+  same reserved space instead. `'repeatStart'` is the one shape that
+  genuinely grows a measure (a thick line, then two dots, at its own start,
+  before the ordinary lead-in space), which is also why it lives on the
+  measure it opens rather than needing the previous measure's layout to grow
+  on its behalf. The two dots are Bravura's own `repeatDot` glyph (added to
+  `extract-glyph-metrics.mjs`'s list, `npm run glyphs` regenerated), drawn
+  twice, stacked at the same x in the staff spaces straddling the middle
+  line; not hand-drawn rects, and not the coincidentally-identical
+  `augmentationDot`, since SMuFL publishes `repeatDot` for exactly this mark.
+  Repeat barlines here are a single thick line plus dots, not the
+  thin-then-thick-then-dots combo some engravings additionally draw; a
+  deliberate, documented simplification, not an oversight. No repeat-playback
+  semantics exist anywhere in this slice: nothing resolves a repeatStart/
+  repeatEnd pair into a jump, a repeat count, or an ending bracket. That is
+  real work for whichever later phase adds a player; this slice is purely
+  the visual barline shapes.
+
+  13 new tests (5 model: default resolution, an explicit override beating the
+  automatic final default, a `MeasureBuildSpec` with neither field recording
+  no change, a next-measure repeatStart overriding this measure's own
+  endBarline, a plain repeatEnd needing no lookahead; 8 layout: each of the
+  five shapes' exact rects/dots/positions, an explicit override on the last
+  measure beating the automatic default, a lone repeatEnd with no matching
+  repeatStart laying out without error, and the new showcase's render) bring
+  the suite to 192 (up from 179); `check`/`build` are green and `bench` is
+  unchanged (0.113-0.147ms scoped edit vs 0.659-10.651ms full redraw across
+  4-124 measures, matching Slice 7's 0.107-0.150ms/0.661-10.546ms; the bench's
+  own fixture has no non-normal barlines and its last measure is still
+  resolved to `'final'` by the same default, so this was never expected to
+  move). `createBarlineShowcaseScore` (a double barline, then, after a
+  deliberately plain buffer measure, a repeat-start/repeat-end pair) folds
+  into `createFullDemoScore` the same way every other showcase does; the
+  buffer measure is not padding, it exists because a double barline placed
+  directly before a repeat-start measure would be silently overridden by
+  `endBarlineAt`'s own precedence rule, so the showcase's own doc comment
+  spells that out as the reason the layout looks the way it does, not an
+  arbitrary choice. `appendMeasures` now also copies a copied measure's
+  `endBarline`/`startBarline` (already-absolute values, carrying over
+  unchanged, the same reasoning as `keyFifths`/`time` before them). The full
+  demo score was rasterized through real node-canvas directly and inspected
+  by eye: the double barline renders as two close thin lines, the repeat
+  start as a thick line then two dots opening its measure, and the repeat
+  end as two dots then a thick line closing the score's actual last measure
+  (overriding what would otherwise have been an automatic final barline).

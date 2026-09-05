@@ -209,6 +209,54 @@ describe('key and time changes', () => {
 	});
 });
 
+describe('barlines', () => {
+	it('defaults to normal everywhere except a final barline at the score\'s true last measure', () => {
+		const score = buildScore([[['G4', 'quarter']], [['G4', 'quarter']], [['G4', 'quarter']]]);
+		expect(score.endBarlineAt(0)).toBe('normal');
+		expect(score.endBarlineAt(1)).toBe('normal');
+		expect(score.endBarlineAt(2)).toBe('final');
+	});
+
+	it('honours an explicit endBarline, including overriding the automatic final default', () => {
+		const score = buildScore([
+			{ notes: [['G4', 'quarter']], endBarline: 'double' },
+			{ notes: [['G4', 'quarter']], endBarline: 'double' } // the score's last measure
+		]);
+		expect(score.endBarlineAt(0)).toBe('double');
+		// Without the explicit annotation this would default to 'final'; an
+		// explicit choice on the last measure wins over that default.
+		expect(score.endBarlineAt(1)).toBe('double');
+	});
+
+	it('a MeasureBuildSpec with no endBarline/startBarline still builds a measure with no change recorded', () => {
+		const score = buildScore([{ notes: [['G4', 'quarter']] }, [['G4', 'quarter']]]);
+		expect(score.measures[0]!.endBarline).toBeUndefined();
+		expect(score.measures[0]!.startBarline).toBeUndefined();
+	});
+
+	it('a repeatStart on the next measure wins over this measure\'s own endBarline', () => {
+		const score = buildScore([
+			{ notes: [['G4', 'quarter']], endBarline: 'double' },
+			{ notes: [['G4', 'quarter']], startBarline: 'repeatStart' },
+			[['G4', 'quarter']] // the score's true last measure
+		]);
+		// Measure 0 asked for 'double', but measure 1 opens with its own
+		// repeat-start mark, which is the only barline the boundary between
+		// them actually draws.
+		expect(score.endBarlineAt(0)).toBe('repeatStart');
+		expect(score.endBarlineAt(1)).toBe('normal');
+		expect(score.endBarlineAt(2)).toBe('final');
+	});
+
+	it('a repeatEnd is just this measure\'s own endBarline, no lookahead involved', () => {
+		const score = buildScore([
+			{ notes: [['G4', 'quarter']], endBarline: 'repeatEnd' },
+			[['G4', 'quarter']]
+		]);
+		expect(score.endBarlineAt(0)).toBe('repeatEnd');
+	});
+});
+
 describe('ties', () => {
 	it('resolves extra.tiedToNext across a barline to the next note in the same voice', () => {
 		const score = buildScore([

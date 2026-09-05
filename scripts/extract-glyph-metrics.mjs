@@ -54,6 +54,13 @@ const GLYPHS = [
 	'accidentalNatural',
 	// Augmentation dot, for dotted durations.
 	'augmentationDot',
+	// The single dot half of a repeat barline (Slice 8); drawn twice, flanking
+	// the middle line, for a repeatStart/repeatEnd boundary. A dedicated
+	// glyph rather than reusing `augmentationDot`: the two happen to share
+	// identical Bravura metrics today, but they are semantically different
+	// marks (SMuFL publishes `repeatDot` separately for exactly this use),
+	// and reusing `augmentationDot` here would be relying on a coincidence.
+	'repeatDot',
 	// Time signature digits. 0-9 rather than just the demo's 4, because the
 	// model lets a caller pick any beats/beat-type and a missing digit would
 	// be a silent hole in the render.
