@@ -125,6 +125,17 @@ export interface LaidOutScore {
 	 *
 	 * Without `LayoutOptions.systemWidthPx` there is always exactly one system
 	 * holding every measure, matching Phase 0's original single-system layout.
+	 *
+	 * `spacingScale` is the justification factor `layout.ts`'s
+	 * `systemSpacingScale` decided for this system (1 for natural, unstretched
+	 * spacing, e.g. the score's own last system, which is never justified).
+	 * Recorded here, not just used internally, so `relayoutMeasure` can re-lay
+	 * a single measure out at its system's already-decided scale without
+	 * recomputing the whole system's justification on every incremental edit.
 	 */
-	readonly systems: readonly { readonly measureIndices: readonly number[]; readonly topY: number }[];
+	readonly systems: readonly {
+		readonly measureIndices: readonly number[];
+		readonly topY: number;
+		readonly spacingScale: number;
+	}[];
 }

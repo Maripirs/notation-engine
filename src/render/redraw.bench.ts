@@ -36,7 +36,14 @@ registerFont(join(here, '..', '..', 'assets', 'bravura', 'Bravura.otf'), {
 	family: BRAVURA_FAMILY
 });
 
-const LAYOUT_OPTIONS = { staffSpacePx: 11 };
+// A finite `systemWidthPx` puts every score in this benchmark into several
+// justified systems (Slice 9), not Phase 0's original single infinite one.
+// That matters here specifically: it is what exercises `relayoutMeasure`'s
+// cached per-system `spacingScale` reuse (see `layout.ts`'s own comment on
+// why that keeps a non-width-changing edit's cost independent of
+// justification), rather than only ever measuring the unjustified,
+// scale-always-1 path a single system would give every score below.
+const LAYOUT_OPTIONS = { staffSpacePx: 11, systemWidthPx: 700 };
 
 /** Repeat the demo score until it has `measureCount` measures. */
 function scoreOfLength(measureCount: number): Score {

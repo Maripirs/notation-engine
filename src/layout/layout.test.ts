@@ -176,7 +176,7 @@ describe('relayoutMeasure', () => {
 		// `layoutScore` multi-system tests below), so it carries a clef and key
 		// signature that a naive re-layout could accidentally drop.
 		const score = createDemoScore();
-		const options = { staffSpacePx: 11, systemWidthPx: 600 };
+		const options = { staffSpacePx: 11, systemWidthPx: 700 };
 		const layout = layoutScore(score, options);
 		expect(layout.systems[1]!.measureIndices).toEqual([2, 3]);
 
@@ -193,16 +193,21 @@ describe('relayoutMeasure', () => {
 });
 
 describe('layoutScore with systemWidthPx (multi-system)', () => {
-	const options = { staffSpacePx: 11, systemWidthPx: 600 };
+	const options = { staffSpacePx: 11, systemWidthPx: 700 };
 
 	it('casts measures off onto a new system once they would overflow the width', () => {
 		const layout = layoutScore(createDemoScore(), options);
-		expect(layout.systems).toEqual([
-			{ measureIndices: [0, 1], topY: layout.systems[0]!.topY },
-			{ measureIndices: [2, 3], topY: layout.systems[1]!.topY }
+		expect(layout.systems.map((s) => s.measureIndices)).toEqual([
+			[0, 1],
+			[2, 3]
 		]);
 		// Every measure still appears exactly once, in score order, across systems.
 		expect(layout.systems.flatMap((s) => s.measureIndices)).toEqual([0, 1, 2, 3]);
+		// The first system is justified (stretched to fill the width budget);
+		// the score's own last system never is (see `systemSpacingScale`'s own
+		// comment on why a piece's final line stays at its natural width).
+		expect(layout.systems[0]!.spacingScale).toBeGreaterThan(1);
+		expect(layout.systems[1]!.spacingScale).toBe(1);
 	});
 
 	it('starts each system at the same left margin and stacks systems vertically', () => {
@@ -242,7 +247,10 @@ describe('layoutScore with systemWidthPx (multi-system)', () => {
 		const single = layoutScore(createDemoScore(), { staffSpacePx: 11 });
 		expect(roomy.width).toBeCloseTo(single.width, 6);
 		expect(roomy.height).toBeCloseTo(single.height, 6);
-		expect(roomy.systems).toEqual([{ measureIndices: [0, 1, 2, 3], topY: roomy.staffTopY }]);
+		expect(roomy.systems.map((s) => s.measureIndices)).toEqual([[0, 1, 2, 3]]);
+		// The whole score fits in one system, which is therefore also the
+		// score's last, so it stays at natural (unjustified) spacing.
+		expect(roomy.systems[0]!.spacingScale).toBe(1);
 		for (let i = 0; i < single.measures.length; i++) {
 			expect(roomy.measures[i]!.region).toEqual(single.measures[i]!.region);
 		}
@@ -252,7 +260,93 @@ describe('layoutScore with systemWidthPx (multi-system)', () => {
 		// The option is opt-in: not passing it at all must behave exactly as
 		// before this feature existed, one system regardless of score width.
 		const layout = layoutScore(createDemoScore(), { staffSpacePx: 11 });
-		expect(layout.systems).toEqual([{ measureIndices: [0, 1, 2, 3], topY: layout.staffTopY }]);
+		expect(layout.systems.map((s) => s.measureIndices)).toEqual([[0, 1, 2, 3]]);
+		expect(layout.systems[0]!.spacingScale).toBe(1);
+	});
+});
+
+describe('note spacing (Slice 9: optical spacing curve)', () => {
+	// Isolates one note's own horizontal advance from a measure's fixed
+	// overhead (clef, key, time signature, lead-in/trail-out, barline ink): the
+	// difference between a measure holding two notes of `value` and one
+	// holding just one is exactly the second note's own advance, since both
+	// measures share every other component identically. Robust to whether the
+	// pair happens to fall into one beam group or not: a beamed note's own
+	// advance is computed the same way as an unbeamed one's (see `layoutNote`),
+	// beaming only changes how its stem is drawn, not how much horizontal room
+	// it claims.
+	const noteAdvancePx = (value: NoteValue) => {
+		const one = layoutScore(buildScore([[['C4', value]]])).measures[0]!.region.width;
+		const two = layoutScore(buildScore([[['C4', value], ['C4', value]]])).measures[0]!.region.width;
+		return two - one;
+	};
+
+	it('grows monotonically with duration', () => {
+		// NOTE_VALUES is ordered longest ('whole') to shortest ('64th'); each
+		// value's own advance should be strictly less than the one before it.
+		const advances = NOTE_VALUES.map(noteAdvancePx);
+		for (let i = 1; i < advances.length; i++) {
+			expect(advances[i]!).toBeLessThan(advances[i - 1]!);
+		}
+	});
+
+	it("grows sub-linearly: a whole note's room is nowhere near 8x an eighth note's", () => {
+		const whole = noteAdvancePx('whole');
+		const eighth = noteAdvancePx('eighth');
+		// A whole note lasts 8 times as long as an eighth. The naive linear-
+		// in-duration model this slice replaces would give it 8x the room; the
+		// log-based curve (`noteAdvanceSpaces`) instead adds a constant
+		// increment of space per *doubling* of duration, so real growth is far
+		// shallower: still strictly more room (longer notes are not cramped),
+		// but comfortably under even a generous 3-4x allowance.
+		expect(whole).toBeGreaterThan(eighth);
+		expect(whole).toBeLessThan(eighth * 4);
+	});
+
+	it("gives a tripleted 64th (the model's shortest reachable duration) strictly less room than a plain one", () => {
+		// The one case the curve's reference point (`noteSpaceReferenceWholes`,
+		// a plain 64th) sits *above*: a triplet shortens even the shortest
+		// plain value. Worth its own assertion since a naive implementation
+		// that clamps the log term at zero (floors every sub-reference
+		// duration to the same space) would fail this, and this file's own
+		// constants comment explains why that clamp was deliberately not done.
+		const plain = noteAdvancePx('64th');
+		const tripleted = layoutScore(buildScore([[['C4', '64th', { tuplet: TRIPLET }]]])).measures[0]!.region
+			.width;
+		const plainSingle = layoutScore(buildScore([[['C4', '64th']]])).measures[0]!.region.width;
+		expect(tripleted).toBeLessThan(plainSingle);
+		expect(plain).toBeGreaterThan(0);
+	});
+});
+
+describe('justification (Slice 9: fill a system width)', () => {
+	it("stretches a justified system's measures to fill systemWidthPx exactly", () => {
+		const options = { staffSpacePx: 11, systemWidthPx: 700 };
+		const layout = layoutScore(createDemoScore(), options);
+		// System 0 ([0, 1], see the multi-system tests above) is not the score's
+		// last system, so `systemSpacingScale` justifies it: its own measures'
+		// combined span should reach exactly the system's width budget, and
+		// since it is also this score's widest system at this width, the whole
+		// layout's declared `width` should land on `systemWidthPx` itself.
+		expect(layout.width).toBeCloseTo(options.systemWidthPx, 1);
+
+		// `layout.width` already proves the fill; this additionally confirms it
+		// is system 0 specifically (not some coincidence of the last system)
+		// that reaches the budget. Every measure starts at the same left
+		// margin (see the multi-system test above), so that margin doubles as
+		// the right-hand margin `layout.width` reserves too.
+		const system0 = layout.measures.filter((m) => layout.systems[0]!.measureIndices.includes(m.index));
+		const leftEdge = Math.min(...system0.map((m) => m.region.x));
+		const rightEdge = Math.max(...system0.map((m) => m.region.x + m.region.width));
+		expect(rightEdge - leftEdge).toBeCloseTo(options.systemWidthPx - 2 * leftEdge, 1);
+
+		// The score's last system ([2, 3]) is never justified: its natural
+		// width is left alone rather than stretched to match.
+		const system1 = layout.measures.filter((m) => layout.systems[1]!.measureIndices.includes(m.index));
+		const system1Span =
+			Math.max(...system1.map((m) => m.region.x + m.region.width)) -
+			Math.min(...system1.map((m) => m.region.x));
+		expect(system1Span).toBeLessThan(rightEdge - leftEdge);
 	});
 });
 
@@ -335,10 +429,15 @@ describe('duration rendering', () => {
 	});
 
 	it.each(NOTE_VALUES)('gives a triplet %s two-thirds the spacing of a plain one', (value) => {
-		// Not pinning down exact numbers: Phase 1's real optical spacing (Slice 9)
-		// replaces the linear-in-duration term this relies on. Only the relative
-		// ordering matters here, which is what the demo's triplet measure leans on
-		// to render at all: a shorter effective duration must claim less width.
+		// Not pinning down exact numbers: only the relative ordering matters
+		// here, which is what the demo's triplet measure leans on to render
+		// at all: a shorter effective duration must claim less width. This
+		// holds even at '64th', this model's shortest plain value, since
+		// Slice 9's log-based curve (`noteAdvanceSpaces`) deliberately lets a
+		// tripleted duration compute a small *negative* log term rather than
+		// clamping it to the same floor a plain 64th gets; see
+		// `noteSpaceReferenceWholes`'s own comment on why, and the dedicated
+		// "note spacing" test above that pins this exact case down.
 		const straight = layoutScore(buildScore([[['C4', value]]]));
 		const triplet = layoutScore(buildScore([[['C4', value, { tuplet: TRIPLET }]]]));
 		expect(triplet.measures[0]!.region.width).toBeLessThan(straight.measures[0]!.region.width);
@@ -668,12 +767,15 @@ describe('accidental placement', () => {
 
 	it("pushes a tight accidental right by exactly the minimum clearance past the previous note's ledger line", () => {
 		// C4, the shortest duration (a 64th), draws a ledger line one line
-		// below the staff and claims barely more horizontal room than that
-		// ledger line's own ink reaches: the tightest realistic case this
-		// collision check exists for. C-sharp 4 right after it needs a sharp
-		// (C major has none), which without the extra clearance would land
-		// only about 0.76 staff spaces past the ledger line (worked out from
-		// this file's own spacing/glyph constants), short of the 0.9 minimum.
+		// below the staff, and its own natural advance (Slice 9's log curve
+		// floors a 64th at just `noteSpaceBase`, 2 staff spaces) is actually
+		// *narrower* than that ledger line's own ink: the tightest realistic
+		// case this collision check exists for. C-sharp 4 right after it needs
+		// a sharp (C major has none), which without the extra clearance would
+		// land about 0.38 staff spaces to the *left* of the ledger line's own
+		// right edge, i.e. genuinely overlapping it (worked out from this
+		// file's own spacing/glyph constants), not merely short of the 0.9
+		// minimum.
 		const score = buildScore([[['C4', '64th'], ['C#4', '64th']]]);
 		const layout = layoutScore(score, options);
 		const ops = layout.measures[0]!.ops;

@@ -5,12 +5,18 @@
 // use and the unit engraving rules are written in. `ss` below is always the
 // pixel size of one staff space.
 //
-// Note spacing is deliberately naive: a fixed minimum plus a term linear in
-// duration. Real optical spacing (the roughly logarithmic duration curve, then
-// justification to a system width, then iteration for collisions) is where
-// engraving software actually spends its engineering, and it is Phase 1. What
-// Phase 0 needs from spacing is only that measures have stable, non-overlapping
-// horizontal bands, which is what makes region-scoped redraw possible at all.
+// Note spacing (Phase 1, Slice 9) is optical: each note's horizontal advance
+// grows with the *log* of its duration, not its duration itself, so a whole
+// note does not claim anywhere near 8x an eighth note's room the way a linear
+// model would (see `noteAdvanceSpaces`). A system also gets justified: once
+// `planSystems` has decided which measures land in it, their combined natural
+// width is stretched (or, rarely, very mildly compressed) to fill
+// `systemWidthPx` exactly, distributing the slack across notes in proportion
+// to each one's own natural space (see `systemSpacingScale`) rather than
+// padding only at measure ends. What Phase 0 needed from spacing was only that
+// measures have stable, non-overlapping horizontal bands, which is what makes
+// region-scoped redraw possible at all; that property still holds; it just no
+// longer comes from a naive fixed-plus-linear formula.
 
 import type { Measure, Note, NoteId, NoteValue, Score, Slur, TimeSignature } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
@@ -51,10 +57,42 @@ const DEFAULTS = {
 // Spacing constants, in staff spaces. Named because a reader should be able to
 // see what would change if this were replaced by real optical spacing.
 const SPACING = {
-	/** Minimum horizontal advance for any note, whatever its duration. */
-	noteBase: 2.2,
-	/** Extra advance per whole note of duration. Linear, hence "naive". */
-	noteSlopePerWhole: 9,
+	/**
+	 * Horizontal advance given to a note at exactly `noteSpaceReferenceWholes`'s
+	 * own duration (this model's shortest plain note value, the 64th), staff
+	 * spaces: `noteAdvanceSpaces`'s curve reads `+0` from this at that duration.
+	 * Not a hard floor: a tupleted note shorter than the reference (only ever
+	 * reachable via the one implemented tuplet ratio, a triplet, e.g. a
+	 * tripleted 64th) gets a small *negative* log term and lands a little
+	 * below this, on purpose, so tripleting the shortest notated value still
+	 * visibly shortens its room the same way it does for every longer value
+	 * (see `noteSpaceReferenceWholes`'s own comment on why this stays safely
+	 * positive rather than needing a clamp).
+	 */
+	noteSpaceBase: 2,
+	/**
+	 * Extra advance added per *doubling* of a note's duration relative to
+	 * `noteSpaceReferenceWholes`, staff spaces. This is what makes the curve
+	 * logarithmic rather than linear: a note twice as long as another gets
+	 * exactly this much more room, not twice as much. See `noteAdvanceSpaces`.
+	 */
+	noteSpacePerDoubling: 1,
+	/**
+	 * The duration (as a fraction of a whole note) `noteAdvanceSpaces` treats
+	 * as its zero point: this model's shortest plain `NoteValue`, the 64th.
+	 * Every plain duration this model can express is at or above this, so its
+	 * log term is at or above zero; the only way to go below the reference at
+	 * all is the one tuplet ratio this model implements, a triplet (see
+	 * `model/score.ts`'s own `TupletRatio` comment), whose shallowest possible
+	 * cut is 2/3, giving a worst-case log term of `log2(2/3) ≈ -0.585`. With
+	 * this file's chosen `noteSpaceBase`/`noteSpacePerDoubling` (2 and 1), that
+	 * bottoms out around 1.4 staff spaces, comfortably positive, which is why
+	 * `noteAdvanceSpaces` clamps only a defensive epsilon against `durationWholes`
+	 * ever reaching exactly zero, not this reference value: a real per-tuplet
+	 * clamp would have hidden the very ordering (tripleting a 64th still
+	 * shortens it) the duration-rendering test suite checks for.
+	 */
+	noteSpaceReferenceWholes: 1 / 64,
 	/** Gap between an accidental and the notehead it belongs to. */
 	accidentalGap: 0.3,
 	/**
@@ -64,15 +102,19 @@ const SPACING = {
 	 * `layoutNote` pushes the whole note right by however much clearance is
 	 * missing rather than let that happen. Independent of `accidentalGap`,
 	 * which is the gap on the *other* side, between the accidental and its
-	 * own notehead.
+	 * own notehead. Deliberately never scaled by a system's justification
+	 * factor (`MeasureContext.spacingScale`): it is a minimum-ink guarantee,
+	 * not decorative spacing, so it has to hold even in the rare system that
+	 * ends up mildly compressed rather than stretched.
 	 *
-	 * `noteBase` already reserves more room than a plain in-staff note's ink
-	 * needs, so this only ever bites the case real engraving actually worries
-	 * about: the shortest durations (32nd/64th), whose `noteSlopePerWhole`
-	 * contribution is nearly zero, landing right after a note with a ledger
-	 * line. 0.9 sits just above that specific gap (worked out from this
-	 * file's own constants) without being so large it starts padding ordinary
-	 * in-staff spacing that was never actually tight.
+	 * Re-checked against Slice 9's new curve, not just carried over: a 64th
+	 * note only ever gets `noteSpaceBase` (2 staff spaces) of natural room,
+	 * less than the old naive formula's ~2.34, so this remains (if anything
+	 * more often than before) the case real engraving actually worries about:
+	 * the shortest durations (32nd/64th) landing right after a note with a
+	 * ledger line. 0.9 still sits just above that specific gap (re-verified
+	 * against this file's own constants; see the geometry test next to this
+	 * comment's use).
 	 */
 	minAccidentalClearance: 0.9,
 	/** Gap between a notehead (or rest) and its first augmentation dot. */
@@ -97,6 +139,45 @@ const SPACING = {
 	 */
 	systemGap: 6
 } as const;
+
+/**
+ * A note's (or rest's) natural horizontal advance, staff spaces, before any
+ * system-level justification scale is applied: the amount `layoutNote` and
+ * `probeMeasureWidth`/`systemSpacingScale`'s casting-off and stretch-factor
+ * arithmetic agree is this note's own "natural" width.
+ *
+ * Roughly logarithmic in duration, the real-engraving convention this file's
+ * own top-of-file comment used to flag as future work: `noteSpacePerDoubling`
+ * staff spaces are added each time the duration *doubles* relative to
+ * `noteSpaceReferenceWholes`, rather than the naive old model's space scaling
+ * linearly with duration itself. Concretely, with this file's chosen
+ * constants (base 2, per-doubling 1, reference the 64th), every plain
+ * `NoteValue` lands on a clean integer number of staff spaces one apart:
+ * 64th=2, 32nd=3, 16th=4, eighth=5, quarter=6, half=7, whole=8 (a dotted or
+ * tupleted duration falls continuously between two of these, since
+ * `durationWholes` already folds dots and tuplet ratios in). A whole note
+ * therefore gets 8/5 = 1.6x an eighth note's room, comfortably sub-linear
+ * (nowhere near the 8x a naive per-whole-note-of-duration model would give),
+ * while the shortest notes still get enough room (`noteSpaceBase`) not to
+ * visually collide with a neighbour's ink at ordinary spacing (tight cases
+ * still handled by `SPACING.minAccidentalClearance`'s separate collision
+ * check, which layers on top of this rather than folding into it).
+ *
+ * `durationWholes` is only ever clamped up from a defensive epsilon (guarding
+ * `Math.log2` against `-Infinity` should a duration ever reach exactly zero),
+ * not up to `noteSpaceReferenceWholes` itself: see that constant's own
+ * comment on why a tripleted note shorter than the reference is deliberately
+ * left to compute a small negative log term rather than being floored to the
+ * reference's own space.
+ */
+function noteAdvanceSpaces(note: Note): number {
+	const EPS = 1e-9;
+	const wholes = Math.max(note.durationWholes, EPS);
+	return (
+		SPACING.noteSpaceBase +
+		SPACING.noteSpacePerDoubling * Math.log2(wholes / SPACING.noteSpaceReferenceWholes)
+	);
+}
 
 /** Stem length measured from the notehead centre, staff spaces. Phase 1 shortens
  *  and lengthens this for notes far from the middle line; Phase 0 does not. */
@@ -239,11 +320,14 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	// above the staff, and how far is not known until the notes are placed,
 	// so reserving a guessed margin up front would either waste space or clip.
 	const measures: LaidOutMeasure[] = [];
-	const systems: { measureIndices: number[]; topY: number }[] = [];
+	const systems: { measureIndices: number[]; topY: number; spacingScale: number }[] = [];
 	let systemTopY = 0;
 	let contentWidth = 0;
 
-	for (const plan of systemPlans) {
+	for (let systemIndex = 0; systemIndex < systemPlans.length; systemIndex++) {
+		const plan = systemPlans[systemIndex]!;
+		const isLastSystem = systemIndex === systemPlans.length - 1;
+		const spacingScale = systemSpacingScale(score, plan, ss, padding, options.systemWidthPx, isLastSystem);
 		const staffTopY = systemTopY;
 		let x = padding;
 		for (const measureIndex of plan) {
@@ -254,12 +338,13 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 				startX: x,
 				isSystemFirst: measureIndex === plan[0],
 				isScoreFirst: measureIndex === 0,
-				isLast: measureIndex === score.measures.length - 1
+				isLast: measureIndex === score.measures.length - 1,
+				spacingScale
 			});
 			measures.push(laid);
 			x = laid.region.x + laid.region.width;
 		}
-		systems.push({ measureIndices: [...plan], topY: staffTopY });
+		systems.push({ measureIndices: [...plan], topY: staffTopY, spacingScale });
 		contentWidth = Math.max(contentWidth, x + padding);
 
 		const systemMeasures = measures.slice(-plan.length);
@@ -287,8 +372,83 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 		staffTopY: shiftY,
 		fontSizePx,
 		measures: measures.map((m) => translateMeasure(m, shiftY)),
-		systems: systems.map((s) => ({ measureIndices: s.measureIndices, topY: s.topY + shiftY }))
+		systems: systems.map((s) => ({
+			measureIndices: s.measureIndices,
+			topY: s.topY + shiftY,
+			spacingScale: s.spacingScale
+		}))
 	};
+}
+
+/**
+ * The justification factor a system's notes get stretched (or, rarely, very
+ * mildly compressed) by, so the system's measures collectively fill
+ * `systemWidthPx` exactly instead of leaving a ragged right edge at whatever
+ * width natural spacing happens to produce.
+ *
+ * Real engraving justifies every system except the last: a piece's final
+ * line, like the final line of justified prose, is left at its own natural
+ * width rather than stretched thin to fill a margin it was never going to
+ * reach. That convention is reproduced here by simply always returning `1`
+ * (natural, unscaled spacing) for `isLastSystem`, which also means a score
+ * laid out with no `systemWidthPx` at all (`planSystems` then reports exactly
+ * one system, and it is always "last") needs no separate case: it already
+ * falls out of this same rule, matching Phase 0's original single-system,
+ * naturally-spaced behaviour with no extra branch.
+ *
+ * The factor is meant to multiply every note's own natural advance (see
+ * `noteAdvanceSpaces`), not a measure's fixed margins (lead-in, trail-out,
+ * header spacing): stretching only the note-to-note space is what makes a
+ * whole note absorb proportionally more of the slack than an eighth note
+ * (its natural advance is already bigger, so the same factor adds more to
+ * it), and is also why this never pads a measure's edges to make up a
+ * shortfall.
+ *
+ * Solved with a single linear estimate, not iteratively: true final width at
+ * a given scale can differ very slightly from this estimate whenever a
+ * note's accidental-collision clearance (`layoutNote`'s `collisionShift`)
+ * would or would not trigger at that scale. Stretching only ever *removes*
+ * the need for that clearance (more natural room between notes), never adds
+ * it, so the estimate is safe in the direction that matters; real engraving
+ * software solves this properly with iterative passes, out of scope here.
+ * Collision shifts are already the rare exception this file's own spacing
+ * constants are tuned around (see `SPACING.minAccidentalClearance`), so in
+ * practice the estimate lands within the "small tolerance" this slice's
+ * acceptance criteria ask for.
+ */
+function systemSpacingScale(
+	score: Score,
+	plan: readonly number[],
+	ss: number,
+	padding: number,
+	systemWidthPx: number | undefined,
+	isLastSystem: boolean
+): number {
+	if (systemWidthPx === undefined || isLastSystem) return 1;
+
+	let naturalWidth = 0;
+	let advanceSpaces = 0;
+	for (const measureIndex of plan) {
+		const measure = score.measures[measureIndex]!;
+		naturalWidth += probeMeasureWidth(score, measure, ss, {
+			isSystemFirst: measureIndex === plan[0],
+			isScoreFirst: measureIndex === 0,
+			isLast: measureIndex === score.measures.length - 1
+		});
+		for (const note of measure.notes) advanceSpaces += noteAdvanceSpaces(note);
+	}
+	// An entirely note-free plan (nothing to stretch) has no sensible scale;
+	// natural spacing is already whatever this system is going to look like.
+	if (advanceSpaces <= 0) return 1;
+
+	const availableWidth = systemWidthPx - 2 * padding;
+	const rawScale = 1 + (availableWidth - naturalWidth) / (advanceSpaces * ss);
+	// Guards the one case `planSystems` allows to exceed `availableWidth`: a
+	// single measure too wide to fit even alone, which cannot be split across
+	// systems. Compressing it by more than half would start visibly crowding
+	// noteheads together, well past the "very mildly compressed" this slice's
+	// own scope asks for; not expected to be hit by an ordinary casting-off.
+	return Math.max(rawScale, 0.5);
 }
 
 /**
@@ -405,6 +565,21 @@ function systemBounds(layout: LaidOutScore, systemIndex: number): { top: number;
  * an accidental is drawn inside the note's own horizontal cell. A duration
  * edit, which Phase 1 will have, hits this path constantly, and reflowing a
  * system incrementally is the real work behind it.
+ *
+ * Slice 9's justification does not change this shape. This measure is re-laid
+ * out at its system's already-decided `spacingScale` (read off the cached
+ * `LaidOutScore.systems` entry, not recomputed), so an edit that leaves this
+ * measure's own natural width unchanged (a transpose, say: it can add or
+ * remove an accidental, but not this measure's note-to-note advances) still
+ * reproduces the exact same width and takes the fast, single-measure path,
+ * exactly as before justification existed. An edit that *does* change this
+ * measure's natural width (a duration change, not built until a later slice)
+ * changes its width even measured with the stale scale, so `widthChanged`
+ * still catches it honestly and falls back to a full `layoutScore`, which
+ * recomputes fresh, correct scale factors for every system. That fallback is
+ * the whole score, not just the one system this measure lives in, the same
+ * as it always was: no new "relayout one system" fast path exists yet, so a
+ * width-changing edit's cost is unchanged by this slice, not narrowed.
  */
 export function relayoutMeasure(
 	score: Score,
@@ -424,7 +599,8 @@ export function relayoutMeasure(
 		startX: previous.region.x,
 		isSystemFirst: system.measureIndices[0] === measureIndex,
 		isScoreFirst: measureIndex === 0,
-		isLast: measureIndex === score.measures.length - 1
+		isLast: measureIndex === score.measures.length - 1,
+		spacingScale: system.spacingScale
 	});
 
 	// Sub-pixel tolerance: the same arithmetic run twice should agree exactly,
@@ -452,6 +628,17 @@ interface MeasureContext {
 	/** Is this the score's true first measure, so it must also draw the time signature. */
 	readonly isScoreFirst: boolean;
 	readonly isLast: boolean;
+	/**
+	 * The justification factor `layoutNote` multiplies every note's natural
+	 * advance by (see `noteAdvanceSpaces`), decided once per system by
+	 * `systemSpacingScale` so a system's measures collectively fill
+	 * `systemWidthPx` instead of leaving a ragged right edge. Omitted (or 1)
+	 * for natural, unjustified spacing: `probeMeasureWidth`'s casting-off
+	 * probes always want the natural width, never a guessed-at scale, and a
+	 * caller laying out a single measure in isolation (tests, mostly) gets
+	 * the same natural spacing it always has.
+	 */
+	readonly spacingScale?: number;
 }
 
 function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): LaidOutMeasure {
@@ -980,7 +1167,7 @@ function layoutNote(
 ): { cursor: number; placement: NotePlacement | null; inkRight: number } {
 	const { ss } = ctx;
 	const beamed = beamDirection !== null;
-	const advance = (SPACING.noteBase + SPACING.noteSlopePerWhole * note.durationWholes) * ss;
+	const advance = noteAdvanceSpaces(note) * ss * (ctx.spacingScale ?? 1);
 
 	if (note.pitch === null) {
 		const glyph = REST_GLYPHS[note.value];
@@ -1026,7 +1213,7 @@ function layoutNote(
 	// the accidental print on top of the previous note's stem or ledger line.
 	// Only an accidental triggers this, since it is the one thing drawn to the
 	// *left* of the note's own cell; the notehead itself already gets its own
-	// room from `SPACING.noteBase`/`noteSlopePerWhole`. The shift has to widen
+	// room from `noteAdvanceSpaces`. The shift has to widen
 	// this note's returned cursor too (below), or the next note's cell would
 	// start back where this one would have landed without it, undoing the
 	// very clearance just added.
