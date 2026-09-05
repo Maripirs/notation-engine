@@ -155,7 +155,7 @@ both narrowed accordingly below.
 pass; `npm run check`/`test`/`build` stay green throughout.
 
 **Tasks — Claude:**
-- [ ] **Slice 1 — Two voices in one staff.** `layoutMeasure`'s single
+- [x] **Slice 1 — Two voices in one staff.** `layoutMeasure`'s single
       note-walking cursor splits into one onset-aligned column pass
       across all voices in a measure (same beat -> same x, the widest
       voice's `noteAdvanceSpaces` winning that column) plus independent
@@ -1026,3 +1026,22 @@ divisi splits). Unscoped.
   note-level pixel mapping is a harder, separate item tracked there, not
   here, since it's blocked on OMR pixel-box data the pipeline currently
   discards). Old M5-M7 renumbered to M4-M6 accordingly.
+- 2026-09-05: M2 Slice 1 (two voices in one staff) done, via subagent;
+  Claude reviewed the diff and ran check/test/build/bench directly before
+  committing, same rigor as M1 Slice 1. `layoutMeasure`'s single flat
+  cursor is replaced by onset-aligned columns shared across every voice
+  (`measureColumns`), with independent per-voice beam grouping, a stem-
+  direction override (voice 1 up, voice 2 down, regardless of pitch, once
+  a measure genuinely holds two voices), and a per-voice rest offset (2
+  staff spaces either way, tuned against a rendered PNG after 1 space let
+  two rests visibly merge). `systemSpacingScale`'s justification sum was
+  quietly double-counting both voices' advances at a shared onset; fixed
+  to sum column widths instead. A single voice is the exact degenerate
+  case of all of this, verified by every one of the 196 pre-existing
+  tests passing unchanged. Deliberately left open for later: voices 3+
+  get no stem/rest convention (documented fallback, not a crash);
+  `measureDurationWholes`/`validateMeasure` still sum across all voices,
+  so a valid two-voice measure can incorrectly fail capacity validation;
+  cross-voice notehead/accidental collision avoidance is Slice 2, not
+  this one. 209 tests pass (up from 196); bench unchanged (0.28-0.33ms
+  scoped edit vs 0.91-25.8ms full redraw across 4-124 measures).
