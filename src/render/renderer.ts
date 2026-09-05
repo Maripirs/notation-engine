@@ -179,14 +179,24 @@ export class CanvasRenderer {
 				op.noteId !== undefined && op.noteId === this.#selectedNoteId
 					? this.#options.selection
 					: this.#options.foreground;
-			// Assigning `fillStyle` is not free (it parses the colour string), and
-			// an op list is mostly one colour, so only write it on a change.
+			// Assigning `fillStyle`/`strokeStyle` is not free (each parses the
+			// colour string), and an op list is mostly one colour, so only write
+			// them on a change. Both are kept in step together since every op
+			// kind uses the same `style` value, whichever of the two it paints
+			// with.
 			if (style !== currentStyle) {
 				ctx.fillStyle = style;
+				ctx.strokeStyle = style;
 				currentStyle = style;
 			}
 			if (op.kind === 'rect') {
 				ctx.fillRect(op.x, op.y, op.width, op.height);
+			} else if (op.kind === 'curve') {
+				ctx.lineWidth = op.thickness;
+				ctx.beginPath();
+				ctx.moveTo(op.x0, op.y0);
+				ctx.bezierCurveTo(op.cx0, op.cy0, op.cx1, op.cy1, op.x1, op.y1);
+				ctx.stroke();
 			} else {
 				ctx.fillText(String.fromCodePoint(GLYPH_METRICS[op.glyph].codepoint), op.x, op.y);
 			}

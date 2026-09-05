@@ -15,7 +15,7 @@
 // into what the browser demo shows via `createFullDemoScore` instead of into
 // this fixture.
 
-import { buildScore, TRIPLET, type Score } from './model/score.js';
+import { buildScore, TRIPLET, type NoteId, type Score } from './model/score.js';
 
 export function createDemoScore(): Score {
 	return buildScore(
@@ -157,34 +157,84 @@ export function createAccidentalShowcaseScore(): Score {
 	);
 }
 
+/**
+ * Slice 5's tie showcase: a same-measure tie and a tie crossing a barline, in
+ * G major 4/4 like the other showcases (so the tied notes' own accidentals,
+ * where they have one, are exercised the same way the rest of the demo is).
+ */
+export function createTieShowcaseScore(): Score {
+	return buildScore(
+		[
+			[
+				// Same-measure tie: two quarter D5s tied into one continuous
+				// duration, followed by a plain half note so the measure still
+				// fills 4/4.
+				['D5', 'quarter', { tiedToNext: true }],
+				['D5', 'quarter'],
+				['E5', 'half']
+			],
+			[
+				// Tie across the barline: the second half of the previous measure
+				// (F#5) ties into the downbeat of this one. G major spells F#5
+				// with no accidental of its own, so this also shows a tie that
+				// does not have to dodge one.
+				[null, 'half'],
+				['F#5', 'half', { tiedToNext: true }]
+			],
+			[
+				['F#5', 'quarter'],
+				['G5', 'quarter'],
+				['A5', 'half']
+			]
+		],
+		{ keyFifths: 1, time: { beats: 4, beatType: 4 } }
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
- *  each note's full spec. The showcases are built as standalone scores (so
- *  their own unit tests can lay them out and validate them in isolation) and
- *  then folded onto the single score `npm run dev` actually renders; this is
- *  the fold, shared by every showcase `createFullDemoScore` appends. */
+ *  each note's full spec, including any tie. The showcases are built as
+ *  standalone scores (so their own unit tests can lay them out and validate
+ *  them in isolation) and then folded onto the single score `npm run dev`
+ *  actually renders; this is the fold, shared by every showcase
+ *  `createFullDemoScore` appends.
+ *
+ * A tie's target gets a brand new id once copied (ids are assigned by the
+ * destination `score`, not carried over from `source`), so ties are wired up
+ * in a second pass here, the same reason `buildScore` resolves
+ * `extra.tiedToNext` in one: a source note copied before its tie's target is
+ * copied has nothing yet to point at. */
 function appendMeasures(score: Score, source: Score): void {
+	const copiedIdOf = new Map<NoteId, NoteId>();
 	for (const measure of source.measures) {
 		const copy = score.appendMeasure();
 		for (const note of measure.notes) {
-			score.appendNote(copy, {
+			const copiedNote = score.appendNote(copy, {
 				pitch: note.pitch,
 				value: note.value,
 				dots: note.dots,
 				tuplet: note.tuplet ?? undefined
 			});
+			copiedIdOf.set(note.id, copiedNote.id);
+		}
+	}
+	for (const measure of source.measures) {
+		for (const note of measure.notes) {
+			if (note.tiedToId === null) continue;
+			score.setTie(copiedIdOf.get(note.id)!, copiedIdOf.get(note.tiedToId)!);
 		}
 	}
 }
 
 /**
  * What `npm run dev` actually shows: the Phase 0 fixture followed by Slice 1's
- * duration showcase and Slice 4's accidental showcase, so a human can see
- * both render without disturbing `createDemoScore`'s frozen shape (see the
- * comment on it above).
+ * duration showcase, Slice 4's accidental showcase and Slice 5's tie
+ * showcase, so a human can see all three render without disturbing
+ * `createDemoScore`'s frozen shape (see the comment on it above).
  */
 export function createFullDemoScore(): Score {
 	const score = createDemoScore();
 	appendMeasures(score, createDurationShowcaseScore());
 	appendMeasures(score, createAccidentalShowcaseScore());
+	appendMeasures(score, createTieShowcaseScore());
 	return score;
 }

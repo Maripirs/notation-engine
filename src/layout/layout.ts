@@ -102,6 +102,17 @@ const SPACING = {
  *  and lengthens this for notes far from the middle line; Phase 0 does not. */
 const STEM_LENGTH = 3.5;
 
+/** How far a tie's curve bulges away from the straight line between its two
+ *  ends, staff spaces. A tie's span is always short (one notehead to the
+ *  next), so a constant bulge reads as the shallow arc real engraving uses;
+ *  a longer, variable-length slur (Slice 6) will need this to scale with its
+ *  span instead of staying constant. */
+const TIE_BULGE = 0.65;
+/** Horizontal clearance between a tied notehead and where its curve actually
+ *  starts or ends, staff spaces: enough that the curve visibly detaches from
+ *  the notehead rather than touching its ink. */
+const TIE_NOTE_GAP = 0.25;
+
 /** Diatonic index of E4, the bottom line of a treble staff. */
 const TREBLE_BOTTOM_LINE = diatonicIndex({ step: 'E', alter: 0, octave: 4 });
 /** Diatonic index of B4, the middle line, which decides stem direction. */
@@ -543,6 +554,72 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		height: 4 * ss
 	});
 
+	// Ties: two same-pitch notes sounding as one continuous note, connected by
+	// a curve from the first notehead to the second. A tie fully contained in
+	// this measure (both notes already have a recorded position, above) draws
+	// one curve directly; a tie crossing into a *different* measure is drawn
+	// as two independent halves, one per measure, each using only its own
+	// note's position and never the other end's.
+	//
+	// That split is what keeps a tie compatible with region-scoped redraw:
+	// this measure's ops have to be everything a repaint of just this measure
+	// needs to put back, and a curve reaching into a neighbour's pixels would
+	// break that on either measure's next redraw (see `measureRegion`'s own
+	// comment on the same constraint). It also means a tie crossing a
+	// *system* break (not modelled by anything here; Phase 3 owns
+	// system-aware layout) gets a reasonable result for free, with no special
+	// case needed: the outgoing half simply stops at this system's own
+	// barline and the resuming half starts at whichever system the target
+	// note lands in, exactly like the same-system case.
+	//
+	// Curve direction follows the standard engraving convention: away from
+	// the stem, so a tie curves below the notehead when its stem points up
+	// and above it when the stem points down (the stem would otherwise run
+	// straight through the curve). A whole note has no real stem to read;
+	// `tieCurvesBelow` falls back to the same distance-from-the-middle-line
+	// rule a stem's direction would have used, so the tie still leans the way
+	// a virtual stem would have pointed.
+	//
+	// Known limitation, left for a later pass: each half decides its own
+	// curve direction from only its own note's stem. The two ends of a tie
+	// share a pitch, and Phase 1's single-voice stem rule is pitch-based, so
+	// this agrees in the overwhelming common case; it can disagree only when
+	// one end sits in a beamed group whose *shared* direction (decided by the
+	// group's farthest member, see `stemDirectionForNotes`) differs from what
+	// that note's own pitch alone would have picked, in which case the two
+	// halves could bulge opposite ways at the barline.
+	for (const note of measure.notes) {
+		const point = placements.get(note.id);
+		if (!point) continue; // a rest, which can never be tied
+
+		if (note.tiedToId !== null) {
+			const curvesBelow = tieCurvesBelow(point);
+			const x0 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxNE[0] * ss + TIE_NOTE_GAP * ss;
+			const target =
+				score.measureOfNote(note.tiedToId) === measure ? placements.get(note.tiedToId) : undefined;
+			if (target) {
+				const x1 = target.noteX + GLYPH_METRICS[target.headGlyph].bBoxSW[0] * ss - TIE_NOTE_GAP * ss;
+				pushTieCurve(ops, x0, point.y, x1, target.y, curvesBelow, note.id, ctx);
+			} else {
+				// Target lands in a later measure: draw only the outgoing half,
+				// stopping at this measure's own barline. The resuming half is
+				// drawn independently below, by whichever measure lays out the
+				// target note, from its own left edge.
+				pushTieCurve(ops, x0, point.y, barlineX, point.y, curvesBelow, note.id, ctx);
+			}
+		}
+
+		const tiedFrom = score.tiedFromNote(note.id);
+		if (tiedFrom && score.measureOfNote(tiedFrom.id) !== measure) {
+			// This note is the receiving end of a tie begun in an earlier
+			// measure: draw only the incoming half, starting from this
+			// measure's own left edge.
+			const curvesBelow = tieCurvesBelow(point);
+			const x1 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxSW[0] * ss - TIE_NOTE_GAP * ss;
+			pushTieCurve(ops, startX, point.y, x1, point.y, curvesBelow, tiedFrom.id, ctx);
+		}
+	}
+
 	return {
 		index: measure.index,
 		region: measureRegion(ops, startX, measureWidth, staffTopY, ss),
@@ -617,15 +694,23 @@ function digitGlyphs(value: number): readonly GlyphName[] {
 }
 
 /**
- * Where a beamed note's stem attaches, recorded so `layoutBeamGroup` can draw
- * every member's stem and the connecting beam(s) once the whole group's
- * positions are known, without redoing notehead placement itself.
+ * Where a note's notehead landed, recorded so a later pass can act on its
+ * position without redoing notehead placement itself. Originally just for a
+ * beamed note (`layoutBeamGroup` draws every member's stem and the connecting
+ * beam(s) once the whole group's positions are known); Slice 5 (ties) widened
+ * it to every pitched note, beamed or not, since the tie pass at the end of
+ * `layoutMeasure` needs an unbeamed or whole note's position too.
  */
 interface NotePlacement {
 	readonly noteX: number;
 	readonly y: number;
 	readonly headGlyph: GlyphName;
 	readonly d: number;
+	/** This note's own stem direction, or `null` for a whole note (no stem).
+	 *  Unused by `layoutBeamGroup` (a group's shared direction lives on
+	 *  `BeamGroup.direction` instead); read by the tie pass to decide which
+	 *  side of the notehead a tie curve leans toward. */
+	readonly up: boolean | null;
 }
 
 function layoutNote(
@@ -729,16 +814,19 @@ function layoutNote(
 	// is decided once, here, rather than separately by whichever of the two
 	// paths ends up drawing the stem: a beamed note takes its already-decided
 	// group direction, an unbeamed one the ordinary single-note rule.
-	let placement: NotePlacement | null = null;
 	let up: boolean | null = null;
 	if (note.value !== 'whole') {
 		up = beamed ? beamDirection === 'up' : stemDirectionForNotes([d]) === 'up';
-		if (beamed) {
-			placement = { noteX, y, headGlyph, d };
-		} else {
+		if (!beamed) {
 			layoutStemAndFlag(ops, noteX, y, headGlyph, note.value, note.id, ctx, up);
 		}
 	}
+	// Every pitched note's final position is recorded here, not just a beamed
+	// member's: `layoutBeamGroup` only ever reads the entries for its own
+	// group (unaffected by the wider population), and the tie pass in
+	// `layoutMeasure` needs an unbeamed or whole note's position too, to draw
+	// a same-measure tie's one curve or either half of one crossing a barline.
+	const placement: NotePlacement = { noteX, y, headGlyph, d, up };
 
 	notes.push({ id: note.id, bounds: glyphBounds(headGlyph, noteX, y, ss, 0.3) });
 	return {
@@ -1188,6 +1276,54 @@ function pushBeamSegment(
 	ops.push({ kind: 'rect', x: left, y: barY, width: right - left + stemWidth, height: beamHeight });
 }
 
+/**
+ * Which side of the notehead a tie (or, later, a slur) attached to `point`
+ * should curve toward: `true` for below, `false` for above. Standard
+ * engraving convention is away from the stem, so this is just the opposite of
+ * the note's own stem direction; a whole note has no real stem (`point.up` is
+ * `null`), so it falls back to `stemDirectionForNotes` on its own diatonic
+ * index, the same single-note rule a stem would have used.
+ */
+function tieCurvesBelow(point: NotePlacement): boolean {
+	return point.up ?? stemDirectionForNotes([point.d]) === 'up';
+}
+
+/**
+ * Push one tie curve's draw op: a shallow cubic Bezier from `(x0, y0)` to
+ * `(x1, y1)`, bulging below the straight line between them when `curvesBelow`
+ * is true and above it otherwise. Shared by a same-measure tie's single,
+ * full-span curve and each half of a tie crossing a barline (see the tie pass
+ * in `layoutMeasure`).
+ */
+function pushTieCurve(
+	ops: DrawOp[],
+	x0: number,
+	y0: number,
+	x1: number,
+	y1: number,
+	curvesBelow: boolean,
+	noteId: NoteId,
+	ctx: MeasureContext
+): void {
+	const { ss } = ctx;
+	// Canvas y grows downward, so "below" is a positive offset.
+	const dir = curvesBelow ? 1 : -1;
+	const bulge = TIE_BULGE * ss;
+	ops.push({
+		kind: 'curve',
+		x0,
+		y0,
+		cx0: x0 + (x1 - x0) * 0.25,
+		cy0: y0 + dir * bulge,
+		cx1: x0 + (x1 - x0) * 0.75,
+		cy1: y1 + dir * bulge,
+		x1,
+		y1,
+		thickness: ED.tieMidpointThickness * ss,
+		noteId
+	});
+}
+
 function pushGlyph(
 	ops: DrawOp[],
 	glyph: GlyphName,
@@ -1248,6 +1384,11 @@ function measureRegion(
 		if (op.kind === 'rect') {
 			top = Math.min(top, op.y);
 			bottom = Math.max(bottom, op.y + op.height);
+		} else if (op.kind === 'curve') {
+			// A cubic Bezier never leaves the convex hull of its four points, so
+			// their y-extent is a safe (if slightly generous) enclosure.
+			top = Math.min(top, op.y0, op.cy0, op.cy1, op.y1);
+			bottom = Math.max(bottom, op.y0, op.cy0, op.cy1, op.y1);
 		} else {
 			const { bBoxSW, bBoxNE } = GLYPH_METRICS[op.glyph];
 			top = Math.min(top, op.y - bBoxNE[1] * ss);
@@ -1263,7 +1404,17 @@ function translateMeasure(measure: LaidOutMeasure, dy: number): LaidOutMeasure {
 	return {
 		index: measure.index,
 		region: { ...measure.region, y: measure.region.y + dy },
-		ops: measure.ops.map((op) => ({ ...op, y: op.y + dy })),
+		// A curve op has no single `y` field (it has four: `y0`/`cy0`/`cy1`/`y1`),
+		// so the generic `{ ...op, y: op.y + dy }` shift used for `rect`/`glyph`
+		// would leave every one of its y-coordinates untouched while adding a
+		// stray, `NaN`-valued `y` field on top. Shifting all four explicitly is
+		// what keeps a tie's curve aligned with the notes it connects once the
+		// whole score is translated into its final canvas position.
+		ops: measure.ops.map((op) =>
+			op.kind === 'curve'
+				? { ...op, y0: op.y0 + dy, cy0: op.cy0 + dy, cy1: op.cy1 + dy, y1: op.y1 + dy }
+				: { ...op, y: op.y + dy }
+		),
 		notes: measure.notes.map((note) => ({
 			id: note.id,
 			bounds: { ...note.bounds, y: note.bounds.y + dy }

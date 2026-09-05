@@ -14,6 +14,7 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createDemoScore } from '../demo-score.js';
 import { layoutScore, relayoutMeasure } from '../layout/layout.js';
+import { buildScore } from '../model/score.js';
 import type { LaidOutScore, Rect } from '../layout/types.js';
 import { CanvasRenderer } from './renderer.js';
 
@@ -217,5 +218,81 @@ describe('CanvasRenderer region-scoped redraw', () => {
 		renderer.setLayout(updated);
 		renderer.redrawMeasure(1);
 		expect(recorder.calls.map((call) => call.y)).not.toEqual(baseline);
+	});
+});
+
+describe('CanvasRenderer painting a tie curve', () => {
+	// A second, narrower stub than `recordingContext`, since only this suite's
+	// tests need to know a curve was actually stroked rather than just that
+	// *some* drawing happened; folding these methods into the shared stub
+	// above would make every other test in this file track calls it does not
+	// care about.
+	function curveRecordingContext(): {
+		ctx: CanvasRenderingContext2D;
+		strokes: { x0: number; y0: number; cx0: number; cy0: number; cx1: number; cy1: number; x1: number; y1: number }[];
+		lineWidths: number[];
+	} {
+		const strokes: {
+			x0: number;
+			y0: number;
+			cx0: number;
+			cy0: number;
+			cx1: number;
+			cy1: number;
+			x1: number;
+			y1: number;
+		}[] = [];
+		const lineWidths: number[] = [];
+		let current: { x0: number; y0: number } | null = null;
+		const stub = {
+			font: '',
+			fillStyle: '',
+			strokeStyle: '',
+			lineWidth: 1,
+			textBaseline: 'alphabetic',
+			fillRect() {},
+			clearRect() {},
+			fillText() {},
+			beginPath() {
+				current = null;
+			},
+			moveTo(x: number, y: number) {
+				current = { x0: x, y0: y };
+			},
+			bezierCurveTo(cx0: number, cy0: number, cx1: number, cy1: number, x1: number, y1: number) {
+				if (!current) throw new Error('bezierCurveTo before moveTo');
+				strokes.push({ ...current, cx0, cy0, cx1, cy1, x1, y1 });
+			},
+			stroke() {
+				lineWidths.push(this.lineWidth);
+			}
+		};
+		return { ctx: stub as unknown as CanvasRenderingContext2D, strokes, lineWidths };
+	}
+
+	it('strokes a bezier curve for a tie, using the op\'s own thickness', () => {
+		const score = buildScore([[['C4', 'quarter', { tiedToNext: true }], ['C4', 'quarter']]]);
+		const layout = layoutScore(score);
+		const curveOp = layout.measures[0]!.ops.find((op) => op.kind === 'curve');
+		expect(curveOp).toBeDefined();
+		expect(curveOp!.kind).toBe('curve');
+
+		const recorder = curveRecordingContext();
+		new CanvasRenderer(recorder.ctx, layout).drawAll();
+
+		expect(recorder.strokes).toHaveLength(1);
+		if (curveOp!.kind === 'curve') {
+			expect(recorder.strokes[0]).toEqual({
+				x0: curveOp!.x0,
+				y0: curveOp!.y0,
+				cx0: curveOp!.cx0,
+				cy0: curveOp!.cy0,
+				cx1: curveOp!.cx1,
+				cy1: curveOp!.cy1,
+				x1: curveOp!.x1,
+				y1: curveOp!.y1
+			});
+			expect(recorder.lineWidths).toEqual([curveOp!.thickness]);
+		}
 	});
 });

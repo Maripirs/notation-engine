@@ -82,7 +82,8 @@ const ENGRAVING_DEFAULTS = [
 	'thickBarlineThickness',
 	'barlineSeparation',
 	'beamThickness',
-	'beamSpacing'
+	'beamSpacing',
+	'tieMidpointThickness'
 ];
 
 // The stem attachment anchors we use. SMuFL publishes many more per notehead

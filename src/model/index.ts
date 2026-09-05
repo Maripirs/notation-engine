@@ -5,6 +5,7 @@ export {
 	fromMidi,
 	keyAlterForStep,
 	parsePitch,
+	pitchesEqual,
 	toMidi,
 	transpose
 } from './pitch.js';

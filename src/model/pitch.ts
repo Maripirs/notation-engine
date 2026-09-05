@@ -124,6 +124,14 @@ export function parsePitch(text: string): Pitch {
 	};
 }
 
+/** Whether two pitches are the same step, alteration and octave: the same
+ *  sounding, identically spelled note. A tie only ever connects two notes for
+ *  which this is true; layout's stem/notehead placement never needs it, since
+ *  everything else keys off `diatonicIndex` or `toMidi` instead. */
+export function pitchesEqual(a: Pitch, b: Pitch): boolean {
+	return a.step === b.step && a.alter === b.alter && a.octave === b.octave;
+}
+
 /** Render a pitch back to scientific pitch notation. Mostly for test failures. */
 export function formatPitch(pitch: Pitch): string {
 	const accidental = pitch.alter > 0 ? '#'.repeat(pitch.alter) : 'b'.repeat(-pitch.alter);

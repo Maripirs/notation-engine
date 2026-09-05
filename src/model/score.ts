@@ -13,7 +13,7 @@
 // exactly the kind of rework a spike is supposed to avoid.
 
 import type { Pitch } from './pitch.js';
-import { parsePitch, transpose } from './pitch.js';
+import { parsePitch, pitchesEqual, transpose } from './pitch.js';
 
 /** Note values Divisi draws, whole down to 64th. */
 export type NoteValue = 'whole' | 'half' | 'quarter' | 'eighth' | '16th' | '32nd' | '64th';
@@ -64,6 +64,27 @@ export interface NoteSpec {
 	readonly dots?: 0 | 1 | 2;
 	/** Tuplet ratio, e.g. `TRIPLET`. `undefined` means the note is not part of one. */
 	readonly tuplet?: TupletRatio;
+	/**
+	 * Id of the *next* note this one is tied to: the two sound as one
+	 * continuous note of the same pitch, drawn as a curve from this notehead to
+	 * that one, rather than as a fresh attack. `null`/`undefined` means this
+	 * note starts no tie.
+	 *
+	 * A direction had to be picked (source -> target, not a symmetric pair or a
+	 * bare boolean) because layout has to know *which* note a tie's curve
+	 * reaches, not just that a tie exists; a monophonic score only ever has one
+	 * candidate to point at today, but a boolean flag would still leave that
+	 * relationship for some other structure to reconstruct later, e.g. once
+	 * slurs or an editor need to walk a tie from either end.
+	 *
+	 * This field is the low-level form, for a caller that already knows the
+	 * target note's id (e.g. copying an existing note whose id is already
+	 * assigned). `buildScore`'s compact literal syntax instead uses
+	 * `MeasureSpec`'s `extra.tiedToNext`, which it resolves to an id itself
+	 * once the whole score exists (see `buildScore`): a tie's target commonly
+	 * lives in a measure not yet built when the source note is created.
+	 */
+	readonly tiedToId?: NoteId | null;
 }
 
 export class Note {
@@ -73,6 +94,11 @@ export class Note {
 	voice: number;
 	dots: 0 | 1 | 2;
 	tuplet: TupletRatio | null;
+	/** See `NoteSpec.tiedToId`. Mutable so `Score.setTie` can wire, change or
+	 *  clear it after construction; kept in sync with `Score`'s reverse index
+	 *  only when changed through `Score.setTie` (or `Score.appendNote`'s own
+	 *  spec-time wiring), never by assigning this field directly. */
+	tiedToId: NoteId | null;
 
 	constructor(id: NoteId, spec: NoteSpec) {
 		this.id = id;
@@ -81,10 +107,16 @@ export class Note {
 		this.voice = spec.voice ?? 1;
 		this.dots = spec.dots ?? 0;
 		this.tuplet = spec.tuplet ?? null;
+		this.tiedToId = spec.tiedToId ?? null;
 	}
 
 	get isRest(): boolean {
 		return this.pitch === null;
+	}
+
+	/** Whether this note starts a tie into a following note. */
+	get isTied(): boolean {
+		return this.tiedToId !== null;
 	}
 
 	/**
@@ -118,7 +150,22 @@ export interface TimeSignature {
 	readonly beatType: number;
 }
 
-/** A measure's notes' total duration, as a fraction of a whole note. */
+/**
+ * A measure's notes' total duration, as a fraction of a whole note.
+ *
+ * Deliberately does *not* merge a tied pair into one duration. A tie is a
+ * sounding/perceptual construct: the two notes are heard as one continuous
+ * note, but each is still a written note occupying its own measure's own
+ * capacity, exactly as MusicXML (this model's spiritual reference) counts it:
+ * `<tie>` is a separate, playback-facing element layered on top of two
+ * ordinarily-durationed `<note>`s, not a way to make one of them free. A
+ * quarter note tied to a quarter note across a barline still costs a quarter
+ * of each measure's capacity, the same as if there were no tie at all; only
+ * layout and playback treat the pair as one continuous sound. Getting this
+ * backwards (subtracting a tied note's duration from its own measure, on the
+ * theory that "it's really one long note") would let an under-full measure
+ * validate as full, which is exactly the bug this function exists to catch.
+ */
 export function measureDurationWholes(measure: Measure): number {
 	return measure.notes.reduce((sum, note) => sum + note.durationWholes, 0);
 }
@@ -172,6 +219,15 @@ export class Score {
 	// On a 124-measure piece a scan would still be fast, but the index is the
 	// honest shape for the incremental-edit architecture this spike is testing.
 	readonly #measureOfNote = new Map<NoteId, Measure>();
+	// Reverse index for ties: target note id -> the note whose `tiedToId`
+	// names it. `Note.tiedToId` alone answers "what does this note tie into";
+	// layout also needs the opposite question ("does some earlier note tie
+	// into this one") when it lays out the *receiving* end of a tie that
+	// crosses a barline, and that end has no field of its own to answer it
+	// from. Kept as a separate map rather than a second field on `Note`
+	// because at most one note ties into any given note (a target has one
+	// source), so it is naturally a map, not a per-note list.
+	readonly #tieSourceOfTarget = new Map<NoteId, NoteId>();
 	#nextNoteId = 1;
 
 	constructor(options: ScoreOptions = {}) {
@@ -190,6 +246,7 @@ export class Score {
 		const note = new Note(`n${this.#nextNoteId++}`, spec);
 		measure.notes.push(note);
 		this.#measureOfNote.set(note.id, measure);
+		if (note.tiedToId !== null) this.#linkTie(note.id, note.tiedToId);
 		return note;
 	}
 
@@ -199,6 +256,54 @@ export class Score {
 
 	measureOfNote(id: NoteId): Measure | undefined {
 		return this.#measureOfNote.get(id);
+	}
+
+	/**
+	 * Wire, change or clear a tie starting at `sourceId`.
+	 *
+	 * `targetId: null` unties `sourceId` from whatever it pointed at. A
+	 * non-null target must already be a note in this score (both notes must
+	 * exist for the pitch check below to run), which is exactly the
+	 * chicken-and-egg problem `buildScore`'s `extra.tiedToNext` sugar exists to
+	 * route around: a literal that reads top-to-bottom names a tie's source
+	 * before its target is ever built, so `buildScore` calls this only in a
+	 * second pass, once every note has an id.
+	 */
+	setTie(sourceId: NoteId, targetId: NoteId | null): void {
+		const source = this.findNote(sourceId);
+		if (!source) throw new Error(`setTie: unknown note id "${sourceId}"`);
+		if (source.tiedToId !== null) this.#tieSourceOfTarget.delete(source.tiedToId);
+		if (targetId !== null) this.#linkTie(sourceId, targetId);
+		source.tiedToId = targetId;
+	}
+
+	/**
+	 * The note (if any) whose tie lands on `id`, i.e. `id`'s note is the
+	 * *receiving* end of a tie started elsewhere. Layout uses this to draw the
+	 * incoming half of a tie crossing into a measure from an earlier one,
+	 * without scanning every note in the score to find who ties into it.
+	 */
+	tiedFromNote(id: NoteId): Note | undefined {
+		const sourceId = this.#tieSourceOfTarget.get(id);
+		return sourceId ? this.findNote(sourceId) : undefined;
+	}
+
+	/**
+	 * Validate a tie and record it in the reverse index. Shared by
+	 * `appendNote` (a spec that already names its target's id) and `setTie`
+	 * (an existing note gaining or changing a tie later); both end up with the
+	 * same invariant enforced regardless of which path set `tiedToId`.
+	 */
+	#linkTie(sourceId: NoteId, targetId: NoteId): void {
+		const source = this.findNote(sourceId)!;
+		const target = this.findNote(targetId);
+		if (!target) throw new Error(`tie target "${targetId}" is not a note in this score`);
+		if (source.pitch === null || target.pitch === null || !pitchesEqual(source.pitch, target.pitch)) {
+			throw new Error(
+				`a tie must connect two notes of the same pitch (source "${sourceId}", target "${targetId}")`
+			);
+		}
+		this.#tieSourceOfTarget.set(targetId, sourceId);
 	}
 
 	/**
@@ -219,12 +324,15 @@ export class Score {
 }
 
 /** One measure written as `[pitchName | null, value, extra?]` triples; `null` is
- *  a rest. `extra` carries dots and/or a tuplet ratio for the notes that need
- *  them, so a plain literal can stay a 2-tuple. */
+ *  a rest. `extra` carries dots, a tuplet ratio and/or a tie for the notes
+ *  that need them, so a plain literal can stay a 2-tuple. `tiedToNext: true`
+ *  marks this note as tied into the *next* note in the same voice, wherever
+ *  it ends up (the same measure, or a later one across a barline); see
+ *  `buildScore` for how that gets resolved to an actual note id. */
 export type MeasureSpec = readonly (readonly [
 	pitch: string | null,
 	value: NoteValue,
-	extra?: { dots?: 0 | 1 | 2; tuplet?: TupletRatio }
+	extra?: { dots?: 0 | 1 | 2; tuplet?: TupletRatio; tiedToNext?: boolean }
 ])[];
 
 /**
@@ -235,16 +343,39 @@ export type MeasureSpec = readonly (readonly [
  */
 export function buildScore(measures: readonly MeasureSpec[], options: ScoreOptions = {}): Score {
 	const score = new Score(options);
+	// Notes requesting `extra.tiedToNext`, and every note built so far in
+	// score order: resolved into actual ties only after every measure exists,
+	// in a second pass below. A tie's target is commonly the very next note in
+	// a *different* (later) measure, which is exactly why this can't be
+	// resolved inline: while the measure containing the tied-from note is
+	// still being built, a following measure's notes don't have ids yet.
+	const tieRequests: Note[] = [];
+	const notesInOrder: Note[] = [];
 	for (const spec of measures) {
 		const measure = score.appendMeasure();
 		for (const [pitch, value, extra] of spec) {
-			score.appendNote(measure, {
+			const note = score.appendNote(measure, {
 				pitch: pitch === null ? null : parsePitch(pitch),
 				value,
 				dots: extra?.dots,
 				tuplet: extra?.tuplet
 			});
+			notesInOrder.push(note);
+			if (extra?.tiedToNext) tieRequests.push(note);
 		}
+	}
+	for (const source of tieRequests) {
+		// The next note in score order sharing this note's voice: score order
+		// already matches playback order within a voice, since Phase 0/1 only
+		// ever lays a score out left to right, top to bottom.
+		const startAt = notesInOrder.indexOf(source) + 1;
+		const target = notesInOrder.slice(startAt).find((candidate) => candidate.voice === source.voice);
+		if (!target) {
+			throw new Error(
+				`tiedToNext on a note with no following note in voice ${source.voice} to tie to`
+			);
+		}
+		score.setTie(source.id, target.id);
 	}
 	return score;
 }

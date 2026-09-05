@@ -97,7 +97,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       unit tests for repeated-accidental suppression within a measure
       and a tight-spacing collision case; demo shows no accidental
       overlapping adjacent ink.
-- [ ] **Slice 5 — Ties.** Same-pitch note tied across a barline or
+- [x] **Slice 5 — Ties.** Same-pitch note tied across a barline or
       within a measure; model gains a tie flag/link between two notes,
       layout draws the curve, and duration-capacity validation treats
       a tied pair as one sounding duration. Acceptance: unit tests for
@@ -304,4 +304,66 @@ divisi splits). Unscoped.
   sequence, one demonstrating the tight-spacing pair, both sanity-checked by
   laying out `createFullDemoScore` directly (this repo's established
   no-browser-automation-dependency approach) rather than through a browser.
+- 2026-09-04: Slice 5 (ties) done. `Note` gains `tiedToId: NoteId | null` (the
+  low-level, direction-picked form: source -> target, since layout needs to
+  know *which* note a curve reaches, not just that a tie exists), and `Score`
+  gains a reverse index (`tiedFromNote`) plus `setTie` (validates the target
+  exists and shares the source's exact pitch, via a new `pitchesEqual` in
+  `pitch.ts`). `MeasureSpec`'s compact literal gets `extra.tiedToNext: true`;
+  `buildScore` resolves it to a real target id in a second pass once every
+  note exists (mirroring how a tie's target commonly lives in a measure not
+  yet built while its source is being written), searching forward in score
+  order within the same voice. `measureDurationWholes` is unchanged and its
+  doc comment now spells out why: a tie is a sounding/perceptual construct
+  layered on top of two ordinarily-durationed notes (MusicXML's own model,
+  this file's spiritual reference), so each tied note still counts its own
+  duration toward its own measure's capacity; merging them would let an
+  under-full measure validate as full.
+
+  Layout gained a new `DrawOp` kind, `curve` (a general cubic Bezier with two
+  control points, not a tie-specific shape), since a tie is the short,
+  two-point case of the same primitive Slice 6's slurs will need for a
+  longer, arbitrary-length run; `CanvasRenderer` paints it via
+  `beginPath`/`bezierCurveTo`/`stroke` at a constant `thickness` pulled from
+  Bravura's own `tieMidpointThickness` (added to `extract-glyph-metrics.mjs`'s
+  extracted list, same as `beamThickness` before it). A same-measure tie
+  draws one curve directly inside `layoutMeasure`, once both notes' positions
+  are known (widening `NotePlacement`, previously beam-only, to record every
+  pitched note's position and stem direction). A tie crossing a barline is
+  drawn as two independent halves, one owned by each measure's own ops: this
+  is the part of the design worth flagging, since it is what keeps a tie
+  compatible with region-scoped redraw at all (a curve reaching into a
+  neighbour's pixels would get erased by that neighbour's own next redraw, or
+  leave stale ink behind on this measure's), and because each half only ever
+  needs its own note's position, `relayoutMeasure`'s incremental path
+  recomputes a measure's ties correctly for free, no extra plumbing, and a
+  tie crossing a *system* break (Phase 3 territory, not modelled by anything
+  here) gets a reasonable result the same way, with no special case: the
+  outgoing half stops at its own system's barline and the resuming half
+  starts at whichever system the target lands in. Curve direction follows
+  the standard convention (away from the stem: below the notehead when the
+  stem points up, above when it points down), with a documented, deliberately
+  unfixed edge case: each half decides its own direction from only its own
+  note's stem, so a tie into or out of a beamed note whose *group* direction
+  disagrees with what that note's pitch alone would pick could, in principle,
+  have its two halves bulge opposite ways at the barline; not handled, judged
+  rare and low-cost enough to leave for later. `translateMeasure` needed an
+  explicit fix alongside this: its generic `{ ...op, y: op.y + dy }` shift
+  (for turning a layout done at staff top 0 into final canvas position) does
+  not touch a curve's four y-coordinates at all, since a curve has no single
+  `y` field: caught by tracing the translation path by hand rather than by a
+  failing test, since the bug would otherwise have shipped as a
+  correctly-shaped but wrongly-positioned curve.
+
+  `createTieShowcaseScore` (a same-measure tie, then one crossing a barline)
+  folds into `createFullDemoScore` the same way Slice 4's showcase did;
+  `appendMeasures` needed its own second-pass fix to carry a copied note's
+  tie across into its new id, the same chicken-and-egg problem `buildScore`
+  solves for `extra.tiedToNext`. 151 tests pass (up from 138); `check`/`build`
+  are green and `bench` is unchanged (0.113-0.147ms scoped edit vs
+  0.662-10.537ms full redraw across 4-124 measures, matching Slice 4's
+  0.107-0.145ms/0.659-10.505ms). The full demo score, including the tie
+  showcase, was rasterized through real node-canvas directly (this repo's
+  no-browser-automation approach) to confirm `bezierCurveTo`/`stroke` render
+  without error, not just that layout produces the right coordinates.
 </content>

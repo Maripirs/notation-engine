@@ -21,12 +21,19 @@ export interface Rect {
 /**
  * One thing to draw.
  *
- * Only two kinds, because a Phase 0 staff is glyphs plus axis-aligned
- * rectangles: staff lines, stems, ledger lines and barlines are all rectangles.
- * Drawing them with `fillRect` rather than a stroked path avoids the half-pixel
- * centring that `lineWidth` imposes, which is what makes hairline staff lines
- * look grey and uneven. Curves (slurs, ties, beam wedges) will need a `path`
- * kind in Phase 1; there is no point inventing it before something draws one.
+ * `glyph` and `rect` are Phase 0's whole staff: glyphs plus axis-aligned
+ * rectangles for staff lines, stems, ledger lines and barlines. Drawing those
+ * with `fillRect` rather than a stroked path avoids the half-pixel centring
+ * that `lineWidth` imposes, which is what makes hairline staff lines look grey
+ * and uneven.
+ *
+ * `curve` is Phase 1's addition (Slice 5, ties): a cubic Bezier, stroked at a
+ * constant `thickness` rather than `fillRect`'s sharp-edged rectangle, because
+ * a curve has no axis-aligned box to exploit the way a staff line does. A tie
+ * is the short, two-point case of this primitive; Slice 6 (slurs) spans a
+ * longer, arbitrary run of notes with the same op, just with control points
+ * shaped differently, which is why this is a general Bezier rather than a
+ * tie-specific "arc between two noteheads" shape.
  *
  * `noteId` tags the ops that belong to a specific note so the renderer can tint
  * a selection without layout knowing what "selected" means.
@@ -46,6 +53,27 @@ export type DrawOp =
 			readonly y: number;
 			readonly width: number;
 			readonly height: number;
+			readonly noteId?: NoteId;
+	  }
+	| {
+			readonly kind: 'curve';
+			/** Start point, e.g. just clear of the first notehead's ink. */
+			readonly x0: number;
+			readonly y0: number;
+			/** First cubic Bezier control point. */
+			readonly cx0: number;
+			readonly cy0: number;
+			/** Second cubic Bezier control point. */
+			readonly cx1: number;
+			readonly cy1: number;
+			/** End point, e.g. just clear of the second notehead's ink. */
+			readonly x1: number;
+			readonly y1: number;
+			/** Stroke width, pixels. Real engraving tapers a tie/slur thicker at
+			 *  its midpoint than at its ends; a constant width is this slice's
+			 *  deliberate simplification, the same kind Phase 0/1 already makes
+			 *  for a flat (unangled) beam. */
+			readonly thickness: number;
 			readonly noteId?: NoteId;
 	  };
 

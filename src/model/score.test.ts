@@ -154,3 +154,93 @@ describe('measure duration validation', () => {
 		expect(measureCapacityWholes(score.time)).toBeCloseTo(1, 10);
 	});
 });
+
+describe('ties', () => {
+	it('resolves extra.tiedToNext across a barline to the next note in the same voice', () => {
+		const score = buildScore([
+			[
+				['C4', 'half'],
+				['C4', 'half', { tiedToNext: true }]
+			],
+			[
+				['C4', 'quarter'], // the tie's target: same pitch, first note of measure 1
+				['D4', 'quarter'],
+				['E4', 'half']
+			]
+		]);
+		const source = score.measures[0]!.notes[1]!;
+		const target = score.measures[1]!.notes[0]!;
+		expect(source.tiedToId).toBe(target.id);
+		expect(source.isTied).toBe(true);
+		// The reverse index answers the question layout asks from the
+		// *receiving* measure's side: "does some earlier note tie into this one".
+		expect(score.tiedFromNote(target.id)).toBe(source);
+		expect(score.tiedFromNote(source.id)).toBeUndefined();
+	});
+
+	it('resolves extra.tiedToNext to a same-measure neighbour', () => {
+		const score = buildScore([
+			[
+				['G4', 'quarter', { tiedToNext: true }],
+				['G4', 'quarter'],
+				['A4', 'half']
+			]
+		]);
+		const source = score.measures[0]!.notes[0]!;
+		const target = score.measures[0]!.notes[1]!;
+		expect(source.tiedToId).toBe(target.id);
+		expect(score.tiedFromNote(target.id)).toBe(source);
+	});
+
+	it('leaves each tied note counting its own duration toward its own measure', () => {
+		// A tie is a sounding/perceptual construct, not a way to write less than
+		// a measure's full capacity: both the source and the target still have
+		// to fill their own measure exactly, tied or not.
+		const score = buildScore([
+			[
+				['C4', 'quarter'],
+				['D4', 'quarter'],
+				['E4', 'quarter'],
+				['F4', 'quarter', { tiedToNext: true }]
+			],
+			[
+				['F4', 'whole'] // the tie's target, alone filling the second measure
+			]
+		]);
+		const first = validateMeasure(score.measures[0]!, score.time);
+		const second = validateMeasure(score.measures[1]!, score.time);
+		expect(first.valid).toBe(true);
+		expect(first.actualWholes).toBeCloseTo(1, 10);
+		expect(second.valid).toBe(true);
+		expect(second.actualWholes).toBeCloseTo(1, 10);
+	});
+
+	it('throws when tiedToNext has no following note in its voice', () => {
+		expect(() => buildScore([[['C4', 'quarter', { tiedToNext: true }]]])).toThrow(/no following note/);
+	});
+
+	it('setTie validates the target exists and shares the source note\'s pitch', () => {
+		const score = buildScore([
+			[
+				['C4', 'quarter'],
+				['D4', 'quarter']
+			]
+		]);
+		const [c4, d4] = score.measures[0]!.notes;
+		expect(() => score.setTie(c4!.id, 'does-not-exist')).toThrow(/not a note in this score/);
+		expect(() => score.setTie(c4!.id, d4!.id)).toThrow(/same pitch/);
+		expect(() => score.setTie('does-not-exist', c4!.id)).toThrow(/unknown note id/);
+	});
+
+	it('setTie(id, null) clears an existing tie from both sides of the index', () => {
+		const score = buildScore([[['C4', 'quarter'], ['C4', 'quarter']]]);
+		const [first, second] = score.measures[0]!.notes;
+		score.setTie(first!.id, second!.id);
+		expect(first!.tiedToId).toBe(second!.id);
+
+		score.setTie(first!.id, null);
+		expect(first!.tiedToId).toBeNull();
+		expect(first!.isTied).toBe(false);
+		expect(score.tiedFromNote(second!.id)).toBeUndefined();
+	});
+});

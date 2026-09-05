@@ -1,7 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { createAccidentalShowcaseScore, createDemoScore, createDurationShowcaseScore } from '../demo-score.js';
+import {
+	createAccidentalShowcaseScore,
+	createDemoScore,
+	createDurationShowcaseScore,
+	createTieShowcaseScore
+} from '../demo-score.js';
 import { buildScore, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
 import { ENGRAVING_DEFAULTS as ED } from '../render/glyph-metrics.js';
+import type { GlyphName } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
 import type { DrawOp, LaidOutScore } from './types.js';
 
@@ -10,6 +16,16 @@ const NOTE_VALUES: readonly NoteValue[] = ['whole', 'half', 'quarter', 'eighth',
 /** Glyph names an ops list draws, in order, dropping the plain rects. */
 const glyphsOf = (ops: readonly DrawOp[]) =>
 	ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+
+/** The first `glyph` op drawing `name`, narrowed so its `x`/`y` are addressable
+ *  (a bare `.find` predicate does not narrow `DrawOp`'s union, and `curve` ops
+ *  have no single `x`/`y` for a caller to accidentally read off the wrong kind). */
+const findGlyph = (ops: readonly DrawOp[], name: GlyphName) =>
+	ops.find((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === name);
+
+/** The first `curve` op, narrowed the same way `findGlyph` narrows a glyph. */
+const findCurve = (ops: readonly DrawOp[]) =>
+	ops.find((op): op is Extract<DrawOp, { kind: 'curve' }> => op.kind === 'curve');
 
 const overlaps = (a: { x: number; width: number }, b: { x: number; width: number }) =>
 	a.x < b.x + b.width && b.x < a.x + a.width;
@@ -36,7 +52,10 @@ describe('layoutScore', () => {
 	it('keeps every drawn pixel inside its own measure region', () => {
 		const layout = layoutScore(createDemoScore());
 		for (const measure of layout.measures) {
-			for (const op of measure.ops) {
+			// `createDemoScore` has no ties, so this never sees a `curve` op, which
+			// has no single x/y (see `DrawOp`'s own comment); narrowing to the two
+			// kinds that do is what keeps this generic rather than a fixture fact.
+			for (const op of measure.ops.filter((o) => o.kind === 'rect' || o.kind === 'glyph')) {
 				expect(op.x).toBeGreaterThanOrEqual(measure.region.x - 0.001);
 				expect(op.y).toBeGreaterThanOrEqual(measure.region.y - 0.001);
 				expect(op.y).toBeLessThanOrEqual(measure.region.y + measure.region.height + 0.001);
@@ -299,16 +318,16 @@ describe('duration rendering', () => {
 		// B4 sits on the treble staff's middle line.
 		const onLine = layoutScore(buildScore([[['B4', 'quarter', { dots: 1 }]]]));
 		const onLineOps = onLine.measures[0]!.ops;
-		const onLineHead = onLineOps.find((op) => op.kind === 'glyph' && op.glyph === 'noteheadBlack')!;
-		const onLineDot = onLineOps.find((op) => op.kind === 'glyph' && op.glyph === 'augmentationDot')!;
+		const onLineHead = findGlyph(onLineOps, 'noteheadBlack')!;
+		const onLineDot = findGlyph(onLineOps, 'augmentationDot')!;
 		expect(onLineDot.y).toBeLessThan(onLineHead.y);
 
 		// D4 sits in the leger space below the staff (no leger line of its own,
 		// unlike C4 which sits on one), so its dot needs no nudge.
 		const inSpace = layoutScore(buildScore([[['D4', 'quarter', { dots: 1 }]]]));
 		const inSpaceOps = inSpace.measures[0]!.ops;
-		const inSpaceHead = inSpaceOps.find((op) => op.kind === 'glyph' && op.glyph === 'noteheadBlack')!;
-		const inSpaceDot = inSpaceOps.find((op) => op.kind === 'glyph' && op.glyph === 'augmentationDot')!;
+		const inSpaceHead = findGlyph(inSpaceOps, 'noteheadBlack')!;
+		const inSpaceDot = findGlyph(inSpaceOps, 'augmentationDot')!;
 		expect(inSpaceDot.y).toBeCloseTo(inSpaceHead.y, 6);
 	});
 
@@ -493,10 +512,14 @@ describe('stem direction', () => {
 	const options = { staffSpacePx: ss };
 	const stemWidth = ED.stemThickness * ss;
 	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
+	const isGlyph = (op: DrawOp): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph';
 	const stemRects = (ops: readonly DrawOp[]) =>
 		ops.filter(isRect).filter((op) => Math.abs(op.width - stemWidth) < 0.001);
 	const headYsOf = (ops: readonly DrawOp[]) =>
-		ops.filter((op) => op.kind === 'glyph' && op.glyph === 'noteheadBlack').map((op) => op.y);
+		ops
+			.filter(isGlyph)
+			.filter((op) => op.glyph === 'noteheadBlack')
+			.map((op) => op.y);
 
 	// A range of pitches on both sides of the treble staff's middle line (B4),
 	// including the on-the-line tie-break case, checked via which flag glyph a
@@ -660,7 +683,7 @@ describe('accidental placement', () => {
 		expect(ledgers.length).toBeGreaterThanOrEqual(1);
 		const ledgerRight = ledgers[0]!.x + ledgers[0]!.width;
 
-		const accidental = ops.find((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')!;
+		const accidental = findGlyph(ops, 'accidentalSharp')!;
 		// The shift closes the gap to exactly the minimum rather than
 		// over-padding it.
 		expect(accidental.x - ledgerRight).toBeCloseTo(0.9 * ss, 5);
@@ -693,5 +716,127 @@ describe('accidental placement', () => {
 		// showcase.
 		const secondMeasureGlyphs = glyphsOf(layout.measures[1]!.ops);
 		expect(secondMeasureGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(1);
+	});
+});
+
+describe('ties', () => {
+	const curvesOf = (ops: readonly DrawOp[]) => ops.filter((op) => op.kind === 'curve');
+
+	it('draws one curve for a tie fully contained in a measure', () => {
+		const score = buildScore([
+			[
+				['C4', 'quarter', { tiedToNext: true }],
+				['C4', 'quarter'],
+				['D4', 'half']
+			]
+		]);
+		const layout = layoutScore(score);
+		const ops = layout.measures[0]!.ops;
+		expect(curvesOf(ops)).toHaveLength(1);
+		const curve = findCurve(ops)!;
+		// Same pitch, so the curve returns to the same height at both ends.
+		expect(curve.y0).toBeCloseTo(curve.y1, 6);
+		expect(curve.x0).toBeLessThan(curve.x1);
+	});
+
+	it('draws two independent halves for a tie crossing a barline', () => {
+		const score = buildScore([
+			[
+				['C4', 'half'],
+				['C4', 'half', { tiedToNext: true }]
+			],
+			[['C4', 'whole']]
+		]);
+		const layout = layoutScore(score);
+		const first = layout.measures[0]!;
+		const second = layout.measures[1]!;
+
+		// One half per measure, not a single curve reaching across the barline:
+		// that split is what keeps each measure's ops self-contained for
+		// region-scoped redraw (see the tie pass's own comment in layout.ts).
+		expect(curvesOf(first.ops)).toHaveLength(1);
+		expect(curvesOf(second.ops)).toHaveLength(1);
+
+		const outgoing = findCurve(first.ops)!;
+		const incoming = findCurve(second.ops)!;
+
+		// The outgoing half ends inside measure 0's own region (at its barline);
+		// the incoming half starts inside measure 1's own region (at its left
+		// edge). Neither reaches into the other measure's band.
+		expect(outgoing.x1).toBeLessThanOrEqual(first.region.x + first.region.width + 0.001);
+		expect(outgoing.x1).toBeGreaterThanOrEqual(first.region.x);
+		expect(incoming.x0).toBeGreaterThanOrEqual(second.region.x - 0.001);
+		expect(incoming.x0).toBeLessThanOrEqual(second.region.x + second.region.width);
+
+		// Both notes are C4 in the same system, so the two halves meet at the
+		// same height even though each was computed from only its own note.
+		expect(outgoing.y0).toBeCloseTo(incoming.y1, 6);
+	});
+
+	it('curves below a stem-up note and above a stem-down note', () => {
+		// C4 sits well below the treble staff's middle line: an up stem, so the
+		// tie curves below (a larger canvas y).
+		const low = layoutScore(
+			buildScore([[['C4', 'quarter', { tiedToNext: true }], ['C4', 'quarter']]])
+		);
+		const lowCurve = findCurve(low.measures[0]!.ops)!;
+		expect(lowCurve.cy0).toBeGreaterThan(lowCurve.y0);
+		expect(lowCurve.cy1).toBeGreaterThan(lowCurve.y1);
+
+		// A5 sits well above the middle line: a down stem, so the tie curves
+		// above (a smaller canvas y).
+		const high = layoutScore(
+			buildScore([[['A5', 'quarter', { tiedToNext: true }], ['A5', 'quarter']]])
+		);
+		const highCurve = findCurve(high.measures[0]!.ops)!;
+		expect(highCurve.cy0).toBeLessThan(highCurve.y0);
+		expect(highCurve.cy1).toBeLessThan(highCurve.y1);
+	});
+
+	it('keeps a tie curve inside its own measure region', () => {
+		const score = buildScore([[['C4', 'quarter', { tiedToNext: true }], ['C4', 'quarter']]]);
+		const layout = layoutScore(score);
+		const measure = layout.measures[0]!;
+		const curve = findCurve(measure.ops)!;
+		for (const y of [curve.y0, curve.cy0, curve.cy1, curve.y1]) {
+			expect(y).toBeGreaterThanOrEqual(measure.region.y - 0.001);
+			expect(y).toBeLessThanOrEqual(measure.region.y + measure.region.height + 0.001);
+		}
+	});
+
+	it('survives relayoutMeasure re-laying out its own measure incrementally', () => {
+		// Because the tie pass lives inside `layoutMeasure` itself rather than a
+		// separate whole-score pass, `relayoutMeasure` (which calls exactly that
+		// function) recomputes a measure's ties for free on an incremental edit,
+		// with no extra plumbing. Transposing the untied D4 here is a same-
+		// measure edit that leaves the tied C4 pair itself untouched.
+		const score = buildScore([
+			[
+				['C4', 'quarter', { tiedToNext: true }],
+				['C4', 'quarter'],
+				['D4', 'quarter'],
+				['E4', 'quarter']
+			]
+		]);
+		const layout = layoutScore(score);
+		const target = score.measures[0]!.notes[2]!;
+		const touched = score.transposeNote(target.id, 1);
+		const updated = relayoutMeasure(score, layout, touched!);
+		expect(updated).not.toBeNull();
+		expect(curvesOf(updated!.measures[0]!.ops)).toHaveLength(1);
+	});
+
+	it('renders the tie showcase, valid measures and all', () => {
+		const score = createTieShowcaseScore();
+		for (const measure of score.measures) {
+			expect(validateMeasure(measure, score.time).valid).toBe(true);
+		}
+		const layout = layoutScore(score);
+		// Measure 0: one curve, the same-measure D5 tie. Measure 1: one curve,
+		// the outgoing half of the F#5 tie into measure 2. Measure 2: one
+		// curve, that tie's incoming half.
+		expect(curvesOf(layout.measures[0]!.ops)).toHaveLength(1);
+		expect(curvesOf(layout.measures[1]!.ops)).toHaveLength(1);
+		expect(curvesOf(layout.measures[2]!.ops)).toHaveLength(1);
 	});
 });
