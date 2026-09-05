@@ -3,6 +3,7 @@ import {
 	createAccidentalShowcaseScore,
 	createDemoScore,
 	createDurationShowcaseScore,
+	createSlurShowcaseScore,
 	createTieShowcaseScore
 } from '../demo-score.js';
 import { buildScore, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
@@ -838,5 +839,187 @@ describe('ties', () => {
 		expect(curvesOf(layout.measures[0]!.ops)).toHaveLength(1);
 		expect(curvesOf(layout.measures[1]!.ops)).toHaveLength(1);
 		expect(curvesOf(layout.measures[2]!.ops)).toHaveLength(1);
+	});
+});
+
+describe('slurs', () => {
+	const curvesOf = (ops: readonly DrawOp[]) => ops.filter((op) => op.kind === 'curve');
+
+	it('draws one curve for a slur spanning several notes within a measure', () => {
+		const score = buildScore(
+			[
+				[
+					['G4', 'eighth'],
+					['A4', 'eighth'],
+					['B4', 'eighth'],
+					['C5', 'eighth'],
+					[null, 'half']
+				]
+			],
+			{},
+			[{ start: [0, 0], end: [0, 3] }]
+		);
+		const layout = layoutScore(score);
+		const ops = layout.measures[0]!.ops;
+		expect(curvesOf(ops)).toHaveLength(1);
+		const curve = findCurve(ops)!;
+
+		// The curve starts clear of the first note (G4) and ends clear of the
+		// last (C5), not glued to either notehead: strictly to the right of
+		// G4's own bounds and strictly to the left of C5's.
+		const g4 = layout.measures[0]!.notes[0]!;
+		const c5 = layout.measures[0]!.notes[3]!;
+		expect(curve.x0).toBeGreaterThan(g4.bounds.x + g4.bounds.width);
+		expect(curve.x1).toBeLessThan(c5.bounds.x);
+		expect(curve.x0).toBeLessThan(curve.x1);
+	});
+
+	it('curves below the majority stem direction: below when the spanned notes sit under the middle line', () => {
+		// G4, A4, B4 (middle line), C5: G4 is farthest from the middle line and
+		// sits below it, so the shared direction is up-stem and the slur curves
+		// below (a larger canvas y at its control points than its endpoints).
+		const score = buildScore(
+			[[['G4', 'eighth'], ['A4', 'eighth'], ['B4', 'eighth'], ['C5', 'eighth'], [null, 'half']]],
+			{},
+			[{ start: [0, 0], end: [0, 3] }]
+		);
+		const layout = layoutScore(score);
+		const curve = findCurve(layout.measures[0]!.ops)!;
+		expect(curve.cy0).toBeGreaterThan(curve.y0);
+		expect(curve.cy1).toBeGreaterThan(curve.y1);
+	});
+
+	it('curves above the majority stem direction: above when the spanned notes sit over the middle line', () => {
+		// G5 is farthest from the middle line and sits above it, so the shared
+		// direction is down-stem and the slur curves above (a smaller canvas y).
+		const score = buildScore(
+			[[['C5', 'eighth'], ['D5', 'eighth'], ['E5', 'eighth'], ['G5', 'eighth'], [null, 'half']]],
+			{},
+			[{ start: [0, 0], end: [0, 3] }]
+		);
+		const layout = layoutScore(score);
+		const curve = findCurve(layout.measures[0]!.ops)!;
+		expect(curve.cy0).toBeLessThan(curve.y0);
+		expect(curve.cy1).toBeLessThan(curve.y1);
+	});
+
+	it('splits a slur crossing a barline into two segments that meet at the same roof height', () => {
+		const score = buildScore(
+			[
+				[
+					['C4', 'quarter'],
+					['D4', 'quarter'],
+					['E4', 'quarter'],
+					['F4', 'quarter']
+				],
+				[
+					['G4', 'quarter'],
+					['A4', 'quarter'],
+					['B4', 'half']
+				]
+			],
+			{},
+			[{ start: [0, 3], end: [1, 1] }]
+		);
+		const layout = layoutScore(score);
+		const first = layout.measures[0]!;
+		const second = layout.measures[1]!;
+
+		expect(curvesOf(first.ops)).toHaveLength(1);
+		expect(curvesOf(second.ops)).toHaveLength(1);
+
+		const outgoing = findCurve(first.ops)!;
+		const incoming = findCurve(second.ops)!;
+
+		// The outgoing half stays inside measure 0's own region; the incoming
+		// half starts at measure 1's own left edge, never reaching backwards
+		// into measure 0's band, same discipline the tie pass already follows.
+		expect(outgoing.x1).toBeLessThanOrEqual(first.region.x + first.region.width + 0.001);
+		expect(incoming.x0).toBeGreaterThanOrEqual(second.region.x - 0.001);
+
+		// Both halves are computed from the same whole-slur `spanNotes`, so
+		// they land on the same "roof" height at the barline even though each
+		// was laid out from only its own measure's notes.
+		expect(outgoing.y1).toBeCloseTo(incoming.y0, 6);
+	});
+
+	it('draws a flat pass-through segment in a measure holding neither of the slur\'s two ends', () => {
+		const score = buildScore(
+			[
+				[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter'], ['F4', 'quarter']],
+				[['G4', 'quarter'], ['A4', 'quarter'], ['B4', 'quarter'], ['C5', 'quarter']],
+				[['D5', 'quarter'], ['E5', 'quarter'], ['F5', 'quarter'], ['G5', 'quarter']]
+			],
+			{},
+			[{ start: [0, 0], end: [2, 3] }]
+		);
+		const layout = layoutScore(score);
+		const [m0, m1, m2] = layout.measures;
+
+		expect(curvesOf(m0!.ops)).toHaveLength(1);
+		expect(curvesOf(m1!.ops)).toHaveLength(1);
+		expect(curvesOf(m2!.ops)).toHaveLength(1);
+
+		// Measure 1 holds neither end: its segment runs the full width of its
+		// own region, and being a pure pass-through, both its true endpoints
+		// are the same "roof" height (a flat shelf, not an arch of its own).
+		const middle = findCurve(m1!.ops)!;
+		expect(middle.x0).toBeCloseTo(m1!.region.x, 6);
+		expect(middle.x1).toBeGreaterThan(middle.x0);
+		expect(middle.y0).toBeCloseTo(middle.y1, 6);
+	});
+
+	it('keeps a slur curve inside its own measure region', () => {
+		const score = buildScore(
+			[[['G4', 'eighth'], ['A4', 'eighth'], ['B4', 'eighth'], ['C5', 'eighth'], [null, 'half']]],
+			{},
+			[{ start: [0, 0], end: [0, 3] }]
+		);
+		const layout = layoutScore(score);
+		const measure = layout.measures[0]!;
+		const curve = findCurve(measure.ops)!;
+		for (const y of [curve.y0, curve.cy0, curve.cy1, curve.y1]) {
+			expect(y).toBeGreaterThanOrEqual(measure.region.y - 0.001);
+			expect(y).toBeLessThanOrEqual(measure.region.y + measure.region.height + 0.001);
+		}
+	});
+
+	it('survives relayoutMeasure re-laying out its own measure incrementally', () => {
+		const score = buildScore(
+			[
+				[
+					['G4', 'eighth'],
+					['A4', 'eighth'],
+					['B4', 'eighth'],
+					['C5', 'eighth'],
+					['D5', 'quarter'],
+					['E5', 'quarter']
+				]
+			],
+			{},
+			[{ start: [0, 0], end: [0, 3] }]
+		);
+		const layout = layoutScore(score);
+		// Transpose the last, unslurred note: a same-measure edit that leaves
+		// the slurred run itself untouched, the same shape as the ties test
+		// this one is modelled on.
+		const target = score.measures[0]!.notes[5]!;
+		const touched = score.transposeNote(target.id, 1);
+		const updated = relayoutMeasure(score, layout, touched!);
+		expect(updated).not.toBeNull();
+		expect(curvesOf(updated!.measures[0]!.ops)).toHaveLength(1);
+	});
+
+	it('renders the slur showcase, valid measures and all', () => {
+		const score = createSlurShowcaseScore();
+		for (const measure of score.measures) {
+			expect(validateMeasure(measure, score.time).valid).toBe(true);
+		}
+		const layout = layoutScore(score);
+		// Measure 0: two curves (the single-measure G4..C5 slur, plus the
+		// outgoing half of the D5->G5 slur). Measure 1: one curve, that
+		// second slur's incoming half.
+		expect(curvesOf(layout.measures[0]!.ops)).toHaveLength(2);
+		expect(curvesOf(layout.measures[1]!.ops)).toHaveLength(1);
 	});
 });

@@ -207,12 +207,33 @@ export interface ScoreOptions {
 	readonly time?: TimeSignature;
 }
 
+/**
+ * A phrase mark spanning a run of notes: everything from `startNoteId` to
+ * `endNoteId`, inclusive, in score order. Unlike a tie, a slur is a pure
+ * notation marking with no sounding/duration meaning, so it needs no field on
+ * `Note` at all; it only needs its two ends, since layout can always walk
+ * `Score.notesInOrder()` between them to find what it spans. That is also why
+ * this is not modelled as a per-note flag the way `Note.tiedToId` is: a
+ * per-note field only ever names its *own* neighbour, and a slur's two ends
+ * are typically many notes apart.
+ */
+export interface Slur {
+	readonly startNoteId: NoteId;
+	readonly endNoteId: NoteId;
+}
+
 export class Score {
 	/** One clef for the whole score in Phase 0. Other clefs are Phase 1. */
 	readonly clef = 'treble' as const;
 	keyFifths: number;
 	time: TimeSignature;
 	readonly measures: Measure[] = [];
+	/** Every slur in the score, in the order `addSlur` was called. Layout reads
+	 *  this directly (not through some per-measure index) since a slur's own
+	 *  measure range has to be worked out fresh from its two note ids anyway,
+	 *  the same reason a tie's crossing-a-barline case reads `Note.tiedToId`
+	 *  and `tiedFromNote` rather than a precomputed span. */
+	readonly slurs: Slur[] = [];
 
 	// Note id -> owning measure. Maintained on insert so an edit can answer
 	// "which measure did I just touch" in O(1) instead of scanning the score.
@@ -256,6 +277,54 @@ export class Score {
 
 	measureOfNote(id: NoteId): Measure | undefined {
 		return this.#measureOfNote.get(id);
+	}
+
+	/**
+	 * Every note in the score, flattened in playback order (measure order, then
+	 * position within a measure). Layout's slur pass uses this to walk the run
+	 * of notes a slur spans, and `addSlur` uses it to check that a slur's start
+	 * genuinely comes before its end; a tie never needed this because its
+	 * target is always a single note named directly, never "whatever comes
+	 * between two others."
+	 */
+	notesInOrder(): readonly Note[] {
+		return this.measures.flatMap((measure) => measure.notes);
+	}
+
+	/**
+	 * Add a slur (phrase mark) spanning every note from `startNoteId` to
+	 * `endNoteId`, inclusive, in score order.
+	 *
+	 * Unlike `setTie`, there is no pitch-equality constraint: a slur marks a
+	 * phrase, not a sounding continuation, so any two notes at any two pitches
+	 * qualify. Both ends must already be notes (not rests: a slur has to
+	 * anchor its curve to an actual notehead) and `startNoteId` must come
+	 * before `endNoteId` in `notesInOrder()`, since layout walks forward from
+	 * one to the other to find what the slur spans; a backwards or
+	 * same-note span would have nothing to walk.
+	 */
+	addSlur(startNoteId: NoteId, endNoteId: NoteId): Slur {
+		const start = this.findNote(startNoteId);
+		if (!start) throw new Error(`addSlur: unknown start note id "${startNoteId}"`);
+		const end = this.findNote(endNoteId);
+		if (!end) throw new Error(`addSlur: unknown end note id "${endNoteId}"`);
+		if (start.pitch === null) {
+			throw new Error(`addSlur: start note "${startNoteId}" is a rest, which cannot anchor a slur`);
+		}
+		if (end.pitch === null) {
+			throw new Error(`addSlur: end note "${endNoteId}" is a rest, which cannot anchor a slur`);
+		}
+		const order = this.notesInOrder();
+		const startIndex = order.indexOf(start);
+		const endIndex = order.indexOf(end);
+		if (startIndex >= endIndex) {
+			throw new Error(
+				`addSlur: start note "${startNoteId}" must come before end note "${endNoteId}" in score order`
+			);
+		}
+		const slur: Slur = { startNoteId, endNoteId };
+		this.slurs.push(slur);
+		return slur;
 	}
 
 	/**
@@ -336,12 +405,34 @@ export type MeasureSpec = readonly (readonly [
 ])[];
 
 /**
+ * One slur, addressed by the position of its two end notes rather than by an
+ * id (a slur literal is built before any note has one). Each position is
+ * `[measureIndex, noteIndex]`, both 0-based into the `measures` array passed
+ * to `buildScore` alongside this spec.
+ *
+ * A per-note `extra` flag (the way `tiedToNext` works) does not fit a slur the
+ * way it fits a tie: a tie only ever names its *own* next note, but a slur's
+ * other end can be arbitrarily far away and is not naturally a property of
+ * either endpoint alone. Addressing by position keeps `MeasureSpec`'s compact
+ * per-note literal untouched, and reads almost as directly as an id would
+ * once the measures above it are visible to count from.
+ */
+export interface SlurSpec {
+	readonly start: readonly [measureIndex: number, noteIndex: number];
+	readonly end: readonly [measureIndex: number, noteIndex: number];
+}
+
+/**
  * Build a score from a compact literal, so demo scores and test fixtures read
  * like music rather than like constructor calls. Phase 0 has no importer, so
  * every score in this repo is written by hand and this is how. Phase 5's
  * MusicXML import replaces it as the real entry point, not this.
  */
-export function buildScore(measures: readonly MeasureSpec[], options: ScoreOptions = {}): Score {
+export function buildScore(
+	measures: readonly MeasureSpec[],
+	options: ScoreOptions = {},
+	slurs: readonly SlurSpec[] = []
+): Score {
 	const score = new Score(options);
 	// Notes requesting `extra.tiedToNext`, and every note built so far in
 	// score order: resolved into actual ties only after every measure exists,
@@ -350,7 +441,7 @@ export function buildScore(measures: readonly MeasureSpec[], options: ScoreOptio
 	// resolved inline: while the measure containing the tied-from note is
 	// still being built, a following measure's notes don't have ids yet.
 	const tieRequests: Note[] = [];
-	const notesInOrder: Note[] = [];
+	const builtNotes: Note[] = [];
 	for (const spec of measures) {
 		const measure = score.appendMeasure();
 		for (const [pitch, value, extra] of spec) {
@@ -360,7 +451,7 @@ export function buildScore(measures: readonly MeasureSpec[], options: ScoreOptio
 				dots: extra?.dots,
 				tuplet: extra?.tuplet
 			});
-			notesInOrder.push(note);
+			builtNotes.push(note);
 			if (extra?.tiedToNext) tieRequests.push(note);
 		}
 	}
@@ -368,14 +459,27 @@ export function buildScore(measures: readonly MeasureSpec[], options: ScoreOptio
 		// The next note in score order sharing this note's voice: score order
 		// already matches playback order within a voice, since Phase 0/1 only
 		// ever lays a score out left to right, top to bottom.
-		const startAt = notesInOrder.indexOf(source) + 1;
-		const target = notesInOrder.slice(startAt).find((candidate) => candidate.voice === source.voice);
+		const startAt = builtNotes.indexOf(source) + 1;
+		const target = builtNotes.slice(startAt).find((candidate) => candidate.voice === source.voice);
 		if (!target) {
 			throw new Error(
 				`tiedToNext on a note with no following note in voice ${source.voice} to tie to`
 			);
 		}
 		score.setTie(source.id, target.id);
+	}
+	for (const spec of slurs) {
+		const [startMeasureIndex, startNoteIndex] = spec.start;
+		const [endMeasureIndex, endNoteIndex] = spec.end;
+		const startNote = score.measures[startMeasureIndex]?.notes[startNoteIndex];
+		const endNote = score.measures[endMeasureIndex]?.notes[endNoteIndex];
+		if (!startNote) {
+			throw new Error(`slur start [${startMeasureIndex}, ${startNoteIndex}] is not a note in this score`);
+		}
+		if (!endNote) {
+			throw new Error(`slur end [${endMeasureIndex}, ${endNoteIndex}] is not a note in this score`);
+		}
+		score.addSlur(startNote.id, endNote.id);
 	}
 	return score;
 }

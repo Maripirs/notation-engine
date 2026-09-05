@@ -103,7 +103,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       a tied pair as one sounding duration. Acceptance: unit tests for
       tie-across-barline and same-measure tie; demo shows a tie curve
       connecting two noteheads.
-- [ ] **Slice 6 — Slurs.** Phrase mark spanning an arbitrary run of
+- [x] **Slice 6 — Slurs.** Phrase mark spanning an arbitrary run of
       notes (not just a pair); model gains a slur span, layout draws
       one curve over/under the run. Acceptance: unit test for a
       multi-note slur's endpoints and curve direction (above vs below
@@ -366,4 +366,69 @@ divisi splits). Unscoped.
   showcase, was rasterized through real node-canvas directly (this repo's
   no-browser-automation approach) to confirm `bezierCurveTo`/`stroke` render
   without error, not just that layout produces the right coordinates.
+- 2026-09-04: Slice 6 (slurs) done. `Score` gains a `Slur` type (just
+  `startNoteId`/`endNoteId`, no per-note field at all: unlike a tie, a slur's
+  two ends are typically many notes apart, so a per-note flag like
+  `tiedToId` does not fit) plus `addSlur` (validates both notes exist, rejects
+  a rest at either end, and requires the start to precede the end in a new
+  `Score.notesInOrder()`, since layout walks forward between them to find
+  what the slur spans) and a `readonly slurs: Slur[]`. `buildScore` gains a
+  third, optional `slurs: SlurSpec[]` parameter addressing each end by
+  `[measureIndex, noteIndex]` rather than by an `extra` flag on a note
+  literal, deliberately not extending `MeasureSpec`'s compact per-note tuple:
+  a slur is not a property of either endpoint alone the way `tiedToNext` is
+  of its own note, so bolting it on there would have cluttered every plain
+  note literal for a marking only a few notes in a score ever have.
+
+  Layout splits a slur into one curve segment per measure it passes through,
+  the same reasoning as a tie crossing a barline: a curve reaching into a
+  neighbouring measure's pixels would break region-scoped redraw on either
+  measure's next repaint. Direction reuses `stemDirectionForNotes` (the same
+  farthest-member-then-majority rule a beamed group's shared stem direction
+  already uses) over every diatonic index the slur spans, curving opposite
+  it exactly like a tie does. Endpoint placement and the multi-segment arc
+  both hang off one new idea, `slurRoofY`: the canvas y a slur's curve
+  cruises at everywhere it is not anchored to one of its own two end notes,
+  computed from the single most extreme diatonic position among *every* note
+  the whole slur spans (gathered fresh from `Score.notesInOrder()` every
+  time by a new `slurSpanNotes`, never from another measure's already-laid-
+  out positions) via the existing `staffY` function, plus a fixed clearance.
+  Every measure a slur touches recomputes the same `spanNotes` and therefore
+  the same `roofY` regardless of which measure is being laid out, which is
+  what lets a first segment (real note -> roof, ending at its own barline), a
+  last segment (roof -> real note, starting at its own left edge), and any
+  middle segment (a flat roof-to-roof "shelf" spanning the full measure width)
+  all agree on where they meet, without needing another measure's layout as
+  input: the same property that lets `relayoutMeasure` recompute a tie's half
+  correctly with no extra plumbing now does the same for a slur segment. A
+  single-measure slur is the same machinery with both real endpoints in one
+  segment, the curve rising to `roofY` in between and arching over whatever
+  falls between its two ends. The tie pass's own curve-drawing code was
+  factored into a shared `pushCurve` (just the op literal) plus
+  `pushTieCurve`/`pushSlurSegment` (each computing its own control-point
+  formula) rather than duplicated, since both draw the same `DrawOp` shape.
+  `slurMidpointThickness` was added to `extract-glyph-metrics.mjs`'s
+  extracted list and `glyph-metrics.ts` regenerated via `npm run glyphs`,
+  the same as `tieMidpointThickness` before it, rather than reusing the tie's
+  constant for what is a different (if numerically identical, in Bravura)
+  engraving default.
+
+  `createSlurShowcaseScore` (a 4-note single-measure slur, then a second
+  slur crossing the barline) folds into `createFullDemoScore` the same way
+  the tie showcase did; `appendMeasures` gained a slur-copying pass alongside
+  its existing tie one. 15 new tests (5 model: wiring, id/rest/order
+  validation, `SlurSpec` resolution; 10 layout: endpoint clearance, both
+  curve directions, barline-splitting with roof continuity, a flat
+  pass-through segment in a measure holding neither end, region containment,
+  `relayoutMeasure` survival, and the showcase's curve counts) bring the
+  suite to 166 (up from 151); `check`/`build` are green and `bench` is
+  unchanged (0.113-0.148ms scoped edit vs 0.674-10.606ms full redraw across
+  4-124 measures, matching Slice 5's 0.113-0.147ms/0.662-10.537ms; the bench
+  score has no slurs at all, so this was never expected to move). The full
+  demo score, slur showcase included, was rasterized through real
+  node-canvas directly to confirm it renders without error, and a
+  standalone PNG of just the slur showcase was inspected by eye to confirm
+  the arc actually looks like a slur (clears the notes it spans, curves the
+  documented direction, and the barline-crossing slur's two segments meet
+  without a visible gap).
 </content>

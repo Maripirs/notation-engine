@@ -16,6 +16,8 @@ export type {
 	NoteSpec,
 	NoteValue,
 	ScoreOptions,
+	Slur,
+	SlurSpec,
 	TimeSignature
 } from './score.js';
 export { buildScore, Measure, Note, NOTE_VALUE_WHOLES, Score } from './score.js';

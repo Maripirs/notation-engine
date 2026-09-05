@@ -244,3 +244,81 @@ describe('ties', () => {
 		expect(score.tiedFromNote(second!.id)).toBeUndefined();
 	});
 });
+
+describe('slurs', () => {
+	it('addSlur wires a span between two arbitrary-pitch notes, no shared pitch required', () => {
+		const score = buildScore([
+			[
+				['C4', 'quarter'],
+				['E4', 'quarter'],
+				['G4', 'quarter'],
+				['B4', 'quarter']
+			]
+		]);
+		const [c4, , , b4] = score.measures[0]!.notes;
+		const slur = score.addSlur(c4!.id, b4!.id);
+		expect(slur).toEqual({ startNoteId: c4!.id, endNoteId: b4!.id });
+		expect(score.slurs).toEqual([slur]);
+	});
+
+	it('addSlur validates both ids exist', () => {
+		const score = buildScore([[['C4', 'quarter'], ['D4', 'quarter']]]);
+		const [c4] = score.measures[0]!.notes;
+		expect(() => score.addSlur('does-not-exist', c4!.id)).toThrow(/unknown start note id/);
+		expect(() => score.addSlur(c4!.id, 'does-not-exist')).toThrow(/unknown end note id/);
+	});
+
+	it('addSlur rejects a rest as either end', () => {
+		const score = buildScore([
+			[
+				['C4', 'quarter'],
+				[null, 'quarter'],
+				['D4', 'quarter']
+			]
+		]);
+		const [c4, rest, d4] = score.measures[0]!.notes;
+		expect(() => score.addSlur(rest!.id, d4!.id)).toThrow(/is a rest/);
+		expect(() => score.addSlur(c4!.id, rest!.id)).toThrow(/is a rest/);
+	});
+
+	it('addSlur rejects a start that does not precede the end in score order', () => {
+		const score = buildScore([[['C4', 'quarter'], ['D4', 'quarter']]]);
+		const [c4, d4] = score.measures[0]!.notes;
+		expect(() => score.addSlur(d4!.id, c4!.id)).toThrow(/must come before/);
+		expect(() => score.addSlur(c4!.id, c4!.id)).toThrow(/must come before/);
+	});
+
+	it('notesInOrder flattens measures in score order', () => {
+		const score = buildScore([
+			[['C4', 'quarter'], ['D4', 'quarter']],
+			[['E4', 'quarter'], ['F4', 'quarter']]
+		]);
+		const order = score.notesInOrder();
+		expect(order.map((n) => n.pitch?.step)).toEqual(['C', 'D', 'E', 'F']);
+	});
+
+	it('buildScore resolves a SlurSpec by [measureIndex, noteIndex] position', () => {
+		const score = buildScore(
+			[
+				[
+					['G4', 'eighth'],
+					['A4', 'eighth'],
+					['B4', 'eighth'],
+					['C5', 'eighth']
+				],
+				[['D5', 'quarter'], [null, 'quarter'], [null, 'half']]
+			],
+			{},
+			[{ start: [0, 0], end: [1, 0] }]
+		);
+		const start = score.measures[0]!.notes[0]!;
+		const end = score.measures[1]!.notes[0]!;
+		expect(score.slurs).toEqual([{ startNoteId: start.id, endNoteId: end.id }]);
+	});
+
+	it('buildScore throws when a SlurSpec names a position with no note there', () => {
+		expect(() =>
+			buildScore([[['C4', 'quarter'], ['D4', 'quarter']]], {}, [{ start: [0, 0], end: [0, 5] }])
+		).toThrow(/slur end \[0, 5\] is not a note/);
+	});
+});

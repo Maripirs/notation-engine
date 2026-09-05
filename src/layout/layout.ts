@@ -12,7 +12,7 @@
 // Phase 0 needs from spacing is only that measures have stable, non-overlapping
 // horizontal bands, which is what makes region-scoped redraw possible at all.
 
-import type { Measure, Note, NoteId, NoteValue, Score, TimeSignature } from '../model/score.js';
+import type { Measure, Note, NoteId, NoteValue, Score, Slur, TimeSignature } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -104,14 +104,29 @@ const STEM_LENGTH = 3.5;
 
 /** How far a tie's curve bulges away from the straight line between its two
  *  ends, staff spaces. A tie's span is always short (one notehead to the
- *  next), so a constant bulge reads as the shallow arc real engraving uses;
- *  a longer, variable-length slur (Slice 6) will need this to scale with its
- *  span instead of staying constant. */
+ *  next), so a constant bulge reads as the shallow arc real engraving uses. A
+ *  slur's much longer, variable-length span uses a different scheme entirely
+ *  (see `slurRoofY`), since a fixed bulge could not clear whatever the
+ *  farthest note in a long run reaches. */
 const TIE_BULGE = 0.65;
 /** Horizontal clearance between a tied notehead and where its curve actually
  *  starts or ends, staff spaces: enough that the curve visibly detaches from
  *  the notehead rather than touching its ink. */
 const TIE_NOTE_GAP = 0.25;
+
+/** Horizontal clearance between a slur's anchor notehead and where its curve
+ *  actually starts or ends, staff spaces. Bigger than a tie's `TIE_NOTE_GAP`:
+ *  a tie's two ends share a pitch and read naturally as touching almost the
+ *  same spot, but a slur is not saying "this is the same note again", so
+ *  giving it a little more daylight from the notehead keeps the two marks
+ *  visually distinct. */
+const SLUR_NOTE_GAP = 0.4;
+/** How far clear of the most extreme note a slur spans, staff spaces, its
+ *  curve cruises on the side it bulges toward (see `slurRoofY`). Bigger than
+ *  `TIE_BULGE` for the same reason `SLUR_NOTE_GAP` is bigger than
+ *  `TIE_NOTE_GAP`: a slur has to arch clear over however many notes fall
+ *  between its two ends, not just connect two adjacent noteheads. */
+const SLUR_ROOF_CLEARANCE = 1.3;
 
 /** Diatonic index of E4, the bottom line of a treble staff. */
 const TREBLE_BOTTOM_LINE = diatonicIndex({ step: 'E', alter: 0, octave: 4 });
@@ -618,6 +633,54 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			const x1 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxSW[0] * ss - TIE_NOTE_GAP * ss;
 			pushTieCurve(ops, startX, point.y, x1, point.y, curvesBelow, tiedFrom.id, ctx);
 		}
+	}
+
+	// Slurs: a phrase mark spanning an arbitrary run of notes, split into one
+	// curve segment per measure it passes through for exactly the reason a tie
+	// crossing a barline is split into two independent halves above: a curve
+	// reaching into a neighbouring measure's pixels would break region-scoped
+	// redraw on either measure's next repaint. A slur fully contained in one
+	// measure (its start and end measure are the same) is just the one-segment
+	// case, arching directly from its start note to its end note over however
+	// many notes fall between them.
+	//
+	// Every measure the slur passes through recomputes the same `spanNotes`,
+	// `curvesBelow` and `roofY` from the score model alone (`slurSpanNotes`
+	// walks `Score.notesInOrder()`, not anything this or a neighbouring
+	// measure's layout already produced), so whichever measure `layoutMeasure`
+	// is asked to redraw always agrees with its neighbours about where the
+	// slur's "roof" sits, the same property that lets `relayoutMeasure`
+	// recompute a tie's half correctly with no extra plumbing.
+	for (const slur of score.slurs) {
+		const startMeasure = score.measureOfNote(slur.startNoteId);
+		const endMeasure = score.measureOfNote(slur.endNoteId);
+		if (!startMeasure || !endMeasure) continue;
+		if (measure.index < startMeasure.index || measure.index > endMeasure.index) continue;
+
+		const spanNotes = slurSpanNotes(score, slur);
+		const curvesBelow =
+			stemDirectionForNotes(
+				spanNotes.flatMap((spanNote) => (spanNote.pitch ? [diatonicIndex(spanNote.pitch)] : []))
+			) === 'up';
+		const roofY = slurRoofY(spanNotes, curvesBelow, ctx);
+
+		// A true endpoint only has a recorded position when it belongs to
+		// *this* measure (`placements` only ever holds this measure's own
+		// notes); otherwise this measure only sees the slur passing through,
+		// so its end of the segment is a "roof" point rather than a notehead.
+		const startPoint = measure.index === startMeasure.index ? placements.get(slur.startNoteId) : undefined;
+		const endPoint = measure.index === endMeasure.index ? placements.get(slur.endNoteId) : undefined;
+
+		const x0 = startPoint
+			? startPoint.noteX + GLYPH_METRICS[startPoint.headGlyph].bBoxNE[0] * ss + SLUR_NOTE_GAP * ss
+			: startX;
+		const y0 = startPoint ? startPoint.y : roofY;
+		const x1 = endPoint
+			? endPoint.noteX + GLYPH_METRICS[endPoint.headGlyph].bBoxSW[0] * ss - SLUR_NOTE_GAP * ss
+			: barlineX;
+		const y1 = endPoint ? endPoint.y : roofY;
+
+		pushSlurSegment(ops, x0, y0, x1, y1, roofY, slur.startNoteId, ctx);
 	}
 
 	return {
@@ -1289,6 +1352,29 @@ function tieCurvesBelow(point: NotePlacement): boolean {
 }
 
 /**
+ * Push a `curve` draw op with these eight numbers, exactly as `DrawOp`'s
+ * `curve` variant shapes them. The one place both `pushTieCurve` and
+ * `pushSlurSegment` build the op itself, so a change to that shape (an extra
+ * field, a renamed one) only has one call site to update, not two near-
+ * identical object literals that could quietly drift apart.
+ */
+function pushCurve(
+	ops: DrawOp[],
+	x0: number,
+	y0: number,
+	cx0: number,
+	cy0: number,
+	cx1: number,
+	cy1: number,
+	x1: number,
+	y1: number,
+	thickness: number,
+	noteId: NoteId | undefined
+): void {
+	ops.push({ kind: 'curve', x0, y0, cx0, cy0, cx1, cy1, x1, y1, thickness, noteId });
+}
+
+/**
  * Push one tie curve's draw op: a shallow cubic Bezier from `(x0, y0)` to
  * `(x1, y1)`, bulging below the straight line between them when `curvesBelow`
  * is true and above it otherwise. Shared by a same-measure tie's single,
@@ -1309,19 +1395,106 @@ function pushTieCurve(
 	// Canvas y grows downward, so "below" is a positive offset.
 	const dir = curvesBelow ? 1 : -1;
 	const bulge = TIE_BULGE * ss;
-	ops.push({
-		kind: 'curve',
+	pushCurve(
+		ops,
 		x0,
 		y0,
-		cx0: x0 + (x1 - x0) * 0.25,
-		cy0: y0 + dir * bulge,
-		cx1: x0 + (x1 - x0) * 0.75,
-		cy1: y1 + dir * bulge,
+		x0 + (x1 - x0) * 0.25,
+		y0 + dir * bulge,
+		x0 + (x1 - x0) * 0.75,
+		y1 + dir * bulge,
 		x1,
 		y1,
-		thickness: ED.tieMidpointThickness * ss,
+		ED.tieMidpointThickness * ss,
 		noteId
-	});
+	);
+}
+
+/**
+ * Every note a slur spans, start to end inclusive, in score order. Computed
+ * fresh from `Score.notesInOrder()` (not from any measure's already-laid-out
+ * notes) every time it is asked for, which is what lets any one of the
+ * slur's measures be re-laid-out on its own and still agree with the others
+ * about what the whole slur looks like: see the slur pass's own comment in
+ * `layoutMeasure`.
+ */
+function slurSpanNotes(score: Score, slur: Slur): Note[] {
+	const order = score.notesInOrder();
+	const startIndex = order.findIndex((note) => note.id === slur.startNoteId);
+	const endIndex = order.findIndex((note) => note.id === slur.endNoteId);
+	return order.slice(startIndex, endIndex + 1);
+}
+
+/**
+ * The canvas y a slur's curve cruises at everywhere it is not anchored to one
+ * of its own two end notes: the flat "shelf" of a middle segment (a measure
+ * the slur passes through without either end landing in it), and the control
+ * points that pull a first or last segment's curve up (or down) off its one
+ * real endpoint toward that shelf.
+ *
+ * Computed from the single most extreme diatonic position among *every* note
+ * the whole slur spans (`spanNotes`, gathered by `slurSpanNotes`), on the
+ * side the curve bulges toward, or the staff's own edge if nothing in the
+ * span reaches past it. Reading the whole span rather than just this
+ * measure's own notes is what lets one arc clear a note that dips or rises
+ * further than either of the slur's own two ends, and is also why every
+ * measure the slur touches computes the same shelf height: `spanNotes` does
+ * not depend on which measure asked.
+ *
+ * Deliberate simplification: this only reads each spanned note's own
+ * diatonic position, not its actual rendered ink (a stem's length, a beam, a
+ * ledger line's extension). Real slur engraving avoids all of that; this
+ * slice's acceptance criteria only ask for a reasonable-looking arc over the
+ * notes it spans, not full collision avoidance against every obstacle a
+ * slur could in principle cross.
+ */
+function slurRoofY(spanNotes: readonly Note[], curvesBelow: boolean, ctx: MeasureContext): number {
+	const diatonics = spanNotes.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : []));
+	const extreme = curvesBelow
+		? Math.min(TREBLE_BOTTOM_LINE, ...diatonics)
+		: Math.max(TREBLE_TOP_LINE, ...diatonics);
+	const edgeY = staffY(extreme, ctx);
+	return curvesBelow ? edgeY + SLUR_ROOF_CLEARANCE * ctx.ss : edgeY - SLUR_ROOF_CLEARANCE * ctx.ss;
+}
+
+/**
+ * Push one slur segment's draw op: a cubic Bezier from `(x0, y0)` to
+ * `(x1, y1)` whose *control* points both sit at `roofY`, regardless of where
+ * the segment's own two endpoints are.
+ *
+ * That is what gives a multi-measure slur one continuous-looking arc built
+ * out of independent per-measure segments: a middle segment's endpoints are
+ * both already `roofY` (a flat shelf), a first or last segment's one real
+ * endpoint (a notehead) is pulled up or down toward `roofY` by the control
+ * point nearest it, and a single-measure slur's two endpoints are both
+ * noteheads with the arc rising to `roofY` in between, arching over whatever
+ * the slur spans exactly the way a real slur's midpoint sits higher (or
+ * lower) than either of its ends.
+ */
+function pushSlurSegment(
+	ops: DrawOp[],
+	x0: number,
+	y0: number,
+	x1: number,
+	y1: number,
+	roofY: number,
+	noteId: NoteId,
+	ctx: MeasureContext
+): void {
+	const { ss } = ctx;
+	pushCurve(
+		ops,
+		x0,
+		y0,
+		x0 + (x1 - x0) * 0.25,
+		roofY,
+		x0 + (x1 - x0) * 0.75,
+		roofY,
+		x1,
+		y1,
+		ED.slurMidpointThickness * ss,
+		noteId
+	);
 }
 
 function pushGlyph(

@@ -362,6 +362,7 @@ export const ENGRAVING_DEFAULTS = {
 	beamThickness: 0.5,
 	beamSpacing: 0.25,
 	tieMidpointThickness: 0.22,
+	slurMidpointThickness: 0.22,
 } as const;
 
 /**

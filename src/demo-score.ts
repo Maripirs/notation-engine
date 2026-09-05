@@ -191,18 +191,55 @@ export function createTieShowcaseScore(): Score {
 	);
 }
 
+/**
+ * Slice 6's slur showcase: a short ascending-then-descending run slurred
+ * entirely within one measure (the common case, 3-4 notes), and a second
+ * slur crossing the barline into the next measure, so `npm run dev` shows
+ * both the single-segment and the split-into-per-measure-segments cases.
+ * Still G major 4/4 like the other showcases.
+ */
+export function createSlurShowcaseScore(): Score {
+	return buildScore(
+		[
+			[
+				// G4..C5, four notes, slurred as one phrase; D5 and E5 fill out
+				// the measure without joining the slur.
+				['G4', 'eighth'],
+				['A4', 'eighth'],
+				['B4', 'eighth'],
+				['C5', 'eighth'],
+				['D5', 'quarter'],
+				['E5', 'quarter']
+			],
+			[
+				// A second slur starts on this measure's D5 (the last note above)
+				// and ends on this measure's G5, crossing the barline in between.
+				['F#5', 'quarter'],
+				['G5', 'quarter'],
+				['A5', 'half']
+			]
+		],
+		{ keyFifths: 1, time: { beats: 4, beatType: 4 } },
+		[
+			{ start: [0, 0], end: [0, 3] }, // G4..C5, within measure 0
+			{ start: [0, 4], end: [1, 1] } // D5 (measure 0) into G5 (measure 1)
+		]
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
- *  each note's full spec, including any tie. The showcases are built as
- *  standalone scores (so their own unit tests can lay them out and validate
- *  them in isolation) and then folded onto the single score `npm run dev`
- *  actually renders; this is the fold, shared by every showcase
+ *  each note's full spec, including any tie or slur. The showcases are built
+ *  as standalone scores (so their own unit tests can lay them out and
+ *  validate them in isolation) and then folded onto the single score
+ *  `npm run dev` actually renders; this is the fold, shared by every showcase
  *  `createFullDemoScore` appends.
  *
- * A tie's target gets a brand new id once copied (ids are assigned by the
- * destination `score`, not carried over from `source`), so ties are wired up
- * in a second pass here, the same reason `buildScore` resolves
- * `extra.tiedToNext` in one: a source note copied before its tie's target is
- * copied has nothing yet to point at. */
+ * A tie's target, and a slur's two ends, all get brand new ids once copied
+ * (ids are assigned by the destination `score`, not carried over from
+ * `source`), so both are wired up in a second pass here, the same reason
+ * `buildScore` resolves `extra.tiedToNext` and a `SlurSpec` in one: a source
+ * note copied before the note(s) it points at are copied has nothing yet to
+ * point at. */
 function appendMeasures(score: Score, source: Score): void {
 	const copiedIdOf = new Map<NoteId, NoteId>();
 	for (const measure of source.measures) {
@@ -223,18 +260,22 @@ function appendMeasures(score: Score, source: Score): void {
 			score.setTie(copiedIdOf.get(note.id)!, copiedIdOf.get(note.tiedToId)!);
 		}
 	}
+	for (const slur of source.slurs) {
+		score.addSlur(copiedIdOf.get(slur.startNoteId)!, copiedIdOf.get(slur.endNoteId)!);
+	}
 }
 
 /**
  * What `npm run dev` actually shows: the Phase 0 fixture followed by Slice 1's
- * duration showcase, Slice 4's accidental showcase and Slice 5's tie
- * showcase, so a human can see all three render without disturbing
- * `createDemoScore`'s frozen shape (see the comment on it above).
+ * duration showcase, Slice 4's accidental showcase, Slice 5's tie showcase
+ * and Slice 6's slur showcase, so a human can see all four render without
+ * disturbing `createDemoScore`'s frozen shape (see the comment on it above).
  */
 export function createFullDemoScore(): Score {
 	const score = createDemoScore();
 	appendMeasures(score, createDurationShowcaseScore());
 	appendMeasures(score, createAccidentalShowcaseScore());
 	appendMeasures(score, createTieShowcaseScore());
+	appendMeasures(score, createSlurShowcaseScore());
 	return score;
 }

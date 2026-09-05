@@ -18,6 +18,7 @@ export {
 	createDemoScore,
 	createDurationShowcaseScore,
 	createFullDemoScore,
+	createSlurShowcaseScore,
 	createTieShowcaseScore
 } from './demo-score.js';
 export * from './model/index.js';
