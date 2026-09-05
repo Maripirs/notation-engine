@@ -80,7 +80,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       assert correct beam grouping for common meters (4/4, 6/8) incl.
       a rest breaking a group; demo shows a beamed run rendering as one
       beam, not stacked flags.
-- [ ] **Slice 3 — Stem direction rules.** Replace the fixed
+- [x] **Slice 3 — Stem direction rules.** Replace the fixed
       middle-line-split rule (`layoutStemAndFlag`'s `up = d <
       TREBLE_MIDDLE_LINE`) with the real single-voice rule: direction
       by distance from the middle line, and for a beamed group, one
@@ -235,4 +235,28 @@ divisi splits). Unscoped.
   direction; `check`/`build` are green and `bench` is unchanged
   (0.11-0.15ms scoped edit vs 0.65-10.4ms full redraw across 4-124
   measures).
+- 2026-09-04: Slice 3 (stem direction rules) done. A single shared function,
+  `stemDirectionForNotes`, now decides stem direction for both a lone note
+  (`layoutStemAndFlag`) and a beamed group (`layoutBeamGroup`), replacing the
+  inline middle-line split and Slice 2's group average with one rule each
+  path calls with its own diatonic index(es). A single note's direction is
+  by side of the middle line, same as before; a note exactly on the line
+  picks down-stem, the tie-break convention this slice fixes (documented in
+  the function's doc comment as a common house style, not a universal one).
+  A beamed group's direction is decided by its farthest-from-the-middle-line
+  member, not an average: a tie for farthest between a note above and one
+  below falls back to a majority vote across the whole group, and a further
+  tie (majority also even, or every note on the line) falls back to the same
+  down-stem convention. 12 new tests cover a range of single-note pitches
+  including the on-line case, a beamed group where farthest-note and average
+  disagree (constructed and hand-checked: G4, G4, E5 averages to 33.67,
+  below the middle line at 34, so the old rule gave up-stem; the farthest
+  member, E5, sits above the line, so the new rule gives down-stem instead),
+  a farthest-tie broken by majority, and a farthest-and-majority double-tie
+  falling back to the down-stem convention. 132 tests pass (up from 120);
+  check/build are green and bench is unchanged (0.114-0.146ms scoped edit
+  vs 0.655-10.408ms full redraw across 4-124 measures). The demo was
+  sanity-checked by laying out `createFullDemoScore` directly (not through a
+  browser, per this repo's no-browser-automation-dependency principle) and
+  confirming it renders without error and still draws stems.
 </content>

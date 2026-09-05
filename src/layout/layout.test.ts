@@ -485,3 +485,108 @@ describe('beaming', () => {
 		expect(beamSideY[0]).toBeCloseTo(beamSideY[1]!, 6);
 	});
 });
+
+describe('stem direction', () => {
+	// Same fixed staff space as the beaming suite above, for the same reason:
+	// round, distinct stem/beam sizes to key rect assertions off of.
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+	const stemWidth = ED.stemThickness * ss;
+	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
+	const stemRects = (ops: readonly DrawOp[]) =>
+		ops.filter(isRect).filter((op) => Math.abs(op.width - stemWidth) < 0.001);
+	const headYsOf = (ops: readonly DrawOp[]) =>
+		ops.filter((op) => op.kind === 'glyph' && op.glyph === 'noteheadBlack').map((op) => op.y);
+
+	// A range of pitches on both sides of the treble staff's middle line (B4),
+	// including the on-the-line tie-break case, checked via which flag glyph a
+	// lone (unbeamed) eighth note draws: an up-stem note always uses the "Up"
+	// flag, a down-stem note the "Down" one.
+	const SINGLE_NOTE_DIRECTION: readonly (readonly [string, 'Up' | 'Down'])[] = [
+		['C4', 'Up'], // well below the staff, on a ledger line
+		['E4', 'Up'], // bottom line
+		['G4', 'Up'], // just below the middle line
+		['A4', 'Up'], // one step below the middle line
+		['B4', 'Down'], // exactly on the middle line: this engine's tie-break
+		['C5', 'Down'], // one step above the middle line
+		['D5', 'Down'], // just above the middle line
+		['F5', 'Down'], // top line
+		['A5', 'Down'] // well above the staff, on a ledger line
+	];
+
+	it.each(SINGLE_NOTE_DIRECTION)('gives a lone %s an %s-stem', (pitch, direction) => {
+		const layout = layoutScore(buildScore([[[pitch, 'eighth']]]), options);
+		const glyphs = glyphsOf(layout.measures[0]!.ops);
+		expect(glyphs).toContain(`flag8th${direction}`);
+	});
+
+	it('picks a beamed group\'s farthest note over the group average', () => {
+		// G4 sits 2 diatonic steps below the middle line, E5 sits 3 steps above
+		// it. Averaging all three positions ((32 + 32 + 37) / 3 = 33.67, below
+		// the middle line at 34) would give an up-stem, Slice 2's old rule; the
+		// farthest-note rule instead looks only at E5, the single most extreme
+		// member, which sits above the line, so the whole group takes a
+		// down-stem instead, including the two G4s that would each want an
+		// up-stem on their own.
+		//
+		// Three eighths in a row cross a quarter-note beat boundary in simple
+		// meter, which would split the group before the direction rule ever
+		// runs, so this uses 6/8 (a dotted-quarter beat) to keep all three in
+		// one beam group.
+		const score = buildScore(
+			[[['G4', 'eighth'], ['G4', 'eighth'], ['E5', 'eighth']]],
+			{ time: { beats: 6, beatType: 8 } }
+		);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+		expect(glyphsOf(ops).some((g) => g.startsWith('flag'))).toBe(false);
+
+		const stems = stemRects(ops);
+		expect(stems).toHaveLength(3);
+		// A down stem hangs from the notehead, so the beam is each stem's
+		// bottom edge (`y + height`); asserting every member lands on the same
+		// one confirms the direction is uniform across the group, with no
+		// per-note flip back to what G4 alone would have chosen.
+		const beamSideY = stems.map((s) => s.y + s.height);
+		expect(beamSideY[1]).toBeCloseTo(beamSideY[0]!, 6);
+		expect(beamSideY[2]).toBeCloseTo(beamSideY[0]!, 6);
+		// The beam sits below every notehead in the group: a down-stem group,
+		// not an up-stem one.
+		expect(beamSideY[0]).toBeGreaterThan(Math.max(...headYsOf(ops)));
+	});
+
+	it('breaks a farthest-note tie by majority when both sides are equally far', () => {
+		// G4 (2 steps below the middle line) and D5 (2 steps above) tie for
+		// farthest, but A4 (1 step below) tips the group's overall majority to
+		// the below side, so the whole group takes an up-stem despite the tie.
+		const score = buildScore(
+			[[['G4', 'eighth'], ['A4', 'eighth'], ['D5', 'eighth']]],
+			{ time: { beats: 6, beatType: 8 } }
+		);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+		const stems = stemRects(ops);
+		expect(stems).toHaveLength(3);
+		// An up stem rises from the notehead, so the beam is each stem's top
+		// edge (`y`).
+		const beamSideY = stems.map((s) => s.y);
+		expect(beamSideY[1]).toBeCloseTo(beamSideY[0]!, 6);
+		expect(beamSideY[2]).toBeCloseTo(beamSideY[0]!, 6);
+		expect(beamSideY[0]).toBeLessThan(Math.min(...headYsOf(ops)));
+	});
+
+	it('falls back to the down-stem convention when farthest and majority both tie', () => {
+		// G4 (2 below) and D5 (2 above) are equally far from the middle line in
+		// opposite directions: farthest-note is tied, and with one note on each
+		// side the majority vote ties too. Both tie-breaks exhausted, the group
+		// falls back to the same down-stem convention a single on-the-line note
+		// uses.
+		const layout = layoutScore(buildScore([[['G4', 'eighth'], ['D5', 'eighth']]]), options);
+		const ops = layout.measures[0]!.ops;
+		const stems = stemRects(ops);
+		expect(stems).toHaveLength(2);
+		const beamSideY = stems.map((s) => s.y + s.height);
+		expect(beamSideY[1]).toBeCloseTo(beamSideY[0]!, 6);
+		expect(beamSideY[0]).toBeGreaterThan(Math.max(...headYsOf(ops)));
+	});
+});

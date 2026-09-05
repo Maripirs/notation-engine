@@ -727,11 +727,10 @@ function layoutStemAndFlag(
 	ctx: MeasureContext
 ): void {
 	const { ss } = ctx;
-	// Below the middle line the stem goes up, on or above it the stem goes down.
-	// Slice 3 replaces this with the real single-voice rule (distance from the
-	// middle line, not just which side); `beamStemUp` below uses the same
-	// split for a beamed group's one shared direction in the meantime.
-	const up = d < TREBLE_MIDDLE_LINE;
+	// See `stemDirectionForNotes` for the rule; a single note is just the
+	// one-element case of the same function `layoutBeamGroup` uses for a
+	// whole group, kept as one function so the rule lives in exactly one place.
+	const up = stemDirectionForNotes([d]) === 'up';
 	const anchors = glyphMetrics(headGlyph).anchors;
 	const anchor = up ? anchors.stemUpSE : anchors.stemDownNW;
 	if (!anchor) return;
@@ -851,21 +850,60 @@ function computeBeamGroups(notes: readonly Note[], time: TimeSignature): BeamGro
 }
 
 /**
- * A beamed group's one shared stem direction.
+ * The single-voice stem direction rule, shared by a lone note and a beamed
+ * group's one uniform direction: whichever side of the middle line has more
+ * room wins.
  *
- * Real engraving looks at which way the majority of notes want to point, with
- * a tie broken by the note farthest from the middle line. This instead
- * averages every member's diatonic position and applies the same
- * middle-line split a single note uses (`layoutStemAndFlag`'s `up = d <
- * TREBLE_MIDDLE_LINE`): simpler than a majority vote plus tie-break, and
- * correct for the common case of a group that sits mostly on one side of the
- * staff. Slice 3 (stem direction rules) is where this gets refined alongside
- * the single-note rule it deliberately mirrors.
+ * A single note (called here with one index) points up when it sits below
+ * the middle line, since an up-stem then rises through the emptier half of
+ * the staff, and down when it sits on or above the line, for the mirrored
+ * reason. A note exactly on the middle line has no "more room" side to
+ * prefer; this picks down-stem as the fixed tie-break (a common house
+ * convention, not a universal one) so the same note always renders the same
+ * way rather than flipping on whatever the caller happened to average it
+ * with.
+ *
+ * A beamed group (called with every member's index) cannot point two ways at
+ * once, so real engraving decides by the single member with the strongest
+ * preference: whichever note sits farthest from the middle line, since its
+ * single-note answer would be the least ambiguous of the group. A tie for
+ * farthest between a note above the line and one below it (equally far on
+ * both sides) falls back to a majority vote across every member, not just the
+ * tied ones; a further tie (equal counts on both sides too, or every member
+ * sitting exactly on the line) falls back to the same down-stem convention a
+ * single on-the-line note uses.
+ *
+ * This deliberately does not average positions (Slice 2's original group
+ * rule): an average is dominated by a cluster of notes only slightly off the
+ * line and can be pulled to the wrong side by one note that is actually far
+ * off it, exactly the disagreement this function resolves in the far note's
+ * favour instead.
  */
-function beamStemUp(notes: readonly Note[]): boolean {
-	const diatonics = notes.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : []));
-	const average = diatonics.reduce((sum, d) => sum + d, 0) / diatonics.length;
-	return average < TREBLE_MIDDLE_LINE;
+function stemDirectionForNotes(diatonicIndices: readonly number[]): 'up' | 'down' {
+	if (diatonicIndices.length === 0) return 'down';
+
+	const displacement = (d: number) => d - TREBLE_MIDDLE_LINE;
+	const maxAbsDisplacement = Math.max(...diatonicIndices.map((d) => Math.abs(displacement(d))));
+	const farthest = diatonicIndices.filter((d) => Math.abs(displacement(d)) === maxAbsDisplacement);
+
+	const farthestBelow = farthest.some((d) => displacement(d) < 0);
+	const farthestAbove = farthest.some((d) => displacement(d) > 0);
+	if (farthestBelow && !farthestAbove) return 'up';
+	if (farthestAbove && !farthestBelow) return 'down';
+
+	if (farthestBelow && farthestAbove) {
+		// The farthest note is tied between the two sides: fall back to which
+		// side the group as a whole leans toward.
+		const below = diatonicIndices.filter((d) => displacement(d) < 0).length;
+		const above = diatonicIndices.filter((d) => displacement(d) > 0).length;
+		if (below > above) return 'up';
+		if (above > below) return 'down';
+	}
+
+	// Either every note sits exactly on the middle line (maxAbsDisplacement is
+	// 0, so neither side is "farthest"), or the majority vote above tied too:
+	// same convention a single on-the-line note falls back to.
+	return 'down';
 }
 
 /** The x a beamed note's stem occupies, matching `layoutStemAndFlag`'s own
@@ -908,7 +946,8 @@ function layoutBeamGroup(
 	});
 	if (members.length < 2) return;
 
-	const up = beamStemUp(group.notes);
+	const diatonics = group.notes.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : []));
+	const up = stemDirectionForNotes(diatonics) === 'up';
 	const beamY = up
 		? Math.min(...members.map((m) => m.placement.y - STEM_LENGTH * ss))
 		: Math.max(...members.map((m) => m.placement.y + STEM_LENGTH * ss));
