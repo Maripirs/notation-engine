@@ -135,7 +135,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
 - [x] Review this scoping when back; it was done solo per the standing
       "keep making progress" instruction rather than left blocked.
 
-### M2 — Phase 2: Multi-voice / multi-staff [~]
+### M2 — Phase 2: Multi-voice / multi-staff [?]
 
 Est. 2-3 months. Multiple voices per staff, SATB part grouping + braces,
 cross-staff beaming. Scoped 2026-09-05 (Claude, off a codebase survey) into
@@ -220,7 +220,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       brace/bracket glyph choice and vertical span per part, and name
       label appearing only on system 1; demo shows a 4-staff SATB score
       with a bracket and part labels.
-- [ ] **Slice 6 — Cross-staff beaming.** A beam whose notes span two
+- [x] **Slice 6 — Cross-staff beaming.** A beam whose notes span two
       staves (e.g. a piano passage crossing hands) breaks the "a region
       never needs another region's pixels" invariant ties/slurs already
       routed around via per-measure splitting (M1 slices 5-6); this
@@ -1160,3 +1160,81 @@ divisi splits). Unscoped.
   2-staff piano-brace case to confirm by eye before committing. 244
   tests pass (up from 236); bench unchanged (0.274-0.326ms scoped edit
   vs 0.964-26.515ms full redraw across 4-124 measures).
+- 2026-09-06: M2 Slice 6 (cross-staff beaming) done, closing all 6 slices
+  of M2. `Score` gains `CrossStaffBeam` (mirroring `Slur`: two notes each
+  already correctly notated in their own staff's own `Measure`, linked
+  explicitly since two different staves have no shared onset timeline to
+  infer a grouping from), validated tightly (real pitched notes,
+  beam-eligible duration, same measure column across staves, exactly two
+  adjacent staff indices, 2+ notes per side). `layoutMeasure` excludes a
+  cross-staff note from ordinary automatic beaming and gives it a
+  synthetic `BeamGroup` drawn at a fixed join height reusing `barlineSpan`
+  (Slice 4)'s own already bleed-safe staff-boundary geometry rather than
+  fitting to either side's notes, which is what keeps a scoped one-
+  measure redraw correct with zero cross-region plumbing, the same
+  property that already made a tie/slur half correct for free. Caught and
+  fixed a latent Slice-4 bug along the way: `relayoutMeasure` built its
+  context without `barlineTop`/`barlineBottom`, silently reverting a
+  scoped redraw's shared end-barline to the single-staff band; nothing
+  had caught it since no prior test exercised a scoped redraw on a
+  shared barline. First attempt hit the account session limit mid-
+  exploration (no files written, relaunched clean); the second run
+  completed, and (per its own report) had itself spawned a review pass
+  before reporting back, replacing a vacuous first-draft region test with
+  a stronger noteId-based one. Claude independently re-reviewed the full
+  diff, ran check/test/build/bench directly, and rendered the cross-
+  staff showcase to confirm by eye: the beam reads as one continuous
+  shape crossing the staff gap (a small documented jog at the crossing
+  point, from the pre-existing stem-attachment-side convention applied to
+  two forced-opposite directions), correct stem directions on each side.
+  13 new tests bring the suite to 257 (up from 244); bench unchanged
+  (0.274-0.335ms scoped edit vs 0.980-26.789ms full redraw across
+  4-124 measures).
+
+  **M2 is now feature-complete across all 6 slices** and set to `[?]`,
+  not `[x]`: awaiting explicit human review and sign-off, the same
+  convention M1 used, since M2's own scoping review task (below) is
+  still unchecked and this milestone's slice work proceeded solo per the
+  standing "keep making progress" instruction while the human was away.
+  What is genuinely solid: two voices sharing one staff with independent
+  beaming/stems/rests (Slice 1) and voice-to-voice notehead/accidental
+  collision avoidance (Slice 2); a real `Staff`/`Part` model with
+  treble/bass/treble8 clefs generalized throughout (Slice 3); true
+  interleaved multi-staff system layout with a shared barline spanning
+  the group and per-staff column-width padding (Slice 4); part-grouping
+  braces/brackets and system-1-only name labels (Slice 5); and
+  cross-staff beaming for a piano-style hands-crossing passage (Slice
+  6). Every slice's `(staffIndex, measureIndex)` addressing scheme
+  (introduced Slice 3) proved sufficient all the way through Slice 6's
+  genuinely cross-staff case, and bench numbers stayed flat end to end
+  (0.27-0.34ms scoped edit regardless of score length, throughout all 6
+  slices), meaning region-scoped redraw survived six slices of real
+  multi-voice/multi-staff feature work without erosion.
+
+  What is simplified or punted, collected here since this is the
+  milestone's closing report: voices 3+ have no stem/rest convention,
+  and `measureDurationWholes`/`validateMeasure` still sum across all
+  voices in a measure rather than per-voice, so a valid two-voice
+  measure can incorrectly fail capacity validation (Slice 1). Nothing
+  here checks a *3rd* voice's ink against the other two (Slice 2's own
+  collision avoidance is strictly voice-1-vs-voice-2). `notesInOrder()`
+  (and therefore slur validation) only ever walks staff 0 (Slice 3).
+  Multi-staff system layout assumes every staff has the same measure
+  count, checked and thrown on rather than handled (Slice 4); a
+  narrower staff's column is padded, not re-justified, to match a wider
+  one. A bracketed/labelled part's reserved header width is not fed
+  into `systemWidthPx`'s own budgeting, so such a score renders slightly
+  wider than asked (Slice 5); label text width is a character-count
+  heuristic, not a real text measurement. Cross-staff beaming assumes
+  identical rhythmic content lands both sides at the same x with no
+  x-coordination logic, and only ever links exactly two adjacent staves
+  with 2+ notes each side, no beamlet-stub convention for a lone note on
+  one side (Slice 6). And, spanning every slice: no repeat-playback
+  semantics, no MusicXML import/export, and nothing here draws a
+  brace/bracket or cross-staff beam that itself gets edited (nothing in
+  this engine's one edit op, transpose, ever changes a `Part` or
+  `CrossStaffBeam`). None of this blocks M3; all of it is either flagged
+  in its owning slice's own code comments or listed here for whoever
+  scopes M3's actual slice work (already drafted speculatively, see M3's
+  own section) to see in one place once M3 re-checks its scoping against
+  this real, now-built M2 shape.
