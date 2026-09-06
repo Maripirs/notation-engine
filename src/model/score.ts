@@ -313,15 +313,35 @@ export function measureCapacityWholes(time: TimeSignature): number {
 }
 
 export interface MeasureValidation {
+	/** True iff every voice present in the measure independently fills the
+	 *  time signature's capacity; see `perVoice` and this function's own
+	 *  comment for why "every voice independently" is the right rule, not
+	 *  "the sum across voices". */
 	readonly valid: boolean;
-	/** The measure's actual total, as a fraction of a whole note. */
+	/** The measure's actual total *summed across every voice sharing it*, as a
+	 *  fraction of a whole note. Kept for backward compatibility and because
+	 *  it is a real, useful number in its own right (e.g. a total-ink-width
+	 *  estimate that wants "how much duration is in this measure" regardless
+	 *  of how many voices it took to fill it) - it is deliberately *not* what
+	 *  `valid` is computed from any more; see `perVoice`. */
 	readonly actualWholes: number;
-	/** What the time signature says the measure should hold. */
+	/** What the time signature says the measure should hold, i.e. what *each*
+	 *  voice present should individually sum to. */
 	readonly expectedWholes: number;
+	/** One entry per distinct `Note.voice` present in the measure, each
+	 *  reporting that voice's own total against `expectedWholes`. A measure
+	 *  with no notes at all has no voices present, hence an empty array here,
+	 *  which in turn makes `valid` false against any nonzero-capacity time
+	 *  signature (there is no voice that filled it) - consistent with this
+	 *  function's pre-existing behaviour of flagging an empty measure as
+	 *  invalid, just now reached through the per-voice rule instead of a
+	 *  vacuously-zero sum. */
+	readonly perVoice: readonly { readonly voice: number; readonly actualWholes: number; readonly valid: boolean }[];
 }
 
 /**
- * Check that a measure's notes sum to exactly its time signature's capacity.
+ * Check that a measure's notes fill its time signature's capacity, one voice
+ * at a time.
  *
  * Deliberately just reports: an under- or over-full measure is a modelling
  * error the caller (an importer, an edit op, a hand-built test fixture) needs
@@ -332,16 +352,53 @@ export interface MeasureValidation {
  * actually in force at a given measure is `Score.timeAt(measure.index)`, which
  * a caller in a score with any mid-score time changes needs to pass here
  * rather than the score's single initial `time`.
+ *
+ * A single voice filling a measure is the easy case: its own notes' durations
+ * simply have to sum to the time signature's capacity, which is exactly what
+ * `measureDurationWholes` computes when there is only one voice to sum.
+ * Two or more voices sharing a measure is not "the sum of every voice's notes
+ * fills the measure once" (that formula makes a fully-valid two-voice 4/4
+ * measure, each voice independently a full bar of its own, sum to *2* wholes
+ * and incorrectly fail); it is "*each* voice independently fills the measure
+ * on its own timeline", the same way a real two-voice staff has voice 1's
+ * quarter notes and voice 2's quarter notes each separately accounting for
+ * all four beats, not jointly accounting for four beats between them. This
+ * function therefore groups the measure's notes by `note.voice`, checks each
+ * group's own sum against `expectedWholes` independently (`perVoice`), and
+ * only calls the whole measure `valid` when every one of those groups passes.
+ * `actualWholes` (the old, single total) is kept for backward compatibility
+ * and its own documented uses, but is no longer what `valid` is computed
+ * from once more than one voice is present.
  */
 export function validateMeasure(measure: Measure, time: TimeSignature): MeasureValidation {
 	const actualWholes = measureDurationWholes(measure);
 	const expectedWholes = measureCapacityWholes(time);
+	// Grouping by voice, in first-seen order, mirrors `notesByVoice` in
+	// layout.ts (this file does not import from layout.ts, so it is not reused
+	// directly, but the grouping rule - a plain Map keyed by `note.voice` - is
+	// deliberately the same one, so a measure's voices are counted identically
+	// by both the model's own validation and layout's rendering).
+	const wholesByVoice = new Map<number, number>();
+	for (const note of measure.notes) {
+		wholesByVoice.set(note.voice, (wholesByVoice.get(note.voice) ?? 0) + note.durationWholes);
+	}
 	// Tuplets land on repeating fractions like 1/3, which do not terminate in
 	// binary, so an exact `===` would reject a perfectly valid triplet measure
 	// on float noise. The tolerance is far tighter than any audible or visible
 	// difference, so it cannot mask a genuinely wrong duration count.
-	const valid = Math.abs(actualWholes - expectedWholes) < 1e-9;
-	return { valid, actualWholes, expectedWholes };
+	const perVoice = [...wholesByVoice.entries()].map(([voice, voiceWholes]) => ({
+		voice,
+		actualWholes: voiceWholes,
+		valid: Math.abs(voiceWholes - expectedWholes) < 1e-9
+	}));
+	// An empty measure (no notes, hence no voices present in `perVoice`) has
+	// nothing that filled it, so `every` over zero entries would vacuously be
+	// `true` if left unchecked; the explicit `length > 0` keeps that case
+	// invalid against any nonzero-capacity time signature, matching what this
+	// function already did before the per-voice rewrite (a 0-vs-expected
+	// mismatch also failed the old single-sum check).
+	const valid = perVoice.length > 0 && perVoice.every((entry) => entry.valid);
+	return { valid, actualWholes, expectedWholes, perVoice };
 }
 
 export interface ScoreOptions {
@@ -438,10 +495,14 @@ export class Score {
 	 *  the same reason a tie's crossing-a-barline case reads `Note.tiedToId`
 	 *  and `tiedFromNote` rather than a precomputed span.
 	 *
-	 * Scope cut (M2 Slice 3): a slur's two ends are validated against
-	 * `notesInOrder()`, which (see that method's own comment) only walks
-	 * `staves[0]`'s notes. A slur between two notes on a non-zero staff is
-	 * out of this slice's scope; nothing here builds or exercises one. */
+	 * A slur's two ends are validated against `notesInOrder(staffIndex)`
+	 * (that method's own comment explains the per-staff parameter): both ends
+	 * must land on the same staff, and `addSlur` resolves and passes that
+	 * staff's index in itself, so a slur can anchor on any single staff, not
+	 * just `staves[0]`. A slur straddling *two different* staves is still
+	 * rejected (`addSlur` throws), since a slur's curve is drawn within one
+	 * staff's own band and there is no single cross-staff "score order" for
+	 * two ends on different staves to be checked against in the first place. */
 	readonly slurs: Slur[] = [];
 	/** Every cross-staff beam in the score (M2 Slice 6), in the order
 	 *  `addCrossStaffBeam` was called. See `CrossStaffBeam`'s own comment for
@@ -599,16 +660,26 @@ export class Score {
 	 * target is always a single note named directly, never "whatever comes
 	 * between two others."
 	 *
-	 * Scope cut (M2 Slice 3): reads `this.measures`, i.e. `staves[0]` only.
-	 * Multiple staves each have their own independent note sequence, so a
-	 * single flat "score order" spanning all of them is not obviously even the
-	 * right shape (M3's own scoping notes flag this same question for
-	 * playback); this slice does not answer it, and nothing here needs to,
-	 * since ties and slurs (this method's only two callers) are only ever
-	 * built within one staff today.
+	 * Takes a `staffIndex` (M2 Slice 3, default 0) because multiple staves each
+	 * have their own independent note sequence: there is no single flat "score
+	 * order" spanning every staff at once (a question M3's own scoping notes
+	 * flag again for playback, unanswered for the same reason here), only one
+	 * order *per staff*. Defaulting to 0 reproduces this method's original
+	 * pre-Slice-3 no-argument behaviour for every existing caller that never
+	 * needed anything but `staves[0]`.
+	 *
+	 * This used to be a real bug, not just a documented scope cut: reading
+	 * `this.measures` (`staves[0]` alone) unconditionally meant `addSlur`'s
+	 * order check on any staff other than 0 always compared two `-1` indices
+	 * from `Array.indexOf` finding nothing, which always satisfied
+	 * `startIndex >= endIndex` and made `addSlur` throw "must come before" for
+	 * every non-staff-0 slur regardless of the actual notes involved. The
+	 * `staffIndex` parameter is the fix: `addSlur` now resolves the slur's
+	 * actual staff and passes it through here instead of always reading
+	 * staff 0.
 	 */
-	notesInOrder(): readonly Note[] {
-		return this.measures.flatMap((measure) => measure.notes);
+	notesInOrder(staffIndex = 0): readonly Note[] {
+		return this.staves[staffIndex]?.measures.flatMap((measure) => measure.notes) ?? [];
 	}
 
 	/**
@@ -618,10 +689,14 @@ export class Score {
 	 * Unlike `setTie`, there is no pitch-equality constraint: a slur marks a
 	 * phrase, not a sounding continuation, so any two notes at any two pitches
 	 * qualify. Both ends must already be notes (not rests: a slur has to
-	 * anchor its curve to an actual notehead) and `startNoteId` must come
-	 * before `endNoteId` in `notesInOrder()`, since layout walks forward from
-	 * one to the other to find what the slur spans; a backwards or
-	 * same-note span would have nothing to walk.
+	 * anchor its curve to an actual notehead), both ends must live on the
+	 * *same* staff (a slur's curve is drawn within one staff's own band; see
+	 * `notesInOrder`'s own comment on why there is no single cross-staff
+	 * "score order" to check a straddling slur against in the first place),
+	 * and `startNoteId` must come before `endNoteId` in that staff's own
+	 * `notesInOrder()`, since layout walks forward from one to the other to
+	 * find what the slur spans; a backwards or same-note span would have
+	 * nothing to walk.
 	 */
 	addSlur(startNoteId: NoteId, endNoteId: NoteId): Slur {
 		const start = this.findNote(startNoteId);
@@ -634,7 +709,20 @@ export class Score {
 		if (end.pitch === null) {
 			throw new Error(`addSlur: end note "${endNoteId}" is a rest, which cannot anchor a slur`);
 		}
-		const order = this.notesInOrder();
+		// Both notes are already confirmed to exist above (`findNote` returned
+		// something for each), so `measureOfNote` is guaranteed to find their
+		// owning measures too; the non-null assertions here just say that out
+		// loud rather than re-deriving a possibility that has already been
+		// ruled out, the same convention `#linkTie` below uses for its own
+		// already-validated source note.
+		const startStaffIndex = this.measureOfNote(startNoteId)!.staffIndex;
+		const endStaffIndex = this.measureOfNote(endNoteId)!.staffIndex;
+		if (startStaffIndex !== endStaffIndex) {
+			throw new Error(
+				`addSlur: start note "${startNoteId}" (staff ${startStaffIndex}) and end note "${endNoteId}" (staff ${endStaffIndex}) must be on the same staff`
+			);
+		}
+		const order = this.notesInOrder(startStaffIndex);
 		const startIndex = order.indexOf(start);
 		const endIndex = order.indexOf(end);
 		if (startIndex >= endIndex) {

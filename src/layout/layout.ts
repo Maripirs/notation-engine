@@ -1782,18 +1782,20 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		shiftAccumByVoice.set(voice, 0);
 	}
 
-	// Voice 1's notehead position at the current column and the one
-	// immediately before it, for `secondIntervalClashShift`'s same-onset and
-	// adjacent-onset checks. Only voice 1 is tracked (not a general per-voice
-	// map) because the clash-avoidance convention this slice implements only
-	// ever nudges voice 2 out of voice 1's way; see that function's own
-	// comment on why the scope stops at exactly two voices.
-	let voice1AtPrevColumn: { d: number; noteX: number } | null = null;
-	let voice1AtThisColumn: { d: number; noteX: number } | null = null;
+	// Every earlier-numbered voice's own notehead position at the current
+	// column and the one immediately before it, for `secondIntervalClashShift`'s
+	// same-onset and adjacent-onset checks. Keyed by voice number (not a
+	// single fixed "voice 1" slot) so the clash-avoidance convention below
+	// generalizes to any voice yielding to any earlier one, not just voice 2
+	// yielding to voice 1; see that function's own comment on why the
+	// direction of yielding stays one-way even though the tracking itself is
+	// now N-way.
+	let atPrevColumnByVoice = new Map<number, { d: number; noteX: number }>();
+	let atThisColumnByVoice = new Map<number, { d: number; noteX: number }>();
 
 	for (const column of columns) {
 		const key = onsetKey(column.onset);
-		voice1AtThisColumn = null;
+		atThisColumnByVoice = new Map();
 		// Ink deposited so far *in this column* by an earlier-processed
 		// voice: what lets an accidental in one voice check the other
 		// voice's ink at this same x, not just its own voice's last note
@@ -1811,22 +1813,21 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			const baseCellX = cursor + columnOffsetPx.get(key)! + shiftAccum;
 
 			// Voice-to-voice notehead offset: a second-interval clash against
-			// voice 1, at this same column or the immediately preceding one,
-			// nudges voice 2's note right by whatever shortfall closes the
-			// gap to a full notehead's width. Folded straight into the same
-			// `cellX` the accidental-collision check below already adjusts,
-			// rather than a new parameter threaded into `layoutNote`, so
-			// that function's signature and single-voice behaviour stay
-			// untouched.
+			// any earlier-numbered voice already placed at this same column
+			// or the immediately preceding one nudges this voice's note
+			// right by whatever shortfall closes the gap to a full
+			// notehead's width. Folded straight into the same `cellX` the
+			// accidental-collision check below already adjusts, rather than
+			// a new parameter threaded into `layoutNote`, so that function's
+			// signature and single-voice behaviour stay untouched.
 			const clashShift =
 				note.pitch !== null
 					? secondIntervalClashShift(
-							voice,
 							diatonicIndex(note.pitch),
 							NOTEHEAD_GLYPHS[note.value],
 							baseCellX,
-							voice1AtThisColumn,
-							voice1AtPrevColumn,
+							[...atThisColumnByVoice.values()],
+							[...atPrevColumnByVoice.values()],
 							ss
 						)
 					: 0;
@@ -1867,11 +1868,11 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 				columnInkRightSoFar === null ? laid.inkRight : Math.max(columnInkRightSoFar, laid.inkRight);
 			if (laid.placement) {
 				placements.set(note.id, laid.placement);
-				if (voice === 1) voice1AtThisColumn = { d: laid.placement.d, noteX: laid.placement.noteX };
+				atThisColumnByVoice.set(voice, { d: laid.placement.d, noteX: laid.placement.noteX });
 			}
 		}
 
-		voice1AtPrevColumn = voice1AtThisColumn;
+		atPrevColumnByVoice = atThisColumnByVoice;
 	}
 	const finalShiftByVoice = shiftAccumByVoice;
 	for (const group of beamGroups) layoutBeamGroup(ops, group, placements, ctx);
@@ -2058,14 +2059,15 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		// means anything; without this, a staff whose own measures happen to
 		// number into the same range as another staff's slurred measures
 		// could incorrectly draw part of that slur, leaking ink outside the
-		// region a redraw of *this* measure is allowed to touch. Slurs are
-		// scoped to a single staff today anyway (`notesInOrder`'s own scope
-		// cut), so `startMeasure`/`endMeasure` always agree with each other on
-		// `staffIndex`; checking against `startMeasure`'s is enough.
+		// region a redraw of *this* measure is allowed to touch. A slur can
+		// anchor on any single staff (`Score.addSlur` validates both its ends
+		// land on the same one), so `startMeasure`/`endMeasure` always agree
+		// with each other on `staffIndex`; checking against `startMeasure`'s
+		// is enough.
 		if (measure.staffIndex !== startMeasure.staffIndex) continue;
 		if (measure.index < startMeasure.index || measure.index > endMeasure.index) continue;
 
-		const spanNotes = slurSpanNotes(score, slur);
+		const spanNotes = slurSpanNotes(score, slur, startMeasure.staffIndex);
 		const curvesBelow =
 			stemDirectionForNotes(
 				spanNotes.flatMap((spanNote) => (spanNote.pitch ? [diatonicIndex(spanNote.pitch)] : [])),
@@ -2312,59 +2314,78 @@ interface NotePlacement {
 }
 
 /**
- * Multi-voice stem-direction convention (M2 Slice 1): voice 1 always stems
- * up and voice 2 always stems down, regardless of which side of the middle
- * line a note actually sits on, the standard way real engraving tells two
- * voices sharing one staff apart at a glance. Only engages when `multiVoice`
- * is true (this measure genuinely holds more than one voice); a
- * single-voice measure, this engine's only case before this slice, must keep
+ * Multi-voice stem-direction convention (M2 Slice 1, generalized during the
+ * M2 scoping recheck before M3 to cover voices 3+): odd-numbered voices stem
+ * up and even-numbered voices stem down, regardless of which side of the
+ * middle line a note actually sits on, the standard way real engraving tells
+ * multiple voices sharing one staff apart at a glance. Only engages when
+ * `multiVoice` is true (this measure genuinely holds more than one voice); a
+ * single-voice measure, this engine's only case before M2 Slice 1, must keep
  * the ordinary pitch-based rule (`stemDirectionForNotes` with no override
  * here) so every existing single-voice test keeps its exact expected output.
  *
- * Voices 3+ are out of this slice's scope: the task it implements targets
- * exactly two voices per staff. A third or later voice in an otherwise
- * multi-voice measure gets no override here and falls back to the ordinary
- * pitch-based rule, a documented gap rather than a crash or an arbitrary
- * third direction; a real convention for 3+ voices on one staff (there are
- * several, depending on house style) is left for whoever first needs it.
+ * Parity (odd/even) rather than "voice 1/2 only, everything else falls back
+ * to pitch" is what actually earns the name "a multi-voice convention": the
+ * whole point of a fixed-by-voice-number stem rule is that a reader can tell
+ * voices apart by stem direction alone, without having to also know each
+ * note's pitch; leaving voice 3+ on the pitch-based rule would silently
+ * un-do that guarantee for every score with more than two voices on a staff,
+ * which is exactly the gap this generalization closes. Choosing parity
+ * specifically (not, say, "voices 1-2 up, 3-4 down") is deliberate too: it
+ * is the smallest possible extension of the existing voice-1-up/voice-2-down
+ * rule that a third voice can be added to without changing what voice 1 or
+ * voice 2 already do, and it reproduces both of their exact existing
+ * directions by construction (`1 % 2 === 1` -> up, `2 % 2 === 0` -> down).
  */
 function voiceStemOverride(voice: number, multiVoice: boolean): 'up' | 'down' | undefined {
 	if (!multiVoice) return undefined;
-	if (voice === 1) return 'up';
-	if (voice === 2) return 'down';
-	return undefined;
+	return voice % 2 === 1 ? 'up' : 'down';
 }
 
 /**
  * Vertical nudge, in staff spaces, applied to a rest's ordinary default y
- * (below) once its measure holds more than one voice: voice 1's rests shift
- * up and voice 2's shift down, so neither voice's rest prints on top of the
- * other voice's ink at the same or a nearby column. This is the standard
- * convention for two voices sharing a staff (the upper voice's rests sit
- * higher than usual, the lower voice's lower), gated on `multiVoice` for
- * exactly the reason `voiceStemOverride` is: a single-voice measure gets no
- * offset at all, keeping today's fixed rest position exactly as it was
- * before this slice.
+ * (below) once its measure holds more than one voice: odd-numbered voices'
+ * rests shift up and even-numbered voices' shift down, growing further from
+ * the staff the higher the voice number climbs, so no two voices' rests at a
+ * shared onset print on top of each other. This is the standard convention
+ * for voices sharing a staff (an upper voice's rests sit higher than usual,
+ * a lower voice's lower), gated on `multiVoice` for exactly the reason
+ * `voiceStemOverride` is: a single-voice measure gets no offset at all,
+ * keeping today's fixed rest position exactly as it was before M2 Slice 1.
  *
- * `REST_VOICE_OFFSET_SPACES` is not derived from anything Bravura publishes;
- * it is this file's own chosen distance. Two staff spaces either way (four
- * between the two voices) rather than one: a quarter rest's own glyph is
- * about three staff spaces tall (`GLYPH_METRICS.restQuarter`'s bounding box
- * runs roughly -1.5 to +1.5), so a smaller offset (one space, this file's
- * first attempt, caught by eye against a rendered PNG rather than by a
- * dimensionless "no overlap" test) still let the two voices' rest glyphs'
- * ink visibly merge into one blob at the shared column the acceptance
- * criteria specifically ask this to clear. Two full spaces still keeps both
- * rests inside or just past the staff for ordinary cases rather than
- * pushing them implausibly far off it. Voice 3+ gets no offset, the same
- * documented gap `voiceStemOverride` leaves.
+ * Generalized during the M2 scoping recheck before M3 from the original
+ * voice-1/voice-2-only rule to every voice, by the same odd-up/even-down
+ * parity `voiceStemOverride` uses (mirroring, not replacing, that existing
+ * two-voice convention): each successive same-parity voice steps one further
+ * `REST_VOICE_OFFSET_SPACES` away from the staff than the last, so voice 3's
+ * rest clears voice 1's the same way voice 1's clears the staff's own
+ * default, rather than every odd voice colliding on the identical offset
+ * voice 1 alone used to get. `Math.ceil(voice / 2)` counts "how many voices
+ * of this parity, including this one, are at or below this voice number"
+ * (1 -> 1, 3 -> 2, 5 -> 3, ...), and `voice / 2` does the same for the even
+ * side directly since every even voice number is already a whole step count
+ * (2 -> 1, 4 -> 2, ...); both reduce to exactly voice 1's `-1` step and
+ * voice 2's `+1` step (i.e. today's `-2`/`+2` once multiplied by
+ * `REST_VOICE_OFFSET_SPACES`) when there are only two voices, so this is a
+ * pure extension, not a change, of the existing two-voice behaviour.
+ *
+ * This is deliberately computed from the voice number alone, with no
+ * awareness of which *other* voices actually share this measure (e.g. a
+ * score using voices 1 and 3 but never 2 still gives voice 3 the "third
+ * step out" offset, not "second", even though only two voices are present).
+ * Reaching for the true set of present voices would need a signature change
+ * (this function would have to take the measure's other voices as a
+ * parameter, not just its own), which is not worth the extra plumbing for a
+ * convention whose only real-world case is voices numbered 1..N with no
+ * gaps; a caller with gappy voice numbers still gets a correct, merely more
+ * spread out, layout, never a collision.
  */
 const REST_VOICE_OFFSET_SPACES = 2;
 function restVoiceOffsetSpaces(voice: number, multiVoice: boolean): number {
 	if (!multiVoice) return 0;
-	if (voice === 1) return -REST_VOICE_OFFSET_SPACES;
-	if (voice === 2) return REST_VOICE_OFFSET_SPACES;
-	return 0;
+	return voice % 2 === 1
+		? -REST_VOICE_OFFSET_SPACES * Math.ceil(voice / 2)
+		: REST_VOICE_OFFSET_SPACES * (voice / 2);
 }
 
 function layoutNote(
@@ -2506,21 +2527,30 @@ function layoutNote(
 }
 
 /**
- * The rightward nudge voice 2's notehead needs, in pixels, to clear a
+ * The rightward nudge a voice's notehead needs, in pixels, to clear a
  * second-interval (adjacent line/space, `Math.abs(d1 - d2) === 1`) clash
- * against voice 1's notehead at the same column or the one immediately
- * before it, or `0` when there is nothing to clear.
+ * against any *earlier-numbered* voice's notehead already placed at the same
+ * column or the one immediately before it, or `0` when there is nothing to
+ * clear.
  *
- * Scoped to exactly the two-voice case, voice 1 against voice 2, matching
- * the existing `voiceStemOverride`/`restVoiceOffsetSpaces` precedent of
- * leaving voices 3+ a documented gap rather than a crash or an arbitrary
- * convention: this only ever fires for `voice === 2`, and only ever checks
- * against voice 1's own notehead, never the other way around. That
- * asymmetry is deliberate, not an oversight: real engraving's own
- * convention is "one nudged right", and this file already has a one-sided
- * relationship between the two voices to hang that on (`voiceStemOverride`'s
- * fixed voice-1-up/voice-2-down assignment), so voice 1 keeps its ordinary
- * position and voice 2 is always the one that yields.
+ * Generalized during the M2 scoping recheck before M3 from the original
+ * exactly-two-voice case (voice 1 against voice 2) to any number of voices:
+ * `layoutMeasure`'s column loop already processes each column's voices in
+ * ascending voice-number order (see `voiceNumbers`), so by the time a given
+ * voice's note reaches this function, every lower-numbered voice already
+ * placed *in this same column* (plus whichever of them were placed in the
+ * previous column) is known and passed in as `atThisColumn`/`atPrevColumn`.
+ * The check now loops over every entry in both arrays combined, taking the
+ * largest shift any of them demands, instead of a single fixed "voice 1"
+ * value. The one-directional convention itself is unchanged: a later-
+ * numbered voice always yields to an earlier one, never the reverse, the
+ * same asymmetry the original two-voice version already established
+ * (mirroring `voiceStemOverride`'s fixed odd-up/even-down assignment, which
+ * likewise treats a lower voice number as never having to move for a higher
+ * one). A voice with nothing earlier placed at either column (voice 1 above
+ * all, since no voice ever precedes it) naturally receives two empty
+ * arrays and this function returns `0` with no special-casing needed,
+ * reproducing voice 1's old always-unshifted behaviour for free.
  *
  * The check is genuinely geometric, not a blind interval match: a second
  * apart is necessary but not sufficient, since two notes a second apart at
@@ -2537,20 +2567,18 @@ function layoutNote(
  * that keeps the whole restructured pass a single left-to-right walk.
  */
 function secondIntervalClashShift(
-	voice: number,
 	d: number,
 	headGlyph: GlyphName,
 	candidateCellX: number,
-	voice1AtThisColumn: { readonly d: number; readonly noteX: number } | null,
-	voice1AtPrevColumn: { readonly d: number; readonly noteX: number } | null,
+	atThisColumn: readonly { readonly d: number; readonly noteX: number }[],
+	atPrevColumn: readonly { readonly d: number; readonly noteX: number }[],
 	ss: number
 ): number {
-	if (voice !== 2) return 0;
 	const requiredGap = GLYPH_METRICS[headGlyph].advance * ss;
 	let shift = 0;
-	for (const voice1Note of [voice1AtThisColumn, voice1AtPrevColumn]) {
-		if (!voice1Note || Math.abs(voice1Note.d - d) !== 1) continue;
-		const gap = candidateCellX - voice1Note.noteX;
+	for (const earlierNote of [...atThisColumn, ...atPrevColumn]) {
+		if (Math.abs(earlierNote.d - d) !== 1) continue;
+		const gap = candidateCellX - earlierNote.noteX;
 		if (gap < requiredGap) shift = Math.max(shift, requiredGap - gap);
 	}
 	return shift;
@@ -3123,14 +3151,23 @@ function pushTieCurve(
 
 /**
  * Every note a slur spans, start to end inclusive, in score order. Computed
- * fresh from `Score.notesInOrder()` (not from any measure's already-laid-out
- * notes) every time it is asked for, which is what lets any one of the
- * slur's measures be re-laid-out on its own and still agree with the others
- * about what the whole slur looks like: see the slur pass's own comment in
- * `layoutMeasure`.
+ * fresh from `Score.notesInOrder(staffIndex)` (not from any measure's
+ * already-laid-out notes) every time it is asked for, which is what lets any
+ * one of the slur's measures be re-laid-out on its own and still agree with
+ * the others about what the whole slur looks like: see the slur pass's own
+ * comment in `layoutMeasure`.
+ *
+ * `staffIndex` is threaded through by the caller rather than re-derived here,
+ * because the slur-drawing loop in `layoutMeasure` already has
+ * `startMeasure.staffIndex` on hand (it needs it for its own region-scoping
+ * check just above); recomputing the same lookup a second time inside this
+ * function would just be duplicate work for the same answer, and this
+ * function has no other way to get a staff index since a bare `Slur` names
+ * only its two note ids, not the staff they live on (`Score.addSlur` records
+ * that separately, as the measures those ids resolve to).
  */
-function slurSpanNotes(score: Score, slur: Slur): Note[] {
-	const order = score.notesInOrder();
+function slurSpanNotes(score: Score, slur: Slur, staffIndex: number): Note[] {
+	const order = score.notesInOrder(staffIndex);
 	const startIndex = order.findIndex((note) => note.id === slur.startNoteId);
 	const endIndex = order.findIndex((note) => note.id === slur.endNoteId);
 	return order.slice(startIndex, endIndex + 1);

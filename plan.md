@@ -238,8 +238,11 @@ pass; `npm run check`/`test`/`build` stay green throughout.
 
 ### M3 — Phase 3: Sound / playback [ ]
 
-Est. 1-2 months, more uncertain than M1/M2's own estimates given how
-speculative this scoping pass necessarily is (see below). Audio playback
+Est. 1-2 months, drafted more uncertain than M1/M2's own estimates since
+the original scoping pass was necessarily speculative (see below); the
+2026-09-06 recheck against M2's real, now-built shape found the
+speculation held closely, so this estimate stands but with less residual
+risk than when it was first drafted. Audio playback
 of the score (tempo model, note onset/duration scheduling, audio
 engine). Placed after M2 rather than right after M1: this is a
 choral-notation tool (SATB part grouping, divisi splits), so playback
@@ -251,82 +254,133 @@ audio, a hosted soundfont library, or multi-user sync.
 
 Scoped 2026-09-05 (Claude, delegated to a subagent at the human's
 explicit request) into 6 sequential slices below, in M1/M2's style
-(unit-test assertions plus a demo check each). This pass is necessarily
-more speculative than M1's or M2's own scoping: both of those were
-scoped against code that already existed (M1 against the finished Phase
-0 spike, M2 against the finished M1 engine), whereas M2, the milestone
-M3 depends on for its staff/voice/part data, is still only Slice 1 of 6
-as of this writing. Every slice below that reads or produces
-multi-voice/multi-staff data (Slices 2, 4, 5) is written against M2's
-*scoped* shape (this file's own M2 section), not built code, and will
-need re-checking, and possibly re-slicing, once M2 actually lands and
-that shape either holds or doesn't.
+(unit-test assertions plus a demo check each), against M2's then-only
+*scoped* shape rather than built code. Rechecked 2026-09-06 (Claude) now
+that M2 is actually built (all 6 slices, `[?]` pending human approval):
+the shape held closely enough that no slice needed re-ordering or
+dropping, but several assumptions below are now pinned to real code
+rather than a plan, and a couple of adjustments came out of the recheck:
+
+- `Score.notesInOrder()` walking `staves[0]` only, and needing its own
+  superseding per-voice/per-staff walk here (Slice 2), was flagged
+  speculatively below and confirmed exactly as built (M2 Slice 3's own
+  scope cut) — and turned out to be a real bug, not just a scope cut:
+  `addSlur` always threw on a non-staff-0 slur. Fixed 2026-09-06, ahead
+  of M3 slice work starting; see the Log entry below. Slice 2 still does
+  its own per-voice/per-staff walk regardless (`notesInOrder` only ever
+  answers "one staff's order", never all staves at once, exactly as
+  this recheck originally anticipated), it just no longer has a latent
+  bug sitting underneath it.
+- `layoutScore` (M2 Slice 4) throws if any staff has a different measure
+  count than staff 0, so a real, renderable score always has equal
+  measure counts across staves; Slice 2's per-staff walk below no longer
+  needs to handle or test a ragged case, it can assume parity.
+- M2's own closing report punts "voices 3+ have no stem/rest convention"
+  and "`measureDurationWholes`/`validateMeasure` sum across all voices
+  rather than per-voice" as layout/validation gaps, plus "nothing checks
+  a 3rd voice's ink against the other two" (collision avoidance). All
+  three fixed 2026-09-06, ahead of M3 slice work starting: stem
+  direction and rest offset generalize to N voices by odd/even parity,
+  notehead-clash avoidance checks every earlier-placed voice rather than
+  a fixed voice 1, and `validateMeasure` checks each voice's own total
+  independently rather than summing across voices. See the Log entry
+  below for detail. This means Slice 2's playback timeline was never
+  going to be blocked by any of this either way (it reads whatever voice
+  numbers are present in the model regardless of what layout can draw),
+  but the fix removes the asymmetry of playback handling 3+ voices
+  before layout could.
+- New finding, not in either milestone's original scope: `Staff`,
+  `Part`, `ClefType`, `CrossStaffBeam`, `measureDurationWholes`,
+  `measureCapacityWholes`, and `validateMeasure` are all real, used
+  types/functions in `src/model/score.ts` but were never re-exported by
+  `src/model/index.ts` (and therefore not by the package's public
+  `src/index.ts` barrel either) — an M2 oversight, since every other
+  milestone's new model surface was exported as it was built. Fixed
+  2026-09-06 alongside the other three items above, ahead of M3 slice
+  work starting, so Slice 1 below only has its own new tempo export to
+  add, not this backlog too.
 
 A survey of the current model found no existing notion of tempo,
-real-world time, or seconds anywhere. `Note.durationWholes`
-(`src/model/score.ts`) is purely abstract, a fraction of a whole note
-with no clock attached, and nothing in `src/layout/` (`LaidOutNote`,
-`DrawOp`, `LaidOutScore`) carries a time or ordering concept beyond a
-note's own x/y position on the page. `Score.notesInOrder()` flattens
-every measure's notes into one array in score order, but does so
-irrespective of voice; once M2 lands, that method's current behavior no
-longer describes true playback order for a multi-voice score, so this
-milestone's timeline (Slice 2) has to do its own per-voice/per-staff
-walk rather than reuse it as-is. Ties (M1 Slice 5) matter here:
-`Note.tiedToId`/`Score.tiedFromNote` model a tied pair as two `Note`
-objects sounding as one continuous note, and `measureDurationWholes`'s
-own doc comment is explicit that a tie is layered on top of two
-ordinarily-durationed notes, not a merge of them; Slice 2 below has to
-collapse a tied chain into one scheduled onset rather than firing two
-attacks. On mid-score tempo changes: M1 Slice 7 set a precedent for how
-a mid-score musical change is modelled here (an optional per-measure
-field, e.g. `Measure.keyFifths`, walked back to the nearest earlier
-explicit value by a `Score`-level accessor like `keyFifthsAt`), and a
-tempo change would fit that same shape if built; this milestone
-deliberately does not build it. Slice 1 below is a single score-wide
-tempo, and a mid-score tempo-change field plus its walk-back accessor is
-explicitly punted to a later phase since nothing currently in scope
-needs it. Finally, per this file's own M4 entry, a visible playback
-cursor is explicitly M4's job, not this one; nothing below draws or
-tracks a cursor, only schedules and produces audio, with Slice 6
-exposing the minimal position hook M4 will eventually consume.
+real-world time, or seconds anywhere, confirmed unchanged by the
+recheck. `Note.durationWholes` (`src/model/score.ts`) is purely
+abstract, a fraction of a whole note with no clock attached, and nothing
+in `src/layout/` (`LaidOutNote`, `DrawOp`, `LaidOutScore`) carries a time
+or ordering concept beyond a note's own x/y position on the page. Ties
+(M1 Slice 5) matter here: `Note.tiedToId`/`Score.tiedFromNote` model a
+tied pair as two `Note` objects sounding as one continuous note, and
+`measureDurationWholes`'s own doc comment is explicit that a tie is
+layered on top of two ordinarily-durationed notes, not a merge of them;
+Slice 2 below has to collapse a tied chain into one scheduled onset
+rather than firing two attacks. On mid-score tempo changes: M1 Slice 7
+set a precedent for how a mid-score musical change is modelled here (an
+optional per-measure field, e.g. `Measure.keyFifths`, walked back to the
+nearest earlier explicit value by a `Score`-level accessor like
+`keyFifthsAt`), and a tempo change would fit that same shape if built;
+this milestone deliberately does not build it. Slice 1 below is a
+single score-wide tempo, and a mid-score tempo-change field plus its
+walk-back accessor is explicitly punted to a later phase since nothing
+currently in scope needs it. Finally, per this file's own M4 entry, a
+visible playback cursor is explicitly M4's job, not this one; nothing
+below draws or tracks a cursor, only schedules and produces audio, with
+Slice 6 exposing the minimal position hook M4 will eventually consume.
 
 **Acceptance criteria (whole milestone):** all 6 slices' criteria below
 pass; `npm run check`/`test`/`build` stay green throughout.
 
 **Tasks — Claude:**
 - [ ] **Slice 1 — Tempo model.** A score-wide tempo (beats per minute,
-      quarter-note-based per MIDI/MusicXML convention) and a pure
-      conversion function turning a duration in `durationWholes` units
-      (already dots/tuplet-folded by `Note.durationWholes`) into
-      seconds: `seconds = durationWholes * 4 * (60 / bpm)`. A single
-      score-wide value only; mid-score tempo changes are explicitly
-      punted, per the milestone's own scoping note above on the
-      `keyFifthsAt`/`timeAt` precedent this would follow if built later.
-      Acceptance: unit tests cover a range of BPM values and duration
-      values (plain, dotted, tripleted) converting to the expected
-      number of seconds; demo check: a hand-computed duration at a known
+      quarter-note-based per MIDI/MusicXML convention), stored as
+      `tempoBpm` on `ScoreOptions`/`Score` (default 120), the same
+      pattern `keyFifths`/`time` already use for a score-wide musical
+      default; plus a pure conversion function taking a duration in
+      `durationWholes` units (already dots/tuplet-folded by
+      `Note.durationWholes`) and a bpm value, independent of where the
+      caller got either, into seconds: `seconds = durationWholes * 4 *
+      (60 / bpm)`. A single score-wide value only; mid-score tempo
+      changes are explicitly punted, per the milestone's own scoping
+      note above on the `keyFifthsAt`/`timeAt` precedent this would
+      follow if built later. (The export-gap finding the recheck above
+      flagged for this slice to close alongside its own new tempo type
+      was instead fixed standalone on 2026-09-06, ahead of any slice
+      starting; this slice only needs to export its own new tempo type
+      when it lands.) Acceptance: unit tests cover a range of BPM
+      values and duration values (plain, dotted, tripleted) converting
+      to the expected number of seconds, plus `Score`'s own `tempoBpm`
+      defaulting to 120 when unset and taking an explicit `ScoreOptions`
+      value when given; demo check: a hand-computed duration at a known
       BPM matches the function's output within floating-point tolerance.
 - [ ] **Slice 2 — Playback timeline.** A pass that walks the score's
-      notes in true playback order, independently per voice and per
-      staff (superseding `Score.notesInOrder()`'s current flat,
-      voice-blind concatenation, which will not describe playback order
-      once M2 lands multiple voices per staff), and produces a flat list
-      of onset events (`{ noteId, pitch, startSeconds, durationSeconds }`)
-      using Slice 1's conversion. A tied chain (`Note.tiedToId`/
-      `Score.tiedFromNote`) collapses into exactly one onset event
-      spanning the chain's combined duration, not one event per note.
-      Each voice/staff's own cumulative duration, not a shared cursor,
-      determines its notes' onset times, so two voices or staves
+      notes in true playback order, independently per voice (whatever
+      voice numbers are actually present in a staff's measures, not a
+      hardcoded 1/2) and per staff. `Score.notesInOrder()` now takes a
+      `staffIndex` (fixed 2026-09-06, see the Log entry below) but still
+      only ever answers one staff's own order, never a single flat order
+      across every staff at once, so this slice's own per-staff walk is
+      still what supersedes it here, exactly as originally planned.
+      Produces a flat list of onset events
+      (`{ noteId, pitch, startSeconds, durationSeconds }`) using Slice
+      1's conversion. Every staff has the same measure count by
+      construction (`layoutScore` throws otherwise, confirmed by the
+      recheck), so the walk needs no ragged-staff handling. A tied chain
+      (`Note.tiedToId`/`Score.tiedFromNote`) collapses into exactly one
+      onset event spanning the chain's combined duration, not one event
+      per note. Each voice/staff's own cumulative duration, not a shared
+      cursor, determines its notes' onset times, so two voices or staves
       starting together land simultaneous notes on the same
       `startSeconds` with no separate synchronization step. Acceptance:
       unit tests for single-voice sequential onsets landing at the
       expected cumulative times, a tied pair and a three-note tied chain
-      each collapsing into one event with the summed duration, and two
+      each collapsing into one event with the summed duration, two
       independent voices/staves producing simultaneous onsets on a
-      shared beat; demo check: the timeline for the M1/M2 demo score
-      prints a human-checkable list of onset times matching a
-      by-hand count of the first few measures.
+      shared beat, and a 3-voice measure scheduling all three
+      independently (layout can now draw one correctly too, per the
+      2026-09-06 fix in the Log entry below, but this slice's own test
+      coverage of it stands regardless); demo check: the timeline for
+      `createTwoVoiceShowcaseScore` prints a human-checkable list of
+      onset times matching a by-hand count of its two voices, and the
+      timeline for `createSatbBracketShowcaseScore` (the project's
+      actual 4-staff SATB shape) shows all four staves' onsets landing
+      together on shared beats.
 - [ ] **Slice 3 — Web Audio lookahead scheduler.** A generic, drift-free
       scheduler using the standard Web Audio scheduling technique (the
       "lookahead" pattern: a `setInterval`-driven loop, running more
@@ -364,10 +418,12 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       accidental) and for a scheduled event producing an oscillator/gain
       node pair with the correct frequency and start/stop times
       (asserted against a mock `AudioContext`, not real audio hardware);
-      demo check: playing the M1/M2 demo score in a real browser is
-      audible and recognizable as the written pitches and rhythm
-      (manual, per this repo's established avoidance of
-      browser-automation dependencies for anything needing a real
+      demo check: playing `createTwoVoiceShowcaseScore` in a real
+      browser is audible and recognizable as two independent rhythmic
+      lines, and playing `createSatbBracketShowcaseScore` (the actual
+      4-part choral shape this engine is for) is audible as four
+      simultaneous voices (manual, per this repo's established avoidance
+      of browser-automation dependencies for anything needing a real
       render).
 - [ ] **Slice 5 — Transport controls.** A `PlaybackEngine` (or similar)
       wrapping Slices 2-4 behind a play/pause/stop/seek API, no UI:
@@ -404,12 +460,14 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       correctly against a stopwatch during playback.
 
 **Tasks — Human:**
-- [ ] Review this scoping before slice work starts. M2 is still in
-      progress (Slice 1 of 6) so this milestone's slice work does not
-      start regardless of this review's outcome; this scoping is also
-      more speculative than M1's/M2's own passes were, per the
-      milestone's intro above, since it is scoped against M2's planned
-      shape rather than built code.
+- [ ] Review this scoping (and M2's own scoping, still pending its own
+      approval above) before slice work starts. Rechecked 2026-09-06
+      against M2's real, now-built shape rather than its plan; the
+      recheck's findings and adjustments are in the milestone's intro
+      above. The recheck also surfaced four real M2 gaps (one an actual
+      bug, not just a limitation) which were fixed standalone the same
+      day rather than left for a slice to work around; see the Log
+      entry below for what changed.
 
 ### M4 — Phase 4: Interaction layer [ ]
 
@@ -1238,3 +1296,65 @@ divisi splits). Unscoped.
   scopes M3's actual slice work (already drafted speculatively, see M3's
   own section) to see in one place once M3 re-checks its scoping against
   this real, now-built M2 shape.
+- 2026-09-06: M3's speculative scoping (drafted 2026-09-05 against M2's
+  planned shape) rechecked against M2's real, now-built code. The shape
+  held closely: `notesInOrder()`'s staff-0-only limitation and the need
+  for Slice 2's own per-voice/per-staff walk were both confirmed exactly
+  as anticipated, no slice needed re-ordering or dropping. Two real
+  adjustments came out of it: `layoutScore` throwing on unequal per-staff
+  measure counts means Slice 2 can assume parity rather than handle a
+  ragged case, and M2's "voices 3+ have no stem convention" layout punt
+  doesn't block playback from handling 3+ voices anyway, so Slice 2's
+  acceptance now includes a 3-voice case ahead of layout supporting one
+  visually. Also found, independent of either milestone's own scoping: M2
+  built `Staff`/`Part`/`ClefType`/`CrossStaffBeam`/`measureDurationWholes`/
+  `measureCapacityWholes`/`validateMeasure` but never re-exported them
+  through `src/model/index.ts`, an oversight versus every other
+  milestone's new surface; planned as a one-line fix folded into M3
+  Slice 1 alongside that slice's own new tempo export, though it (and
+  three further real M2 gaps found in this same recheck) ended up fixed
+  standalone the same day instead of waiting for Slice 1 - see the next
+  Log entry. Demo checks throughout M3's slices now name real fixtures
+  (`createTwoVoiceShowcaseScore`, `createSatbBracketShowcaseScore`)
+  instead of a generic "M1/M2 demo score", since those fixtures now exist
+  and the SATB one is this project's actual target shape.
+- 2026-09-06: Four gaps the M3 recheck (above) surfaced in M2 were fixed
+  standalone, ahead of M3 slice work starting, at the human's request
+  ("fix everything before we start M3", scoped down to these four plus
+  the export gap, not the milestone's other cosmetic layout punts or the
+  separate-phase items like MusicXML import/export). Handed to a
+  subagent with the full design pre-worked out (parity-based convention
+  for the N-voice cases, backward-compatible shapes for the model
+  changes); Claude reviewed the full diff before writing this entry.
+  (1) `src/model/index.ts` now re-exports `Staff`/`Part`/`ClefType`/
+  `BarlineType`/`CrossStaffBeam`/`MeasureValidation`/
+  `measureDurationWholes`/`measureCapacityWholes`/`validateMeasure`,
+  closing the export-barrel gap. (2) `validateMeasure` now groups a
+  measure's notes by voice and requires every voice's own total to
+  independently fill the time signature's capacity, replacing the old
+  single sum-across-all-voices check that made a valid two-voice measure
+  fail; `measureDurationWholes` keeps its original all-voices-summed
+  meaning as a separate, still-useful number. (3) `notesInOrder()` gained
+  a `staffIndex` parameter (default 0); this turned out to be a real bug,
+  not just a documented scope cut, since `addSlur`'s order check against
+  the old staff-0-only order always compared two `indexOf` misses
+  (`-1 >= -1`) and threw on every slur whose notes lived on any other
+  staff. `addSlur` now resolves and requires both ends share one staff
+  and validates order within it; `layoutMeasure`'s slur pass threads the
+  resolved staff index through to `slurSpanNotes`. (4) `voiceStemOverride`
+  and `restVoiceOffsetSpaces` generalize the existing voice-1-up/
+  voice-2-down convention to odd/even parity for any voice number, and
+  `secondIntervalClashShift` now checks a note against every
+  earlier-placed voice at its column (was: a single hardcoded "voice 1"
+  slot), all one-directional exactly as the original two-voice version
+  was. 268 tests pass (up from 257, 11 net new: per-voice validation x5,
+  staff-scoped-slur x3, N-voice stem/rest/clash x3, one existing test's
+  assertion rewritten since it was pinning down the exact gap this closed);
+  check/build green. Left untouched, per the human's own scoping of "fix
+  everything": the cosmetic layout punts (narrower-staff-column
+  re-justification, bracket header width budgeting, label text
+  measurement, cross-staff beam x-coordination/beamlet stubs) and the
+  items that span every M2 slice (repeat-playback semantics, MusicXML
+  import/export, edit ops touching `Part`/`CrossStaffBeam`) — those are
+  separate milestones' scope, not bugs, and stay in M2's closing report
+  as-is.

@@ -105,6 +105,11 @@ describe('measure duration validation', () => {
 		expect(result.valid).toBe(true);
 		expect(result.actualWholes).toBeCloseTo(1, 10);
 		expect(result.expectedWholes).toBeCloseTo(1, 10);
+		// A single voice's `perVoice` is exactly one entry, and its own
+		// `actualWholes`/`valid` agree with the top-level fields by
+		// construction (one voice's sum *is* the total sum): the per-voice
+		// rewrite must not change a single-voice measure's answer at all.
+		expect(result.perVoice).toEqual([{ voice: 1, actualWholes: result.actualWholes, valid: true }]);
 	});
 
 	it('accepts a measure of quarter-note triplets, two groups of three', () => {
@@ -153,6 +158,93 @@ describe('measure duration validation', () => {
 		const score = buildScore([[['C4', 'whole']]]);
 		expect(measureDurationWholes(score.measures[0]!)).toBeCloseTo(1, 10);
 		expect(measureCapacityWholes(score.time)).toBeCloseTo(1, 10);
+	});
+
+	it('accepts a two-voice measure where each voice independently fills 4/4 on its own', () => {
+		// The bug this per-voice rewrite fixes: before it, `validateMeasure`
+		// summed every voice's notes together, so this measure (each voice a
+		// full bar of its own, 1 + 1 = 2 wholes total) would have incorrectly
+		// failed a check against a 1-wholes-capacity time signature. Voice 1
+		// and voice 2 here are two entirely independent full bars of quarter
+		// notes sharing the one measure.
+		const score = buildScore([
+			[
+				['C4', 'quarter', { voice: 1 }],
+				['D4', 'quarter', { voice: 1 }],
+				['E4', 'quarter', { voice: 1 }],
+				['F4', 'quarter', { voice: 1 }],
+				['C3', 'quarter', { voice: 2 }],
+				['D3', 'quarter', { voice: 2 }],
+				['E3', 'quarter', { voice: 2 }],
+				['F3', 'quarter', { voice: 2 }]
+			]
+		]);
+		const result = validateMeasure(score.measures[0]!, score.time);
+		expect(result.valid).toBe(true);
+		// `actualWholes` keeps its old, documented meaning: the total summed
+		// across every voice, i.e. 2 here, not 1 - only `valid` stopped being
+		// computed from it.
+		expect(result.actualWholes).toBeCloseTo(2, 10);
+		expect(result.perVoice).toEqual(
+			expect.arrayContaining([
+				{ voice: 1, actualWholes: expect.closeTo(1, 10), valid: true },
+				{ voice: 2, actualWholes: expect.closeTo(1, 10), valid: true }
+			])
+		);
+		expect(result.perVoice).toHaveLength(2);
+	});
+
+	it('accepts a three-voice measure where each voice independently fills 4/4 on its own', () => {
+		const group = (voice: number, pitches: readonly string[]) =>
+			pitches.map((pitch) => [pitch, 'quarter', { voice }] as const);
+		const score = buildScore([
+			[
+				...group(1, ['C4', 'D4', 'E4', 'F4']),
+				...group(2, ['C3', 'D3', 'E3', 'F3']),
+				...group(3, ['C5', 'D5', 'E5', 'F5'])
+			]
+		]);
+		const result = validateMeasure(score.measures[0]!, score.time);
+		expect(result.valid).toBe(true);
+		expect(result.perVoice).toHaveLength(3);
+		expect(result.perVoice.every((entry) => entry.valid)).toBe(true);
+	});
+
+	it('flags a multi-voice measure where one voice is short, even though the totalled-across-voices sum happens to look plausible', () => {
+		// Voice 1 (3 quarters, 0.75 wholes) and voice 2 (1 quarter, 0.25
+		// wholes) sum to exactly 1.0 wholes together, coincidentally matching
+		// 4/4's own capacity - precisely the blind spot the old sum-everything
+		// check could not see through: it would have called this measure
+		// valid. Per-voice, neither voice actually fills the measure on its
+		// own, so the measure is correctly invalid.
+		const score = buildScore([
+			[
+				['C4', 'quarter', { voice: 1 }],
+				['D4', 'quarter', { voice: 1 }],
+				['E4', 'quarter', { voice: 1 }],
+				['C3', 'quarter', { voice: 2 }]
+			]
+		]);
+		const result = validateMeasure(score.measures[0]!, score.time);
+		expect(result.actualWholes).toBeCloseTo(1, 10); // the coincidental, misleading total
+		expect(result.valid).toBe(false);
+		const byVoice = new Map(result.perVoice.map((entry) => [entry.voice, entry]));
+		expect(byVoice.get(1)!.valid).toBe(false);
+		expect(byVoice.get(1)!.actualWholes).toBeCloseTo(0.75, 10);
+		expect(byVoice.get(2)!.valid).toBe(false);
+		expect(byVoice.get(2)!.actualWholes).toBeCloseTo(0.25, 10);
+	});
+
+	it('flags an empty measure (no voices present at all) as invalid against a nonzero-capacity time signature', () => {
+		// No notes means no voice groups, so `perVoice` is empty; `valid`
+		// stays false rather than vacuously true over zero entries, matching
+		// this function's behaviour before the per-voice rewrite (an empty
+		// measure's old single sum of 0 already failed a nonzero-capacity
+		// check the same way).
+		const score = buildScore([[]]);
+		const result = validateMeasure(score.measures[0]!, score.time);
+		expect(result.perVoice).toEqual([]);
+		expect(result.valid).toBe(false);
 	});
 });
 
@@ -488,6 +580,48 @@ describe('slurs', () => {
 		]);
 		const order = score.notesInOrder();
 		expect(order.map((n) => n.pitch?.step)).toEqual(['C', 'D', 'E', 'F']);
+	});
+
+	it('notesInOrder(staffIndex) walks a non-zero staff\'s own notes independently of staff 0', () => {
+		// This is the fix for a real bug, not just a scope cut: before it,
+		// `notesInOrder` unconditionally read `staves[0]` alone, so a caller
+		// asking for staff 1's own order got staff 0's notes instead (or an
+		// empty array once staff 0 out-measured staff 1), silently wrong
+		// rather than throwing.
+		const score = buildScore([[['C4', 'quarter'], ['D4', 'quarter']]]);
+		score.appendStaff('bass');
+		const bassMeasure = score.appendMeasure(1);
+		const g2 = score.appendNote(bassMeasure, { pitch: parsePitch('G2'), value: 'quarter' });
+		const a2 = score.appendNote(bassMeasure, { pitch: parsePitch('A2'), value: 'quarter' });
+		expect(score.notesInOrder(1)).toEqual([g2, a2]);
+		// Staff 0's own order (the default, unchanged) is still just staff 0's.
+		expect(score.notesInOrder().map((n) => n.pitch?.step)).toEqual(['C', 'D']);
+	});
+
+	it('addSlur succeeds between two notes on a non-zero staff (fixing the old staff-0-only bug)', () => {
+		// Before the fix, `addSlur`'s order check always ran against
+		// `notesInOrder()` (staff 0 only), so both `order.indexOf(start)` and
+		// `order.indexOf(end)` came back `-1` for any staff-1 note, and
+		// `-1 >= -1` always threw "must come before" regardless of the
+		// actual notes - making a slur on any staff but 0 silently
+		// impossible. `addSlur` now resolves each note's own staff and
+		// checks order within that staff instead.
+		const score = buildScore([[['C4', 'quarter']]]); // staff 0, unrelated filler
+		score.appendStaff('bass');
+		const bassMeasure = score.appendMeasure(1);
+		const g2 = score.appendNote(bassMeasure, { pitch: parsePitch('G2'), value: 'quarter' });
+		const a2 = score.appendNote(bassMeasure, { pitch: parsePitch('A2'), value: 'quarter' });
+		const slur = score.addSlur(g2.id, a2.id);
+		expect(slur).toEqual({ startNoteId: g2.id, endNoteId: a2.id });
+	});
+
+	it('addSlur rejects two notes on different staves', () => {
+		const score = buildScore([[['C4', 'quarter']]]);
+		score.appendStaff('bass');
+		const bassMeasure = score.appendMeasure(1);
+		const trebleNote = score.measures[0]!.notes[0]!;
+		const bassNote = score.appendNote(bassMeasure, { pitch: parsePitch('G2'), value: 'quarter' });
+		expect(() => score.addSlur(trebleNote.id, bassNote.id)).toThrow(/must be on the same staff/);
 	});
 
 	it('buildScore resolves a SlurSpec by [measureIndex, noteIndex] position', () => {

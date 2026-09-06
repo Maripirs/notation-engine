@@ -370,16 +370,18 @@ export function createBarlineShowcaseScore(): Score {
  * would print the two rest glyphs on top of each other; with it, voice 1's
  * rest shifts up and voice 2's shifts down, visibly clearing each other.
  *
- * Not validated against `validateMeasure`/`measureDurationWholes` the way
- * every earlier showcase's measures are: both of those sum a measure's
- * notes across *all* voices (see `measureDurationWholes`'s own doc comment,
- * written for a single voice), so a fully-valid two-voice 4/4 measure like
- * either one here sums to 2 wholes of "duration" by that formula and would
- * incorrectly fail a capacity check that was never updated for more than one
- * voice. That gap is real and left open by this slice (multi-voice measure
- * capacity is out of its scope, only note/beam/stem/rest layout is), flagged
- * here rather than silently worked around with a validation call that would
- * have failed for reasons unrelated to what this showcase demonstrates.
+ * Validated against `validateMeasure` the way every earlier showcase's
+ * measures are (see the M2 scoping-recheck test that walks both of this
+ * showcase's measures): `validateMeasure` was originally written summing a
+ * measure's notes across *all* voices (`measureDurationWholes`'s own doc
+ * comment is explicit that it means a single voice), so a fully-valid
+ * two-voice 4/4 measure like either one here summed to 2 wholes of "duration"
+ * by that formula and incorrectly failed a capacity check that had never been
+ * updated for more than one voice. That gap has since been closed:
+ * `validateMeasure` now groups a measure's notes by `Note.voice` and checks
+ * each voice's own sum against the time signature's capacity independently,
+ * so both of this showcase's measures (each voice here separately a full bar
+ * of its own) validate correctly.
  */
 export function createTwoVoiceShowcaseScore(): Score {
 	return buildScore(

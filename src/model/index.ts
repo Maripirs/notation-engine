@@ -11,13 +11,28 @@ export {
 } from './pitch.js';
 
 export type {
+	BarlineType,
+	ClefType,
+	CrossStaffBeam,
 	MeasureSpec,
+	MeasureValidation,
 	NoteId,
 	NoteSpec,
 	NoteValue,
+	Part,
 	ScoreOptions,
 	Slur,
 	SlurSpec,
 	TimeSignature
 } from './score.js';
-export { buildScore, Measure, Note, NOTE_VALUE_WHOLES, Score } from './score.js';
+export {
+	buildScore,
+	Measure,
+	measureCapacityWholes,
+	measureDurationWholes,
+	Note,
+	NOTE_VALUE_WHOLES,
+	Score,
+	Staff,
+	validateMeasure
+} from './score.js';

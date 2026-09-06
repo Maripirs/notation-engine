@@ -1133,6 +1133,35 @@ describe('slurs', () => {
 		expect(curvesOf(layout.measures[0]!.ops)).toHaveLength(2);
 		expect(curvesOf(layout.measures[1]!.ops)).toHaveLength(1);
 	});
+
+	it('draws a slur curve on a non-zero staff, not just staff 0 (fixing notesInOrder\'s old staff-0-only bug)', () => {
+		// Before the fix, `notesInOrder()` always read `staves[0]` alone, so
+		// `addSlur`'s own order check on any other staff always compared two
+		// `Array.indexOf` misses (`-1 >= -1`) and threw "must come before" no
+		// matter what the actual notes were; a slur on a non-zero staff was
+		// silently impossible. `notesInOrder(staffIndex)` and `addSlur`'s own
+		// staff resolution fix that, and `slurSpanNotes`/the slur-drawing loop
+		// in `layoutMeasure` thread the slur's actual staff index through
+		// instead of assuming staff 0, so the curve lands in the right
+		// staff's own measure region.
+		const score = buildScore([[['C4', 'quarter']]]); // staff 0, an unrelated filler measure
+		score.appendStaff('bass');
+		const measure = score.appendMeasure(1);
+		const ids = ['C3', 'D3', 'E3', 'F3'].map(
+			(pitch) => score.appendNote(measure, { pitch: parsePitch(pitch), value: 'quarter' }).id
+		);
+		score.addSlur(ids[0]!, ids[3]!);
+
+		const layout = layoutScore(score);
+		const bassMeasure = layout.measures.find((m) => m.staffIndex === 1)!;
+		expect(curvesOf(bassMeasure.ops)).toHaveLength(1);
+		// Staff 0's own unrelated measure draws no slur ink at all: the slur
+		// is scoped entirely to the staff it was actually built on, not
+		// leaked into every staff the way the old always-staff-0 read could
+		// have risked.
+		const trebleMeasure = layout.measures.find((m) => m.staffIndex === 0)!;
+		expect(curvesOf(trebleMeasure.ops)).toHaveLength(0);
+	});
 });
 
 describe('key and time changes', () => {
@@ -1698,6 +1727,48 @@ describe('two voices in one staff (M2 Slice 1)', () => {
 		expect(ys[1]).toBeCloseTo(defaultY + 2 * ss, 6); // voice 2: shifted down
 	});
 
+	it('spreads three voices\' rests apart into three distinct, ordered offsets at a shared onset', () => {
+		// M2 scoping recheck (before M3): `restVoiceOffsetSpaces` used to give
+		// voice 3+ no offset at all, letting a third voice's rest print
+		// directly on top of whichever of voice 1/2 happened to already be
+		// there. It now grows by parity the same way `voiceStemOverride`
+		// does: voice 3 (odd) steps a further `REST_VOICE_OFFSET_SPACES`
+		// beyond voice 1's own offset, rather than colliding with it.
+		const score = buildScore([
+			[
+				[null, 'quarter', { voice: 1 }],
+				['G4', 'quarter', { voice: 1 }],
+				['A4', 'quarter', { voice: 1 }],
+				['B4', 'quarter', { voice: 1 }],
+				[null, 'quarter', { voice: 2 }],
+				['C4', 'quarter', { voice: 2 }],
+				['D4', 'quarter', { voice: 2 }],
+				['E4', 'quarter', { voice: 2 }],
+				[null, 'quarter', { voice: 3 }],
+				['F4', 'quarter', { voice: 3 }],
+				['G4', 'quarter', { voice: 3 }],
+				['A4', 'quarter', { voice: 3 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const rests = layout.measures[0]!.ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'restQuarter'
+		);
+		expect(rests).toHaveLength(3);
+		// Same onset, same shared column: same x for all three.
+		expect(rests[1]!.x).toBeCloseTo(rests[0]!.x, 6);
+		expect(rests[2]!.x).toBeCloseTo(rests[0]!.x, 6);
+		// Three distinct y offsets, ordered voice 3 (furthest up) < voice 1
+		// (one step up) < voice 2 (one step down), since voice 3 steps a
+		// second `REST_VOICE_OFFSET_SPACES` beyond voice 1's own offset on
+		// the same (odd, upward) side rather than sharing it.
+		const defaultY = layout.staffTopY + 2 * ss;
+		const ys = rests.map((r) => r.y).sort((a, b) => a - b);
+		expect(ys[0]).toBeCloseTo(defaultY - 4 * ss, 6); // voice 3: two steps up
+		expect(ys[1]).toBeCloseTo(defaultY - 2 * ss, 6); // voice 1: one step up
+		expect(ys[2]).toBeCloseTo(defaultY + 2 * ss, 6); // voice 2: one step down
+	});
+
 	it('leaves a single voice\'s rest at its ordinary fixed position with no offset', () => {
 		const layout = layoutScore(buildScore([[[null, 'quarter']]]), options);
 		const rest = layout.measures[0]!.ops.find(
@@ -1706,26 +1777,54 @@ describe('two voices in one staff (M2 Slice 1)', () => {
 		expect(rest.y).toBeCloseTo(layout.staffTopY + 2 * ss, 6);
 	});
 
-	it('lays out a third voice without crashing, falling back to the ordinary pitch-based stem rule', () => {
-		// Voices 3+ are explicitly out of this slice's scope (see
-		// `voiceStemOverride`'s own comment): this only asserts the
-		// documented gap (no crash, pitch-based fallback), not a real
-		// third-voice convention.
-		const layout = layoutScore(
-			buildScore([
-				[
-					['C5', 'eighth', { voice: 1 }],
-					['C4', 'eighth', { voice: 2 }],
-					['D5', 'eighth', { voice: 3 }]
-				]
-			]),
-			options
-		);
-		const glyphs = layout.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		// D5 sits above the middle line: the ordinary pitch rule (not voice 1
-		// or 2's forced override, neither of which applies to voice 3) gives
-		// it a down-stem.
-		expect(glyphs).toContain('flag8thDown');
+	it('generalizes the stem-direction convention to voices 3 and 4 by parity, odd up and even down', () => {
+		// M2 scoping recheck (before M3): voices 3+ used to fall back to the
+		// ordinary pitch-based rule here, a documented gap rather than a real
+		// convention; `voiceStemOverride` now extends the exact voice-1-up/
+		// voice-2-down rule above by parity instead. D5 (voice 3, above the
+		// middle line, where the pitch rule would pick a down-stem) is forced
+		// up because 3 is odd, the same direction voice 1's C5 gets; D4
+		// (voice 4, below the middle line, where the pitch rule would pick an
+		// up-stem) is forced down because 4 is even, the same direction voice
+		// 2's C4 gets. Every one of the four notes here has its pitch-based
+		// answer deliberately overridden by the convention, not agreeing with
+		// it by coincidence.
+		const score = buildScore([
+			[
+				['C5', 'eighth', { voice: 1 }],
+				['C4', 'eighth', { voice: 2 }],
+				['D5', 'eighth', { voice: 3 }],
+				['D4', 'eighth', { voice: 4 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+		const flagGlyphFor = (noteId: string) =>
+			ops.find(
+				(op): op is Extract<DrawOp, { kind: 'glyph' }> =>
+					op.kind === 'glyph' && op.noteId === noteId && op.glyph.startsWith('flag')
+			)?.glyph;
+		const [v1, v2, v3, v4] = score.measures[0]!.notes;
+		expect(flagGlyphFor(v1!.id)).toBe('flag8thUp');
+		expect(flagGlyphFor(v2!.id)).toBe('flag8thDown');
+		expect(flagGlyphFor(v3!.id)).toBe('flag8thUp');
+		expect(flagGlyphFor(v4!.id)).toBe('flag8thDown');
+	});
+
+	it('validates every two-voice-showcase measure against 4/4 capacity, one voice at a time', () => {
+		// Same discipline as the duration/accidental/tie showcases' own
+		// `validateMeasure` tests: fixed by the M2 scoping-recheck per-voice
+		// rewrite (see `MeasureValidation.perVoice`'s own comment), which is
+		// what makes this test possible at all. Before that fix,
+		// `validateMeasure` summed both voices together (2 wholes for a
+		// measure where each voice separately fills 4/4 once), which would
+		// have failed here for reasons unrelated to anything this showcase
+		// actually demonstrates; that is exactly why `createTwoVoiceShowcaseScore`'s
+		// own doc comment used to flag this validation as skipped.
+		const score = createTwoVoiceShowcaseScore();
+		for (const measure of score.measures) {
+			expect(validateMeasure(measure, score.time).valid).toBe(true);
+		}
 	});
 
 	it('renders the two-voice showcase without error, with both voices\' notes/rests all present', () => {
@@ -1851,6 +1950,30 @@ describe('voice-to-voice collision avoidance (M2 Slice 2)', () => {
 		// The same "close to exactly the minimum" assertion M1 Slice 4's own
 		// single-voice collision test used, extended across voices.
 		expect(accidental.x - ledgerRight).toBeCloseTo(0.9 * ss, 5);
+	});
+
+	it("nudges voice 3's notehead clear of voice 1's the same way voice 2's does, with no voice 2 present", () => {
+		// M2 scoping recheck (before M3): `secondIntervalClashShift` used to
+		// fire only for `voice === 2` against a single tracked voice-1
+		// position. It now checks a placed note against *every*
+		// earlier-numbered voice already laid out at this column or the
+		// previous one, so a voice 3/voice 1 clash - skipping voice 2
+		// entirely, which never appears in this measure at all - still
+		// resolves with the exact same rightward-nudge convention voice 2
+		// already gets in the test above.
+		const score = buildScore([
+			[
+				['E4', 'quarter', { voice: 1 }],
+				['D4', 'quarter', { voice: 3 }]
+			]
+		]);
+		const layout = layoutScore(score, options);
+		const measure = layout.measures[0]!;
+		const xOf = (index: number) => measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
+		const v1x = xOf(0);
+		const v3x = xOf(1);
+		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
+		expect(v3x - v1x).toBeCloseTo(noteheadWidth, 6);
 	});
 
 	it('renders the voice-clash showcase without error, with the expected accidental and no crash', () => {
