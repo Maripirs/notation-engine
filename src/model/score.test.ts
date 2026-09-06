@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { formatPitch } from './pitch.js';
+import { formatPitch, parsePitch } from './pitch.js';
 import {
 	buildScore,
 	measureCapacityWholes,
 	measureDurationWholes,
 	Note,
 	NOTE_VALUE_WHOLES,
+	Score,
 	TRIPLET,
 	validateMeasure,
 	type NoteValue
@@ -512,5 +513,128 @@ describe('slurs', () => {
 		expect(() =>
 			buildScore([[['C4', 'quarter'], ['D4', 'quarter']]], {}, [{ start: [0, 0], end: [0, 5] }])
 		).toThrow(/slur end \[0, 5\] is not a note/);
+	});
+});
+
+describe('cross-staff beams', () => {
+	/** A small two-staff score (treble over bass), each staff's measure 0
+	 *  holding two notes at the same measure column, mirroring the shape
+	 *  `addCrossStaffBeam` actually needs (see layout.ts's own integration):
+	 *  each staff's own notes already correctly notated in its own Measure.
+	 *  `trebleNotes`/`bassNotes` let a test vary either side's own content
+	 *  (a rest, a too-long duration) without repeating the
+	 *  appendStaff/appendMeasure/appendNote boilerplate `buildScore` cannot
+	 *  do for a genuinely multi-staff fixture (it only ever populates one
+	 *  implicit staff). */
+	function buildTwoStaffScore(
+		trebleNotes: readonly (readonly [string | null, NoteValue])[] = [
+			['G4', 'eighth'],
+			['A4', 'eighth']
+		],
+		bassNotes: readonly (readonly [string | null, NoteValue])[] = [
+			['C3', 'eighth'],
+			['D3', 'eighth']
+		]
+	) {
+		const score = new Score({ clef: 'treble' });
+		score.appendStaff('bass');
+		const treble = score.appendMeasure(0);
+		const trebleIds = trebleNotes.map(
+			([pitch, value]) => score.appendNote(treble, { pitch: pitch === null ? null : parsePitch(pitch), value }).id
+		);
+		const bass = score.appendMeasure(1);
+		const bassIds = bassNotes.map(
+			([pitch, value]) => score.appendNote(bass, { pitch: pitch === null ? null : parsePitch(pitch), value }).id
+		);
+		return { score, trebleIds, bassIds };
+	}
+
+	it('addCrossStaffBeam wires a beam findable from either note', () => {
+		const { score, trebleIds, bassIds } = buildTwoStaffScore();
+		const beam = score.addCrossStaffBeam([...trebleIds, ...bassIds]);
+		expect(beam.staffIndices).toEqual([0, 1]);
+		expect(score.crossStaffBeams).toEqual([beam]);
+		expect(score.crossStaffBeamContaining(trebleIds[0]!)).toBe(beam);
+		expect(score.crossStaffBeamContaining(bassIds[1]!)).toBe(beam);
+	});
+
+	it('addCrossStaffBeam rejects fewer than 2 note ids', () => {
+		const { score, trebleIds } = buildTwoStaffScore();
+		expect(() => score.addCrossStaffBeam([trebleIds[0]!])).toThrow(/at least 2/);
+	});
+
+	it('addCrossStaffBeam rejects an unknown note id', () => {
+		const { score, trebleIds, bassIds } = buildTwoStaffScore();
+		expect(() => score.addCrossStaffBeam([...trebleIds, ...bassIds, 'does-not-exist'])).toThrow(
+			/unknown note id/
+		);
+	});
+
+	it('addCrossStaffBeam rejects a rest', () => {
+		const { score, trebleIds, bassIds } = buildTwoStaffScore(undefined, [
+			['C3', 'eighth'],
+			[null, 'eighth']
+		]);
+		expect(() => score.addCrossStaffBeam([...trebleIds, ...bassIds])).toThrow(/is a rest/);
+	});
+
+	it('addCrossStaffBeam rejects a note too long to beam', () => {
+		const { score, trebleIds, bassIds } = buildTwoStaffScore([
+			['G4', 'quarter'],
+			['A4', 'eighth']
+		]);
+		expect(() => score.addCrossStaffBeam([...trebleIds, ...bassIds])).toThrow(/too long to beam/);
+	});
+
+	it('addCrossStaffBeam rejects notes whose measures disagree on index', () => {
+		const score = new Score({ clef: 'treble' });
+		score.appendStaff('bass');
+		const trebleMeasure0 = score.appendMeasure(0);
+		const trebleIds = [
+			score.appendNote(trebleMeasure0, { pitch: parsePitch('G4'), value: 'eighth' }).id,
+			score.appendNote(trebleMeasure0, { pitch: parsePitch('A4'), value: 'eighth' }).id
+		];
+		// Bass staff gets a padding measure 0 so its actual notes land at
+		// measure *index 1*, one column later than the treble notes above.
+		score.appendMeasure(1);
+		const bassMeasure1 = score.appendMeasure(1);
+		const bassIds = [
+			score.appendNote(bassMeasure1, { pitch: parsePitch('C3'), value: 'eighth' }).id,
+			score.appendNote(bassMeasure1, { pitch: parsePitch('D3'), value: 'eighth' }).id
+		];
+		expect(() => score.addCrossStaffBeam([...trebleIds, ...bassIds])).toThrow(/same measure column/);
+	});
+
+	it('addCrossStaffBeam rejects a single-staff set', () => {
+		const { score, trebleIds } = buildTwoStaffScore([
+			['G4', 'eighth'],
+			['A4', 'eighth'],
+			['B4', 'eighth'],
+			['C5', 'eighth']
+		]);
+		expect(() => score.addCrossStaffBeam(trebleIds)).toThrow(/exactly two distinct staves/);
+	});
+
+	it('addCrossStaffBeam rejects non-adjacent staff indices', () => {
+		const score = new Score({ clef: 'treble' });
+		score.appendStaff('treble'); // staff 1, sits between the two staves the beam tries to span
+		score.appendStaff('bass'); // staff 2
+		const staff0Measure = score.appendMeasure(0);
+		const staff0Ids = [
+			score.appendNote(staff0Measure, { pitch: parsePitch('G4'), value: 'eighth' }).id,
+			score.appendNote(staff0Measure, { pitch: parsePitch('A4'), value: 'eighth' }).id
+		];
+		score.appendMeasure(1); // staff 1's own measure 0, deliberately empty and not part of the beam
+		const staff2Measure = score.appendMeasure(2);
+		const staff2Ids = [
+			score.appendNote(staff2Measure, { pitch: parsePitch('C3'), value: 'eighth' }).id,
+			score.appendNote(staff2Measure, { pitch: parsePitch('D3'), value: 'eighth' }).id
+		];
+		expect(() => score.addCrossStaffBeam([...staff0Ids, ...staff2Ids])).toThrow(/must be adjacent/);
+	});
+
+	it('addCrossStaffBeam rejects fewer than 2 notes on one side', () => {
+		const { score, trebleIds, bassIds } = buildTwoStaffScore([['G4', 'eighth']]);
+		expect(() => score.addCrossStaffBeam([...trebleIds, ...bassIds])).toThrow(/needs at least 2 notes/);
 	});
 });

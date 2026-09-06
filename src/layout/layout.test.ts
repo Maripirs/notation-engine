@@ -3,6 +3,7 @@ import {
 	createAccidentalShowcaseScore,
 	createBarlineShowcaseScore,
 	createClefShowcaseScore,
+	createCrossStaffBeamShowcaseScore,
 	createDemoScore,
 	createDurationShowcaseScore,
 	createGrandStaffShowcaseScore,
@@ -2449,5 +2450,160 @@ describe('part grouping decorations (M2 Slice 5)', () => {
 		for (const measure of layout.measures) {
 			expect(measure.region.x).toBeGreaterThan(16);
 		}
+	});
+});
+
+describe('cross-staff beaming (M2 Slice 6)', () => {
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+	const beamHeight = ED.beamThickness * ss;
+
+	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
+	/** A beam segment: the one rect height unique to beams, the same identity
+	 *  the `describe('beaming', ...)` block above uses. */
+	const beamRects = (ops: readonly DrawOp[]) =>
+		ops.filter(isRect).filter((op) => Math.abs(op.height - beamHeight) < 0.001);
+
+	it("a cross-staff beam's region covers both staves' reach into the gap, without leaking into a neighbour", () => {
+		const score = createCrossStaffBeamShowcaseScore();
+		const layout = layoutScore(score, options);
+
+		const treble1 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
+		const bass1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
+		expect(treble1).toBeDefined();
+		expect(bass1).toBeDefined();
+
+		// (a) The two staves' own regions at the beamed column do not overlap
+		// vertically, the same property Slice 4's own shared-barline test
+		// checks: redrawing one staff's measure can never clear a pixel that
+		// belongs to the other staff's ink.
+		expect(treble1.region.y + treble1.region.height).toBeLessThanOrEqual(bass1.region.y + 0.001);
+
+		// (b) Each side's ink genuinely reaches past its own ordinary staff
+		// band, into the gap toward the other staff: not merely a vacuous
+		// "regions don't overlap" result, but proof a stem/beam really
+		// extends there. Compared against the plain single-staff band
+		// (`staffTopY` to `staffTopY + 4*ss`) each staff would otherwise stay
+		// within.
+		const trebleTopY = layout.systems.find((s) => s.staffIndex === 0)!.topY;
+		const bassTopY = layout.systems.find((s) => s.staffIndex === 1)!.topY;
+		expect(treble1.region.y + treble1.region.height).toBeGreaterThan(trebleTopY + 4 * ss + 10);
+		expect(bass1.region.y).toBeLessThan(bassTopY - 10);
+
+		// (c) No leak into an unrelated neighbouring column. Note this is *not*
+		// a height comparison against measure 0/2: since M2 Slice 4, every
+		// column of a multi-staff score already draws its own segment of the
+		// *shared end barline* reaching to this exact same `barlineSpan`
+		// bound, regardless of that column's own note content (confirmed by
+		// direct inspection: an ordinary filler measure's region already
+		// reaches this far too, on the strength of its own barline segment
+		// alone). So a plain height comparison to a neighbour cannot
+		// distinguish "the beam reached here" from "the barline always
+		// reaches here anyway", and would either pass vacuously or fail for
+		// the wrong reason. The real, meaningful scoping proof is that the
+		// cross-staff beam's own ink (tagged by its own note ids) is drawn
+		// only inside its own measure's ops, on both staves, and never
+		// appears in either neighbour's: nothing here ever asks a different
+		// measure's `layoutMeasure` call to draw another measure's notes.
+		const beam = score.crossStaffBeams[0]!;
+		const hasCrossInk = (ops: readonly DrawOp[]) =>
+			ops.some((op) => 'noteId' in op && op.noteId !== undefined && beam.noteIds.includes(op.noteId));
+		expect(hasCrossInk(treble1.ops)).toBe(true);
+		expect(hasCrossInk(bass1.ops)).toBe(true);
+		const treble0 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 0)!;
+		const treble2 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 2)!;
+		const bass0 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 0)!;
+		const bass2 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 2)!;
+		expect(hasCrossInk(treble0.ops)).toBe(false);
+		expect(hasCrossInk(treble2.ops)).toBe(false);
+		expect(hasCrossInk(bass0.ops)).toBe(false);
+		expect(hasCrossInk(bass2.ops)).toBe(false);
+	});
+
+	it('draws a real beam segment on each side, meeting at essentially the same y where they face the gap', () => {
+		const score = createCrossStaffBeamShowcaseScore();
+		const layout = layoutScore(score, options);
+
+		const treble1 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
+		const bass1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
+
+		const trebleBeams = beamRects(treble1.ops);
+		const bassBeams = beamRects(bass1.ops);
+		// One primary-level segment on each side (both notes are plain eighths,
+		// needing only one beam level), each a genuine multi-note span, not a
+		// degenerate stub.
+		expect(trebleBeams).toHaveLength(1);
+		expect(bassBeams).toHaveLength(1);
+		expect(trebleBeams[0]!.width).toBeGreaterThan(0);
+		expect(bassBeams[0]!.width).toBeGreaterThan(0);
+
+		// Treble's stems point down into the gap, so its own beam segment sits
+		// just above the join line, its *bottom* edge (y + height) at the true
+		// shared boundary; bass's stems point up into the same gap, so its
+		// beam segment sits just below the join line, its *top* edge there
+		// instead. Those two gap-facing edges are what has to line up for the
+		// two segments to read as one continuous beam; they land within a
+		// couple of pixels of each other (the same `REGION_BLEED_PX`-scale
+		// neutral strip `barlineSpan` leaves between the two staves).
+		const trebleGapEdge = trebleBeams[0]!.y + trebleBeams[0]!.height;
+		const bassGapEdge = bassBeams[0]!.y;
+		expect(Math.abs(trebleGapEdge - bassGapEdge)).toBeLessThan(3);
+	});
+
+	it("a scoped redraw of one note in the pair correctly repaints both halves", () => {
+		const score = createCrossStaffBeamShowcaseScore();
+		const layout = layoutScore(score, options);
+
+		const trebleBeamedNote = score.staves[0]!.measures[1]!.notes[0]!;
+		const beforeTreble = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
+		const beforeBass = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
+		const beforeBeamGapEdge = beamRects(beforeTreble.ops)[0]!.y + beamRects(beforeTreble.ops)[0]!.height;
+
+		const touched = score.transposeNote(trebleBeamedNote.id, 1);
+		expect(touched).toBe(1);
+
+		const updated = relayoutMeasure(score, layout, touched!, options, 0);
+		// (a) The fast, genuinely scoped path succeeded, not a fallback to a
+		// full `layoutScore`.
+		expect(updated).not.toBeNull();
+
+		// (b) The treble measure's own beam segment still meets the gap at
+		// essentially the same y as before the edit: the join-y is derived
+		// purely from staff geometry (`barlineSpan`), so a pitch change must
+		// never move it.
+		const afterTreble = updated!.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
+		const afterBeams = beamRects(afterTreble.ops);
+		expect(afterBeams).toHaveLength(1);
+		const afterBeamGapEdge = afterBeams[0]!.y + afterBeams[0]!.height;
+		expect(afterBeamGapEdge).toBeCloseTo(beforeBeamGapEdge, 6);
+
+		// (c) The bass measure's own `LaidOutMeasure` object is the exact same
+		// object as before the edit: nothing about the untouched staff was
+		// recomputed at all, proving both no cross-region recomputation
+		// happened and that "both halves" are still individually correct
+		// after only one was actually redrawn.
+		const afterBass = updated!.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
+		expect(afterBass).toBe(beforeBass);
+	});
+
+	it('renders the cross-staff beam showcase (two staves, one continuous beam at measure 1) without error', () => {
+		const score = createCrossStaffBeamShowcaseScore();
+		for (const staff of score.staves) {
+			for (const measure of staff.measures) {
+				expect(validateMeasure(measure, score.timeAt(measure.index, measure.staffIndex)).valid).toBe(true);
+			}
+		}
+
+		// Laid out at this describe block's own fixed `ss` (not the bare default)
+		// so `beamRects`' identity (keyed on `ED.beamThickness * ss`) still
+		// applies; every other showcase's own smoke test above lays out at
+		// the bare default because it only checks glyphs, never rect sizes.
+		const layout = layoutScore(score, options);
+		// Three measures, two staves.
+		expect(layout.measures).toHaveLength(6);
+		const treble1 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
+		const bass1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
+		expect(beamRects(treble1.ops)).toHaveLength(1);
+		expect(beamRects(bass1.ops)).toHaveLength(1);
 	});
 });

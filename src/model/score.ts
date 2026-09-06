@@ -370,6 +370,27 @@ export interface Slur {
 	readonly endNoteId: NoteId;
 }
 
+/**
+ * An explicit beam grouping notes across exactly two staves (e.g. a piano
+ * passage crossing hands): a treble-clef note and a bass-clef note, each
+ * already correctly notated in its own staff's own Measure, sharing one
+ * visual beam. Unlike ordinary same-staff beaming (`computeBeamGroups` in
+ * layout.ts, fully automatic from onset/beat position), this can never be
+ * inferred: two different Measure objects in two different Staffs have no
+ * shared onset timeline for layout to detect automatically, so a composer
+ * or importer has to state the grouping explicitly, the same reason a Slur
+ * needs to be stated rather than inferred.
+ *
+ * `staffIndices` (ascending, e.g. `[0, 1]`) is computed once by
+ * `addCrossStaffBeam` and cached here rather than re-derived by every
+ * reader, mirroring `BeamGroup.direction` (M2 Slice 4's own refactor, see
+ * layout.ts) being decided once rather than recomputed by each consumer.
+ */
+export interface CrossStaffBeam {
+	readonly noteIds: readonly NoteId[];
+	readonly staffIndices: readonly [number, number];
+}
+
 export class Score {
 	/**
 	 * Every staff in the score (M2 Slice 3). The constructor always creates
@@ -422,6 +443,10 @@ export class Score {
 	 * `staves[0]`'s notes. A slur between two notes on a non-zero staff is
 	 * out of this slice's scope; nothing here builds or exercises one. */
 	readonly slurs: Slur[] = [];
+	/** Every cross-staff beam in the score (M2 Slice 6), in the order
+	 *  `addCrossStaffBeam` was called. See `CrossStaffBeam`'s own comment for
+	 *  what this does and does not model. */
+	readonly crossStaffBeams: CrossStaffBeam[] = [];
 
 	// Note id -> owning measure. Maintained on insert so an edit can answer
 	// "which measure did I just touch" in O(1) instead of scanning the score.
@@ -437,6 +462,11 @@ export class Score {
 	// because at most one note ties into any given note (a target has one
 	// source), so it is naturally a map, not a per-note list.
 	readonly #tieSourceOfTarget = new Map<NoteId, NoteId>();
+	// Note id -> the CrossStaffBeam containing it, mirroring
+	// `#tieSourceOfTarget`: layout looks this up once per note it lays out
+	// (`crossStaffBeamContaining`), so an index beats scanning
+	// `crossStaffBeams` on every note.
+	readonly #crossStaffBeamOfNote = new Map<NoteId, CrossStaffBeam>();
 	#nextNoteId = 1;
 
 	constructor(options: ScoreOptions = {}) {
@@ -615,6 +645,85 @@ export class Score {
 		const slur: Slur = { startNoteId, endNoteId };
 		this.slurs.push(slur);
 		return slur;
+	}
+
+	/**
+	 * Add an explicit cross-staff beam (M2 Slice 6) linking `noteIds`, each
+	 * already a note in its own staff's own Measure. See `CrossStaffBeam`'s own
+	 * comment for what this does and does not model.
+	 *
+	 * Validated tightly since nothing later can sensibly render a malformed
+	 * group: every id must be a real, pitched note (a rest has no stem to
+	 * extend across the gap) whose own duration is beam-eligible (eighth note
+	 * or shorter, the same threshold `layout.ts`'s FLAG_GLYPHS keys on, checked
+	 * here via NOTE_VALUE_WHOLES so this file does not need to import anything
+	 * from layout.ts to know it); every note must land in the exact same
+	 * measure column (the same Measure.index) across staves, since this slice
+	 * does not attempt to coordinate x-position across a measure *and* a staff
+	 * boundary at once (documented scope cut, see layout.ts); the notes'
+	 * owning measures must span exactly two distinct, adjacent staffIndices
+	 * (this slice only ever splits one shared gap, the same scope barlineSpan
+	 * itself already narrowed to "spanning the full staff-group height" rather
+	 * than an arbitrary non-adjacent pair); and each staff side needs at least
+	 * two of its own notes, since layoutBeamGroup's ordinary machinery draws a
+	 * real beam segment only for two or more members. A cross-staff beam with
+	 * only one note on one side would need real engraving's "beamlet stub
+	 * toward the gap" convention for that side, which this slice does not
+	 * build (documented scope cut).
+	 */
+	addCrossStaffBeam(noteIds: readonly NoteId[]): CrossStaffBeam {
+		if (noteIds.length < 2) {
+			throw new Error('addCrossStaffBeam: needs at least 2 note ids');
+		}
+		const notes = noteIds.map((id) => {
+			const note = this.findNote(id);
+			if (!note) throw new Error(`addCrossStaffBeam: unknown note id "${id}"`);
+			return note;
+		});
+		for (const note of notes) {
+			if (note.pitch === null) {
+				throw new Error(`addCrossStaffBeam: note "${note.id}" is a rest, which cannot join a beam`);
+			}
+			if (NOTE_VALUE_WHOLES[note.value] > NOTE_VALUE_WHOLES.eighth) {
+				throw new Error(
+					`addCrossStaffBeam: note "${note.id}" has value "${note.value}", too long to beam (needs eighth or shorter)`
+				);
+			}
+		}
+		const owningMeasures = notes.map((note) => this.measureOfNote(note.id)!);
+		const firstIndex = owningMeasures[0]!.index;
+		if (owningMeasures.some((measure) => measure.index !== firstIndex)) {
+			throw new Error('addCrossStaffBeam: every note must land in the same measure column across staves');
+		}
+		const distinctStaffIndices = [...new Set(owningMeasures.map((measure) => measure.staffIndex))];
+		if (distinctStaffIndices.length !== 2) {
+			throw new Error(
+				`addCrossStaffBeam: notes must span exactly two distinct staves, found ${distinctStaffIndices.length}`
+			);
+		}
+		const [a, b] = distinctStaffIndices.sort((x, y) => x - y) as [number, number];
+		if (b - a !== 1) {
+			throw new Error(`addCrossStaffBeam: the two staves must be adjacent, got ${a} and ${b}`);
+		}
+		const countByStaff = new Map<number, number>();
+		for (const measure of owningMeasures) {
+			countByStaff.set(measure.staffIndex, (countByStaff.get(measure.staffIndex) ?? 0) + 1);
+		}
+		for (const staffIndex of [a, b]) {
+			if ((countByStaff.get(staffIndex) ?? 0) < 2) {
+				throw new Error(`addCrossStaffBeam: staff ${staffIndex} needs at least 2 notes of its own in the beam`);
+			}
+		}
+		const beam: CrossStaffBeam = { noteIds: [...noteIds], staffIndices: [a, b] };
+		this.crossStaffBeams.push(beam);
+		for (const id of noteIds) this.#crossStaffBeamOfNote.set(id, beam);
+		return beam;
+	}
+
+	/** The CrossStaffBeam containing `id`, if any. Layout uses this once per
+	 *  note it lays out, exactly like `tiedFromNote`. */
+	crossStaffBeamContaining(id: NoteId): CrossStaffBeam | undefined {
+		return this.#crossStaffBeamOfNote.get(id);
 	}
 
 	/**

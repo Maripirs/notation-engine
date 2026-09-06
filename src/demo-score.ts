@@ -673,6 +673,116 @@ export function createSatbBracketShowcaseScore(): Score {
 	return score;
 }
 
+/**
+ * M2 Slice 6's cross-staff beaming showcase: a two-staff piano-style score
+ * (treble over bass) whose middle measure links two eighth notes in the
+ * treble staff to two eighth notes in the bass staff via one
+ * `Score.addCrossStaffBeam` call, so the four notes render as one
+ * continuous beam crossing the gap between the staves (a piano passage
+ * crossing hands). An ordinary filler measure of quarter notes sits on
+ * each side of it, so the beamed measure has a normal neighbour on both
+ * sides, useful for confirming (in `layout.test.ts`) that the wider region
+ * a cross-staff beam needs stays scoped to exactly its own measure column
+ * and never leaks into either neighbour's.
+ *
+ * The beamed measure is deliberately *not* the score's first measure: a
+ * system-opening measure draws each staff's own clef/key header before its
+ * first note, and this slice's own scope cut (see `Score.addCrossStaffBeam`'s
+ * own comment, and `layout.ts`'s cross-staff integration) never coordinates
+ * x-position across the staff boundary, only reusing whatever x each
+ * staff's own ordinary layout already produces. Putting the beam at measure
+ * 1 means neither staff draws a header at that column, so both staves' note
+ * cursors start from the exact same x right after the shared
+ * `measureLeadIn`; giving both staves *identical* rhythmic content for the
+ * beamed pair itself (two plain eighth notes each, no accidentals, no ties)
+ * means their per-note x advances also match exactly there, with no extra
+ * x-coordination code needed. This is a real, documented scope cut, not a
+ * claim that arbitrary cross-staff content always lines up: a measure with
+ * different rhythms on each side, or a system-first beamed measure, would
+ * not automatically align this way.
+ *
+ * "Renders as one continuous beam" is verified two ways: a layout-level unit
+ * test asserts each side's own beam segment lands at (nearly) the same y and
+ * has a real (nonzero) x-extent, and a standalone PNG of this score,
+ * rasterized through node-canvas the same way every other showcase is,
+ * confirmed by eye that the beam looks unbroken across the staff gap with
+ * correct stem directions (treble stems down into the gap, bass stems up
+ * into it).
+ *
+ * A small horizontal jog is visible right where the two segments meet: a
+ * down-stem attaches to its notehead's left side and an up-stem to its
+ * right (`stemXEdges`'s own ordinary convention, unrelated to and pre-dating
+ * this slice), so the forced opposite directions on the two sides of a
+ * cross-staff beam put each side's beam segment a hair to a different side
+ * of its own noteheads. Still one connected shape (the two segments meet
+ * with no gap, see this function's own render check above), not the same as
+ * a straight, unbroken bridge; smoothing it away would need per-note
+ * x-coordination this slice's own documented scope cut above already
+ * excludes.
+ *
+ * Built the same low-level way `createGrandStaffShowcaseScore`/
+ * `createSatbBracketShowcaseScore` (M2 Slices 4-5) are, for the same reason:
+ * `buildScore` only ever populates one implicit staff. Deliberately *not*
+ * folded into `createFullDemoScore`/`npm run dev`'s single combined score,
+ * again for the same reason those two showcases are not: `appendMeasures`
+ * only ever merges a source score into a single-staff destination.
+ */
+export function createCrossStaffBeamShowcaseScore(): Score {
+	const score = new Score({ keyFifths: 0, time: { beats: 4, beatType: 4 }, clef: 'treble' });
+	score.appendStaff('bass');
+
+	// Measure 0: ordinary filler on both staves, so the beamed measure below
+	// is not the system-opening one (see this function's own doc comment).
+	const trebleMeasure0 = score.appendMeasure(0);
+	for (const pitch of ['C5', 'D5', 'E5', 'F5']) {
+		score.appendNote(trebleMeasure0, { pitch: parsePitch(pitch), value: 'quarter' });
+	}
+	const bassMeasure0 = score.appendMeasure(1);
+	for (const pitch of ['C3', 'D3', 'E3', 'F3']) {
+		score.appendNote(bassMeasure0, { pitch: parsePitch(pitch), value: 'quarter' });
+	}
+
+	// Measure 1: the cross-staff beam itself, at the very start of the
+	// measure (right after the shared lead-in) so both staves' cursors are
+	// still aligned when it begins. Identical rhythmic content (two eighth
+	// notes) on each side for the beamed pair itself, so both staves' natural
+	// x advances at this column match exactly with no extra coordination;
+	// three plain quarter notes fill out the rest of the 4/4 bar afterward
+	// (0.125 + 0.125 + 0.25 + 0.25 + 0.25 = 1 whole note), since this
+	// showcase's own measures still need to validate against the time
+	// signature like every other showcase's do, not just look right.
+	const trebleMeasure1 = score.appendMeasure(0);
+	const trebleIds: NoteId[] = [];
+	for (const pitch of ['G4', 'A4']) {
+		trebleIds.push(score.appendNote(trebleMeasure1, { pitch: parsePitch(pitch), value: 'eighth' }).id);
+	}
+	for (const pitch of ['B4', 'C5', 'D5']) {
+		score.appendNote(trebleMeasure1, { pitch: parsePitch(pitch), value: 'quarter' });
+	}
+	const bassMeasure1 = score.appendMeasure(1);
+	const bassIds: NoteId[] = [];
+	for (const pitch of ['C3', 'D3']) {
+		bassIds.push(score.appendNote(bassMeasure1, { pitch: parsePitch(pitch), value: 'eighth' }).id);
+	}
+	for (const pitch of ['E3', 'F3', 'G3']) {
+		score.appendNote(bassMeasure1, { pitch: parsePitch(pitch), value: 'quarter' });
+	}
+	score.addCrossStaffBeam([...trebleIds, ...bassIds]);
+
+	// Measure 2: more ordinary filler, giving the beamed measure a normal
+	// neighbour on both sides.
+	const trebleMeasure2 = score.appendMeasure(0);
+	for (const pitch of ['G5', 'F5', 'E5', 'D5']) {
+		score.appendNote(trebleMeasure2, { pitch: parsePitch(pitch), value: 'quarter' });
+	}
+	const bassMeasure2 = score.appendMeasure(1);
+	for (const pitch of ['G3', 'F3', 'E3', 'D3']) {
+		score.appendNote(bassMeasure2, { pitch: parsePitch(pitch), value: 'quarter' });
+	}
+
+	return score;
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and

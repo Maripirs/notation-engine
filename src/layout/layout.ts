@@ -18,7 +18,7 @@
 // region-scoped redraw possible at all; that property still holds; it just no
 // longer comes from a naive fixed-plus-linear formula.
 
-import type { ClefType, Measure, Note, NoteId, NoteValue, Part, Score, Slur, TimeSignature } from '../model/score.js';
+import type { ClefType, CrossStaffBeam, Measure, Note, NoteId, NoteValue, Part, Score, Slur, TimeSignature } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -1453,8 +1453,22 @@ export function relayoutMeasure(
 	if (!staff || !measure || !previous || !system) return null;
 
 	const clef = staff.clef;
+	const ss = options.staffSpacePx ?? DEFAULTS.staffSpacePx;
+	// M2 Slice 6 fix: a shared end barline's own span (see `barlineSpan`) is a
+	// pure function of (staffIndex, staffCount, staffTopY, ss), exactly the
+	// inputs already available here, so it costs nothing to recompute and
+	// pass through. Before this fix, a scoped redraw of any measure in a
+	// multi-staff score silently reverted that measure's shared end-barline
+	// ink back to the single-staff band (staffTopY to staffTopY + 4*ss)
+	// instead of its correct shared span, a latent bug from M2 Slice 4 that
+	// nothing caught because no existing test exercised `relayoutMeasure` on
+	// a measure whose barline is actually shared across staves. `columnWidth`
+	// is left alone: fixing it would need probing every other staff's own
+	// natural width at this column, which is out of this slice's scope; that
+	// remains a separate, documented, pre-existing gap.
+	const span = barlineSpan(staffIndex, score.staves.length, system.topY, ss);
 	const laid = layoutMeasure(score, measure, {
-		ss: options.staffSpacePx ?? DEFAULTS.staffSpacePx,
+		ss,
 		staffTopY: system.topY,
 		startX: previous.region.x,
 		isSystemFirst: system.measureIndices[0] === measureIndex,
@@ -1463,7 +1477,9 @@ export function relayoutMeasure(
 		spacingScale: system.spacingScale,
 		staffIndex,
 		clef,
-		lines: CLEF_LINES[clef]
+		lines: CLEF_LINES[clef],
+		barlineTop: span.top,
+		barlineBottom: span.bottom
 	});
 
 	// Sub-pixel tolerance: the same arithmetic run twice should agree exactly,
@@ -1651,6 +1667,22 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// conventions only engage once a second voice actually shares the staff.
 	const multiVoice = notesByVoiceGroups.size > 1;
 
+	// Cross-staff beams (M2 Slice 6): notes in *this* measure that are part of
+	// an explicit Score.CrossStaffBeam, grouped by which beam they belong to.
+	// Excluded from this measure's own automatic per-voice grouping below
+	// (they belong to their cross-staff beam instead), and given a synthetic
+	// BeamGroup of their own further down, once every ordinary group exists.
+	const crossStaffNoteIds = new Set<NoteId>();
+	const crossGroupsByBeam = new Map<CrossStaffBeam, Note[]>();
+	for (const note of measure.notes) {
+		const beam = score.crossStaffBeamContaining(note.id);
+		if (!beam) continue;
+		crossStaffNoteIds.add(note.id);
+		const list = crossGroupsByBeam.get(beam) ?? [];
+		list.push(note);
+		crossGroupsByBeam.set(beam, list);
+	}
+
 	// Deciding beam groups is a pass over each voice's own notes (a group
 	// cannot be known note-by-note: whether the third eighth joins the first
 	// two depends on the beat it falls in), run independently per voice so an
@@ -1666,11 +1698,38 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	const beamGroups: BeamGroup[] = [];
 	for (const [voice, voiceNotes] of notesByVoiceGroups) {
 		beamGroups.push(
-			...computeBeamGroups(voiceNotes, time, ctx.lines.middleLine, voiceStemOverride(voice, multiVoice))
+			...computeBeamGroups(
+				voiceNotes,
+				time,
+				ctx.lines.middleLine,
+				voiceStemOverride(voice, multiVoice),
+				crossStaffNoteIds
+			)
 		);
 	}
+
+	// This measure's own half of every cross-staff beam it participates in:
+	// a synthetic BeamGroup (direction decided by which side of the pair this
+	// staff is, not by pitch) plus the fixed join-y both halves independently
+	// derive from pure staff geometry (see barlineSpan; this reuses its own
+	// already bleed-safe boundary rather than inventing new region math). Kept
+	// in a separate list from the ordinary per-voice `beamGroups` because it
+	// needs `layoutBeamGroup`'s fixedBeamY override, not that function's
+	// ordinary "clear the group's most extreme member" height.
+	const crossStaffGroups: { readonly group: BeamGroup; readonly beamY: number }[] = [];
+	for (const [beam, notesHere] of crossGroupsByBeam) {
+		const isUpperStaff = ctx.staffIndex === beam.staffIndices[0];
+		const direction: 'up' | 'down' = isUpperStaff ? 'down' : 'up';
+		const span = barlineSpan(ctx.staffIndex, score.staves.length, ctx.staffTopY, ctx.ss);
+		const beamY = isUpperStaff ? span.bottom : span.top;
+		crossStaffGroups.push({ group: { notes: notesHere, direction }, beamY });
+	}
+
 	const beamGroupOfNote = new Map<NoteId, BeamGroup>();
 	for (const group of beamGroups) {
+		for (const note of group.notes) beamGroupOfNote.set(note.id, group);
+	}
+	for (const { group } of crossStaffGroups) {
 		for (const note of group.notes) beamGroupOfNote.set(note.id, group);
 	}
 	const placements = new Map<NoteId, NotePlacement>();
@@ -1816,6 +1875,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	}
 	const finalShiftByVoice = shiftAccumByVoice;
 	for (const group of beamGroups) layoutBeamGroup(ops, group, placements, ctx);
+	for (const { group, beamY } of crossStaffGroups) layoutBeamGroup(ops, group, placements, ctx, beamY);
 	// The measure's note area ends at the shared columns' own total width,
 	// plus whichever voice's own collision-avoidance shift (above) reached
 	// furthest past it. A single voice's shift is the only one that can ever
@@ -2720,12 +2780,22 @@ function beatDurationWholes(time: TimeSignature): number {
  * every group's `direction` regardless of pitch (see `voiceStemOverride`);
  * omitted, a lone voice keeps `stemDirectionForNotes`'s ordinary pitch-based
  * rule exactly as before this slice.
+ *
+ * `excludeIds` (M2 Slice 6) marks notes that must never join an *automatic*
+ * group here, because each already belongs to an explicit
+ * `Score.CrossStaffBeam` instead (see `layoutMeasure`'s own cross-staff
+ * integration). An excluded note still behaves like any other ineligible
+ * one for the purposes of this function: it flushes whatever group is open
+ * and its own duration still advances `position`, since it still occupies
+ * real time in the beat-position tracker; it simply never starts or extends
+ * a group of its own.
  */
 function computeBeamGroups(
 	notes: readonly Note[],
 	time: TimeSignature,
 	middleLine: number,
-	voiceOverride?: 'up' | 'down'
+	voiceOverride?: 'up' | 'down',
+	excludeIds?: ReadonlySet<NoteId>
 ): BeamGroup[] {
 	const beatWholes = beatDurationWholes(time);
 	// A float position compared against a beat boundary with plain `<`/`floor`
@@ -2747,7 +2817,8 @@ function computeBeamGroups(
 	};
 
 	for (const note of notes) {
-		const eligible = note.pitch !== null && note.value in FLAG_GLYPHS;
+		const eligible =
+			note.pitch !== null && note.value in FLAG_GLYPHS && !(excludeIds?.has(note.id) ?? false);
 		if (!eligible) {
 			flush();
 			position += note.durationWholes;
@@ -2861,12 +2932,22 @@ function beamStemX(placement: NotePlacement, up: boolean, ss: number): number | 
  * deliberate simplification, left for a later pass to refine, since it is
  * already correct enough to read as one beamed group rather than stacked
  * flags.
+ *
+ * `fixedBeamY` (M2 Slice 6), when given, overrides that "clear the group's
+ * most extreme member" height with a cross-staff beam's own staff-geometry-
+ * derived join height instead (see `layoutMeasure`'s own cross-staff
+ * integration for where it comes from and why it must not be fitted to the
+ * notes' own contour). Nothing else in this function needs to change for
+ * that: a member's stem length is already computed generically as
+ * `Math.abs(beamY - attachY)`, so an arbitrarily long stem, needed to reach
+ * across a staff gap, already works with no special case.
  */
 function layoutBeamGroup(
 	ops: DrawOp[],
 	group: BeamGroup,
 	placements: ReadonlyMap<NoteId, NotePlacement>,
-	ctx: MeasureContext
+	ctx: MeasureContext,
+	fixedBeamY?: number
 ): void {
 	const { ss } = ctx;
 	const members = group.notes.flatMap((note) => {
@@ -2876,9 +2957,11 @@ function layoutBeamGroup(
 	if (members.length < 2) return;
 
 	const up = group.direction === 'up';
-	const beamY = up
-		? Math.min(...members.map((m) => m.placement.y - STEM_LENGTH * ss))
-		: Math.max(...members.map((m) => m.placement.y + STEM_LENGTH * ss));
+	const beamY =
+		fixedBeamY ??
+		(up
+			? Math.min(...members.map((m) => m.placement.y - STEM_LENGTH * ss))
+			: Math.max(...members.map((m) => m.placement.y + STEM_LENGTH * ss)));
 
 	const stemThickness = ED.stemThickness * ss;
 	for (const { note, placement } of members) {
