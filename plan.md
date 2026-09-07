@@ -349,7 +349,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       defaulting to 120 when unset and taking an explicit `ScoreOptions`
       value when given; demo check: a hand-computed duration at a known
       BPM matches the function's output within floating-point tolerance.
-- [ ] **Slice 2 — Playback timeline.** A pass that walks the score's
+- [x] **Slice 2 — Playback timeline.** A pass that walks the score's
       notes in true playback order, independently per voice (whatever
       voice numbers are actually present in a staff's measures, not a
       hardcoded 1/2) and per staff. `Score.notesInOrder()` now takes a
@@ -1372,4 +1372,31 @@ divisi splits). Unscoped.
   `durationToSeconds` covering a BPM range, a plain/dotted/tripleted duration
   range, and a zero-duration edge case, all via hand-computed expected values
   in the test's own comments) bring the suite to 273 (up from 268);
-  check/build are green. M3 Slice 2 (playback timeline) is next.
+  check/build are green.
+- 2026-09-06: M3 Slice 2 (playback timeline) done, via subagent while the
+  human was away; Claude reviewed the diff and ran check/test/build directly
+  before committing. `src/playback/timeline.ts`'s `computePlaybackTimeline`
+  walks each `(staffIndex, voice)` pair present in the score independently
+  (voices discovered dynamically per staff, not hardcoded 1/2), each with its
+  own cumulative `cursorWholes` converted through `durationToSeconds` for
+  `startSeconds`, deliberately not built on `Score.notesInOrder()` (that
+  method interleaves every voice's notes in one flat per-staff order, not
+  onset order; a two-voice measure's `measure.notes` holds voice 1's notes
+  then voice 2's, not interleaved, so this needed its own per-voice walk
+  exactly as the milestone's own scoping anticipated). A rest advances the
+  cursor with no event; a tie continuation (detected via
+  `Score.tiedFromNote`) folds its duration onto the still-open event from the
+  tie's source rather than starting a fresh one, correctly collapsing chains
+  of 3+ tied notes, not just pairs. Returns a flat `OnsetEvent[]`
+  (`{ noteId, pitch, startSeconds, durationSeconds }`) with no
+  staffIndex/voice field, matching the plan's own event shape exactly. 6 new
+  tests (single-voice sequential onsets, a tied pair, a three-note tied
+  chain, two differing-rhythm voices realigning on shared beats via
+  `createTwoVoiceShowcaseScore`, a hand-built 3-voice measure, and all four
+  staves of `createSatbBracketShowcaseScore` landing on the same shared
+  onsets) bring the suite to 279 (up from 273); check/build are green. Demo
+  checks confirmed by hand: `createTwoVoiceShowcaseScore`'s two voices open
+  together at 0 and realign at 2.5 after each fills one 4/4 bar despite
+  differing rhythm in between; `createSatbBracketShowcaseScore`'s 4 staves
+  all land 4-per-onset at 0/0.5/1.0/1.5. M3 Slice 3 (Web Audio lookahead
+  scheduler) is next.
