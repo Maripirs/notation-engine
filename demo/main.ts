@@ -9,10 +9,13 @@
 import bravuraUrl from '../assets/bravura/Bravura.woff2?url';
 import {
 	CanvasRenderer,
+	computePlaybackTimeline,
 	createFullDemoScore,
+	createGrandStaffShowcaseScore,
 	hitTest,
 	layoutScore,
 	loadSmuflFont,
+	PlaybackEngine,
 	relayoutMeasure,
 	type LaidOutScore,
 	type NoteId
@@ -25,6 +28,11 @@ const upButton = document.querySelector<HTMLButtonElement>('#up')!;
 const downButton = document.querySelector<HTMLButtonElement>('#down')!;
 const fullButton = document.querySelector<HTMLButtonElement>('#full')!;
 const flashButton = document.querySelector<HTMLButtonElement>('#flash')!;
+const playbackPlayButton = document.querySelector<HTMLButtonElement>('#playback-play')!;
+const playbackPauseButton = document.querySelector<HTMLButtonElement>('#playback-pause')!;
+const playbackStopButton = document.querySelector<HTMLButtonElement>('#playback-stop')!;
+const playbackPosition = document.querySelector<HTMLElement>('#playback-position')!;
+const playbackOnset = document.querySelector<HTMLElement>('#playback-onset')!;
 
 // These mirror index.html's own CSS (`body { max-width: 60rem; padding: 2rem
 // 1.5rem; }`, `#score { border: 1px solid #ddd; }`) so `systemWidthForViewport`
@@ -47,6 +55,18 @@ const CANVAS_BORDER_PX = 2;
 function systemWidthForViewport(): number {
 	const bodyContentWidth = Math.min(window.innerWidth, BODY_MAX_WIDTH_PX) - BODY_HORIZONTAL_PADDING_PX;
 	return Math.max(200, bodyContentWidth - CANVAS_BORDER_PX);
+}
+
+/**
+ * Renders a position in seconds as `m:ss.d`, e.g. `0:07.3`: minutes, a
+ * zero-padded two-digit seconds field, one decimal. Used by both the running
+ * position readout and the "reset to zero" text Stop writes immediately.
+ */
+function formatPosition(seconds: number): string {
+	const clamped = Math.max(0, seconds);
+	const minutes = Math.floor(clamped / 60);
+	const secondsWithinMinute = clamped - minutes * 60;
+	return `${minutes}:${secondsWithinMinute.toFixed(1).padStart(4, '0')}`;
 }
 
 const score = createFullDemoScore();
@@ -154,7 +174,13 @@ canvas.addEventListener('pointerdown', (event) => {
 	);
 	const changed = renderer.setSelection(hit ? hit.noteId : null);
 	selected = hit ? hit.noteId : null;
-	if (changed.length > 0) renderer.redrawMeasures(changed);
+	// A selection change touches at most two measures (the old note's and the
+	// new one's), and in principle those can sit on two different staves, so
+	// each pair is redrawn on its own staff rather than batching them through
+	// one `redrawMeasures` call, which only takes a single `staffIndex` for
+	// the whole batch (M4 Slice 1: see `CanvasRenderer.setSelection`'s own
+	// doc comment on why the pair's `staffIndex` can no longer be assumed 0).
+	for (const { staffIndex, index } of changed) renderer.redrawMeasure(index, staffIndex);
 	upButton.disabled = selected === null;
 	downButton.disabled = selected === null;
 	status.textContent = hit
@@ -213,6 +239,140 @@ window.addEventListener('resize', () => {
 	}, 150);
 });
 
+// --- Playback -----------------------------------------------------------
+//
+// One AudioContext and one PlaybackEngine, built lazily on the first Play
+// click rather than at module load. Two reasons, both about that first
+// click: the browser's autoplay policy requires an AudioContext to be
+// created (or resumed) from inside a user-gesture handler, so building one
+// eagerly here would either start it suspended or, in stricter browsers,
+// throw outright; and PlaybackEngine itself owns the paused-position state
+// across calls (see its own `basePosition`/`baseAudioTime` doc comment), so
+// once built it is reused for every later play/pause/stop click rather than
+// reconstructed, which would silently discard wherever a prior pause left
+// off.
+let playbackEngine: PlaybackEngine | null = null;
+let totalPlaybackSeconds = 0;
+let positionLoopRunning = false;
+
+function ensurePlaybackEngine(): PlaybackEngine {
+	if (playbackEngine) return playbackEngine;
+
+	const events = computePlaybackTimeline(score);
+	totalPlaybackSeconds = events.reduce(
+		(latest, event) => Math.max(latest, event.startSeconds + event.durationSeconds),
+		0
+	);
+
+	const audioContext = new AudioContext();
+	playbackEngine = new PlaybackEngine({
+		events,
+		audioContext,
+		// Exercises Slice 6's onset-callback half (not just its position-query
+		// half, which the rAF loop below covers): fires once per note right as
+		// it is handed to the audio clock.
+		onOnset: (event) => {
+			playbackOnset.textContent = `note ${event.noteId} at ${event.startSeconds.toFixed(2)}s`;
+		}
+	});
+	return playbackEngine;
+}
+
+/**
+ * Polls `positionSeconds` once per frame while playing. PlaybackEngine does
+ * not flip `isPlaying` false on its own when playback runs off the end of
+ * the timeline, only on an explicit pause()/stop() (see its own doc
+ * comments), so this loop does not try to detect "playback finished"
+ * itself: it just keeps polling for as long as `isPlaying` is true, driven
+ * off the same flag the button handlers below set, and stops rescheduling
+ * itself the moment that flag goes false.
+ */
+function schedulePositionUpdate(): void {
+	if (!playbackEngine || !playbackEngine.isPlaying) {
+		positionLoopRunning = false;
+		return;
+	}
+	playbackPosition.textContent =
+		`${formatPosition(playbackEngine.positionSeconds)} / ${formatPosition(totalPlaybackSeconds)}`;
+	requestAnimationFrame(schedulePositionUpdate);
+}
+
+playbackPlayButton.addEventListener('click', () => {
+	const engine = ensurePlaybackEngine();
+	engine.play();
+	// Play stays enabled so it also doubles as "resume" after a pause.
+	playbackPauseButton.disabled = false;
+	playbackStopButton.disabled = false;
+	if (!positionLoopRunning) {
+		positionLoopRunning = true;
+		schedulePositionUpdate();
+	}
+});
+
+playbackPauseButton.addEventListener('click', () => {
+	playbackEngine?.pause();
+	playbackPauseButton.disabled = true;
+});
+
+playbackStopButton.addEventListener('click', () => {
+	playbackEngine?.stop();
+	playbackPauseButton.disabled = true;
+	playbackStopButton.disabled = true;
+	// Reset the readout immediately rather than waiting on the next rAF tick,
+	// which may be a frame away or, since the loop only reschedules itself
+	// while isPlaying is true, may never come at all.
+	playbackPosition.textContent = `${formatPosition(0)} / ${formatPosition(totalPlaybackSeconds)}`;
+});
+
+// --- Multi-staff selection (M4 Slice 1) ---------------------------------
+//
+// A second, independent canvas/renderer pair for `createGrandStaffShowcaseScore`
+// (two staves, treble over bass). Not folded into the main canvas above:
+// `createFullDemoScore` cannot include it (`appendMeasures` only ever merges
+// into staff 0, see that score's own doc comment), so it needs its own score,
+// its own layout and its own renderer. This canvas does not need to track the
+// window's width the way the main one does, so its `systemWidthPx` is just a
+// fixed constant rather than `systemWidthForViewport()`.
+const staffSelectCanvas = document.querySelector<HTMLCanvasElement>('#staff-select-demo')!;
+const staffSelectStatus = document.querySelector<HTMLElement>('#staff-select-status')!;
+
+const staffSelectScore = createGrandStaffShowcaseScore();
+const staffSelectLayoutOptions = { staffSpacePx: 11, systemWidthPx: 700 };
+const staffSelectLayout: LaidOutScore = layoutScore(staffSelectScore, staffSelectLayoutOptions);
+const staffSelectCtx = staffSelectCanvas.getContext('2d')!;
+const staffSelectRenderer = new CanvasRenderer(staffSelectCtx, staffSelectLayout, { background: '#ffffff' });
+
+/** Same retina-sizing trick as the main canvas's own `sizeCanvas`, above. */
+function sizeStaffSelectCanvas(): void {
+	const dpr = window.devicePixelRatio || 1;
+	staffSelectCanvas.width = Math.ceil(staffSelectLayout.width * dpr);
+	staffSelectCanvas.height = Math.ceil(staffSelectLayout.height * dpr);
+	staffSelectCanvas.style.width = `${staffSelectLayout.width}px`;
+	staffSelectCanvas.style.height = `${staffSelectLayout.height}px`;
+	staffSelectCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+}
+
+staffSelectCanvas.addEventListener('pointerdown', (event) => {
+	// Same coordinate-scaling logic as the main canvas's own handler, above.
+	const rect = staffSelectCanvas.getBoundingClientRect();
+	const scaleX = staffSelectLayout.width / rect.width;
+	const scaleY = staffSelectLayout.height / rect.height;
+	const hit = hitTest(
+		staffSelectLayout,
+		(event.clientX - rect.left) * scaleX,
+		(event.clientY - rect.top) * scaleY
+	);
+	// The fixed version of the main canvas's handler above: each affected
+	// pair is redrawn against its own `staffIndex`, so a click on the bass
+	// staff never touches the treble staff's same-numbered measure.
+	const changed = staffSelectRenderer.setSelection(hit ? hit.noteId : null);
+	for (const { staffIndex, index } of changed) staffSelectRenderer.redrawMeasure(index, staffIndex);
+	staffSelectStatus.textContent = hit
+		? `Selected note ${hit.noteId} on staff ${hit.staffIndex} (${hit.staffIndex === 0 ? 'treble' : 'bass'}), ` +
+			`measure ${hit.measureIndex + 1}. Redrew staff ${hit.staffIndex}'s measure ${hit.measureIndex + 1} only.`
+		: 'Nothing selected. Click a notehead or a rest.';
+});
+
 async function start(): Promise<void> {
 	// Canvas has no "the font arrived" callback: text drawn before the font
 	// loads renders as tofu and stays that way, so the first draw waits.
@@ -222,6 +382,9 @@ async function start(): Promise<void> {
 	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
 	status.textContent = 'Click a notehead or a rest to select it.';
 	timings.textContent = `initial whole-score draw           ${lastFullDrawMs.toFixed(2)} ms`;
+
+	sizeStaffSelectCanvas();
+	staffSelectRenderer.drawAll();
 }
 
 void start();

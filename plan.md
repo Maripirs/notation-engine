@@ -1,6 +1,6 @@
 # Project Plan: notation-engine
 
-**Current milestone:** M2
+**Current milestone:** M4
 
 Roadmap and full decision record: `OMR_EDITOR_PLAN.md` milestone E13 in the
 `divisi-omr-editor` worktree. This file tracks notation-engine's own
@@ -469,12 +469,17 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       day rather than left for a slice to work around; see the Log
       entry below for what changed.
 
-### M4 — Phase 4: Interaction layer [ ]
+### M4 — Phase 4: Interaction layer [?]
 
 Est. 1-2 months. Own hit-testing, selection/playback cursors, follow-scroll,
 zoom, replacing what E2/E4/E7 currently read off OSMD
 (`GetNearestNote`/`osmd.cursors`/`MeasureList`). Playback cursors depend on
-M3's audio engine existing.
+M3's audio engine existing (built, all 6 slices, `[?]` pending the human's
+own by-ear verification per M3's own closing report above; that
+verification gates M3's sign-off, not this milestone's own scoping or slice
+work, since everything below depends only on `PlaybackEngine`'s interface
+(`onOnset`/`positionSeconds`), not on a human having confirmed it sounds
+right).
 
 Also scope (added 2026-09-05, folded in from the now-dropped pagination
 milestone, see Log): the human's workflow for an OMR-derived score is view
@@ -491,7 +496,193 @@ scroll-to-sync, and any finer note-level pixel mapping) is Divisi's own
 measure offsets) and E12 (playback follows the PDF, page-level only for
 now; true note-level position on the scan is a separate, harder backlog
 item there, blocked on pixel-box data the OMR pipeline currently discards).
-Unscoped.
+
+Scoped 2026-09-06 (Claude, "on your own" per the human's explicit
+instruction) against M0-M3's real, built code rather than a plan. A survey
+of what already exists found this milestone narrower than its own
+one-line summary suggests: hit-testing (`src/layout/hit-test.ts`) is
+already real and already multi-staff-aware (`HitResult.staffIndex`, M2
+Slice 3), so this milestone does not build hit-testing from nothing, it
+closes the gaps left around it.
+
+- **Selection is already multi-staff-broken, not just multi-staff-absent.**
+  `CanvasRenderer.setSelection` (`src/render/renderer.ts`) resolves a
+  `NoteId` to a bare measure `index`, not a `(staffIndex, index)` pair, a
+  scope cut its own doc comment already flags ("left for whoever first
+  builds one"). This is not merely incomplete, it actively misfires today:
+  a caller combining it with `redrawMeasures(changed)`'s default
+  `staffIndex = 0` will, for a note selected on any staff *other* than 0,
+  repaint staff 0's same-numbered measure (arbitrary, unrelated pixels)
+  and leave the actually-changed staff/measure stale, since two staves'
+  measures can share the same numeric `index`. No test currently catches
+  this because nothing before this milestone ever selected a note on a
+  non-zero staff. Slice 1 below fixes it.
+- **No playback cursor primitive exists at all.** `selectedNoteId` is a
+  single id with one tint color; a playback cursor needs to highlight
+  however many notes are sounding at once (a full SATB chord can be four,
+  across four staves, on one onset), in a color distinct from an editor's
+  own live selection so the two don't collide once M4 sits inside E2's
+  editor (which keeps its own selection running while a piece plays back
+  for preview). Slice 2 below adds this as its own tracked set, not a
+  reuse of `selectedNoteId`.
+- **Zoom is largely already free.** `LayoutOptions.staffSpacePx` is
+  already documented as "the single knob that scales the whole render"
+  (`src/layout/layout.ts`), and the demo already re-runs `layoutScore` +
+  `renderer.setLayout` live on window resize (`demo/main.ts`'s debounced
+  `resize` handler, changing `systemWidthPx`, not `staffSpacePx`, but the
+  same mechanism). `CanvasRenderer.setLayout` does not touch
+  `#selectedNoteId`, so selection already survives a relayout at a new
+  scale for free. What is missing is not the scaling primitive itself but
+  proof that it composes correctly with Slice 1/2's new state (a
+  selection or playback cursor keyed by `NoteId`, not by a stored pixel
+  rect, should relocate correctly after a zoom-triggered relayout without
+  extra plumbing) and a real zoom control exercising it, which is what
+  Slice 3 tests and demos rather than builds from scratch.
+- **No scroll-into-view query exists.** Follow-scroll and the PDF-sync
+  paragraph above both need "given a note (or the current playback
+  position), what canvas region should a host scroll to", and today a
+  caller would have to reach into `LaidOutScore.measures`/`.systems` by
+  hand to compute it, exactly the kind of internal-structure reach-in the
+  layout/render split (`src/layout/types.ts`'s own header comment) exists
+  to avoid. Slice 4 below adds one small, pure, exported helper for this,
+  reused by both selection-follow and playback-cursor-follow, and by a
+  future PDF-sync host per the scope paragraph above (that host-side
+  sync itself stays out of this repo, per that paragraph's own
+  boundary).
+
+Rechecked 2026-09-06 (Claude, self-review at the human's explicit request,
+before any slice work starts): the survey above held, but Slices 1-2's own
+demo checks as first drafted glossed over a real constraint, caught by
+reading `createGrandStaffShowcaseScore`'s and `createSatbBracketShowcaseScore`'s
+own doc comments (`src/demo-score.ts`) rather than assuming. Both say outright
+that they are "deliberately *not* folded into `createFullDemoScore`" because
+`appendMeasures` "only ever merges a source score into a single-staff
+destination", and that M2's own way of visually checking a multi-staff
+fixture was never the interactive `npm run dev` demo at all, it was
+rasterizing `layoutScore` through node-canvas and eyeballing a PNG (the same
+technique `npm run bench` uses). The first draft's Slice 1 demo check hedged
+("once one is added to `createFullDemoScore`, or via a dedicated demo toggle
+if folding it in there conflicts") rather than confronting this, and Slice 2's
+demo check claimed the cursor would visibly move "staff to staff" against a
+demo (`createFullDemoScore`) that is, per this same constraint, single-staff.
+Fixed by committing to one concrete choice rather than leaving it open: M4
+adds a small second canvas to the dev demo specifically for its own slices,
+rendering `createGrandStaffShowcaseScore` (two staves, the simplest genuinely
+multi-staff fixture) directly, not merged into the combined score. This is
+new demo scope beyond what any M2 slice needed, and deliberately so: M2's own
+checks were about render *correctness* (does it look right), which a static
+PNG answers fine, where M4's are about *interaction* (can you click it, does
+a live cursor move across it), which nothing short of a live browser can
+answer. Slice 1's and Slice 2's task text below reflect this directly rather
+than leaving it for slice time to improvise.
+
+Not in scope, confirmed against the milestone breakdown above: measure-range
+selection and undo/redo are M5's job ("Reparity with E2-E12"), not this
+one; drawing/aligning a PDF pane is Divisi's own job per the scope
+paragraph above, this milestone only exposes the position/region data a
+PDF-sync host would consume; seam markers (E4) are also M5 territory (an
+overlay reparity item), this milestone does not add seam-specific
+concepts, only the general region-lookup primitive (Slice 4) a seam
+overlay could later be built on.
+
+**Acceptance criteria (whole milestone):** all 4 slices' criteria below
+pass; `npm run check`/`test`/`build` stay green throughout.
+
+**Tasks — Claude:**
+- [x] **Slice 1 — Multi-staff selection.** Widen `CanvasRenderer.setSelection`
+      to return `{ staffIndex, index }` pairs instead of bare measure
+      indices, and widen every call site (the demo's own selection
+      handler) to pass the returned `staffIndex` through to
+      `redrawMeasures` instead of relying on its `staffIndex = 0` default.
+      Closes the real misfire described above, not just the "not yet
+      built" gap its own doc comment names. Acceptance: a unit test
+      selecting a note on a non-zero staff of a multi-staff fixture (e.g.
+      `createGrandStaffShowcaseScore` or `createSatbBracketShowcaseScore`)
+      asserts the returned pair's `staffIndex` matches the note's real
+      staff, and that redrawing with it touches only that staff's own
+      measure region, extending `renderer.test.ts`'s existing
+      region-scoped-redraw proof to a non-zero staff for the first time;
+      a second test confirms the pre-fix failure mode is real by
+      asserting the *old* bare-index-plus-default-staff-0 path would have
+      redrawn the wrong measure, so the fix is provably not a no-op; demo
+      check: this slice adds a small second canvas to `demo/index.html`/
+      `main.ts`, rendering `createGrandStaffShowcaseScore` directly (per the
+      2026-09-06 recheck above, not merged into `createFullDemoScore`, which
+      `appendMeasures` cannot target past staff 0), with the same
+      click-to-select and flash-redrawn-region wiring the main canvas
+      already has; click a note on its lower (bass) staff and confirm only
+      that staff's measure repaints.
+- [ ] **Slice 2 — Playback cursor.** `CanvasRenderer` gains a
+      `setPlaybackCursor(noteIds: readonly NoteId[]): { staffIndex, index }[]`
+      method (mirroring `setSelection`'s own diff-and-return-affected-
+      measures shape, but over a *set* of ids rather than one, since a
+      chord/multi-voice onset can highlight several notes across several
+      staves at once) and a new `CanvasRendererOptions.playbackCursor`
+      color, distinct from `selection`'s, so a live editor selection and
+      an in-progress playback preview never collide visually. A host
+      wires this to `PlaybackEngine.onOnset` (M3 Slice 6): each onset
+      event's note id(s) become the new cursor set, the previous set's
+      notes revert to their ordinary (or selected) tint. Acceptance: unit
+      tests for the affected-measures diff over a single-note cursor move
+      and over a simultaneous multi-note onset spanning two staves
+      (asserting draw ops for every previously- and newly-highlighted
+      note's measure, and no others, get redrawn), plus a test that a
+      note both selected and cursor-highlighted at once renders
+      consistently (cursor takes precedence, documented as a deliberate
+      choice, not left ambiguous); demo check, in two parts per the
+      2026-09-06 recheck above (the existing playback demo has no
+      staff-to-staff case to show, it plays `createFullDemoScore`, which is
+      single-staff): first, wire the M3 demo controls already in
+      `demo/main.ts` (Play/Pause/Stop) to also call `setPlaybackCursor` from
+      a `PlaybackEngine.onOnset` callback and watch the cursor visibly move
+      note to note in real time against the audio, including jointly
+      highlighting more than one note when the existing two-voice/
+      voice-clash showcase measures land simultaneous onsets; second, on
+      Slice 1's new second canvas, a temporary debug control that calls
+      `setPlaybackCursor` directly with a hand-picked multi-staff note-id
+      list (no second `PlaybackEngine`/`AudioContext` pair, that is out of
+      this slice's scope) and confirms the highlight lands correctly across
+      staves.
+- [ ] **Slice 3 — Zoom.** No new scaling primitive (per the survey above,
+      `staffSpacePx` already is one); this slice proves and demos that
+      Slices 1-2's new `NoteId`-keyed state survives a live rescale.
+      Acceptance: a unit test that relays a score out at one `staffSpacePx`,
+      selects a note and sets a playback cursor, relays it out again at a
+      different `staffSpacePx` via `layoutScore` + `renderer.setLayout`,
+      and asserts both the selection tint and the cursor tint reapply
+      correctly to the same note's new draw ops at the new scale with no
+      extra calls needed; demo check: a zoom in/out control (e.g. two
+      buttons or a range input) in the dev demo rescales the score
+      smoothly, with whatever note is currently selected and/or
+      playback-cursor-highlighted staying correctly highlighted through
+      the change.
+- [ ] **Slice 4 — Scroll-into-view region lookup.** One small, pure,
+      exported helper, `regionForNote(layout: LaidOutScore, noteId: NoteId): Rect | null`
+      (naming open to whatever reads clearest against `hit-test.ts`'s own
+      naming), returning the region a host should scroll into view for a
+      given note, built by reusing the same measure-lookup `setSelection`
+      already does internally rather than a second traversal
+      implementation. This is the primitive both follow-scroll and the
+      PDF-sync scope paragraph above need ("note bounding box" position
+      data), not a scrolling implementation itself: per this engine's
+      framework-agnostic principle (same precedent as pointer-coordinate
+      translation in the demo's own `pointerdown` handler), the engine
+      hands back a `Rect`, a host decides what "scroll into view" means
+      for its own container. Acceptance: unit tests against known fixture
+      coordinates (a note in the first measure, a note in a later system
+      after cast-off, a note on a non-zero staff) asserting the returned
+      `Rect` matches that note's owning measure's region; demo check: a
+      scrollable wrapper around the demo's canvas auto-scrolls to follow
+      the playback cursor (Slice 2) as multi-system playback proceeds,
+      using this helper for the target `Rect` and the demo's own code for
+      the actual `scrollIntoView`/`scrollTo` call.
+
+**Tasks — Human:**
+- [ ] Review this scoping before slice work starts, the same M1/M2/M3
+      convention. Also still outstanding from M3, tracked there, not
+      duplicated here: the by-ear verification of M3 Slices 4-6's real
+      audio playback, now performable via the dev demo controls added
+      2026-09-06 (see M3's own Log entry above).
 
 ### M5 — Phase 5: Reparity with E2-E12 [ ]
 
@@ -1569,3 +1760,121 @@ divisi splits). Unscoped.
   command line. None of this blocks M4; all of it is either flagged in its
   owning slice's own code comments or listed here for whoever scopes M4's
   actual cursor work to see in one place.
+- 2026-09-06: Play/pause/stop transport plus a live position/onset readout
+  wired into the dev demo (`demo/main.ts`, `demo/index.html`), via subagent,
+  at the human's request. This closes the actual blocker behind the Slice 6
+  closing report's "every manual...demo check across Slices 4-6...is still
+  outstanding" line above: there was no way to trigger real audio playback
+  from `npm run dev` at all, `PlaybackEngine` had only ever been driven from
+  unit tests against a mock `AudioContext`. Plays `createFullDemoScore` (the
+  same score already on screen, whose two-voice and voice-clash showcase
+  measures already give it independent simultaneous voices) at its own
+  tempo. One `AudioContext`/`PlaybackEngine` pair, built lazily on the first
+  Play click (the browser's autoplay policy needs the context created or
+  resumed from inside a user-gesture handler) and reused across every later
+  click, since `PlaybackEngine` owns its own paused-position state across
+  calls and reconstructing it each click would silently discard wherever a
+  prior pause left off; `onOnset` drives a "last note" line, and a
+  `requestAnimationFrame` loop polls `positionSeconds` for a running
+  `m:ss.d / m:ss.d` readout. `npm run check`/`test` (303/303, unchanged)/
+  `build` stay green.
+
+  One new, minor finding surfaced while building this: `PlaybackEngine.isPlaying`
+  never flips back to `false` on its own when playback runs past the last
+  scheduled event, only on an explicit `pause()`/`stop()` (confirmed by
+  reading the class, not by a failing test), so the demo's position readout
+  keeps counting up past the score's own total length until a human clicks
+  Stop. Harmless, and consistent with the class's own documented scope (no
+  repeat/end-of-timeline semantics were ever in scope, see the Slice 6
+  closing report above), but worth naming here since it is a real,
+  previously-unflagged gap and is now directly visible in the demo rather
+  than only inferable from the source.
+
+  This makes M3's one remaining outstanding item, the human's own by-ear/
+  by-eye verification of Slices 4-6, actually performable for the first
+  time; it does not itself constitute that verification. M3 stays `[?]`
+  pending the human actually clicking through `npm run dev` and confirming
+  playback sounds right.
+- 2026-09-06: M4 (interaction layer) scoped, by Claude "on your own" per
+  the human's explicit instruction to proceed without asking, into 4
+  sequential slices, `[?]` pending human review, the same M1/M2/M3
+  convention. Scoped against M0-M3's real, built code (unlike M3's own
+  first scoping pass, which was necessarily speculative against M2's
+  then-still-`[?]` shape), which found the milestone narrower than its
+  one-line "own hit-testing, selection/playback cursors, follow-scroll,
+  zoom" summary suggests: hit-testing already exists and is already
+  multi-staff-aware (M2 Slice 3), and `staffSpacePx` already is the
+  single scaling knob a zoom feature would need. What actually surfaced:
+  `CanvasRenderer.setSelection` returning a bare measure index instead of
+  a `(staffIndex, index)` pair is not just a documented scope cut, it is
+  a live misfire, selecting a note on a non-zero staff and redrawing with
+  the default `staffIndex = 0` repaints an unrelated same-numbered
+  measure on staff 0 and leaves the real change stale, since two staves'
+  measures can share a numeric index; Slice 1 fixes this. No playback
+  cursor primitive exists (a chord onset can highlight several notes
+  across several staves at once, which `selectedNoteId`'s single-id shape
+  cannot represent), so Slice 2 adds a separate tracked set with its own
+  colour, distinct from selection, so a live editor selection and an
+  in-progress playback preview don't collide once this sits inside E2's
+  editor. Slice 3 (zoom) turned out to mostly be a proof-and-demo slice
+  over what Slices 1-2 build, not a new primitive, since `setLayout`
+  already leaves `#selectedNoteId` untouched across a relayout. Slice 4
+  adds one small `regionForNote` helper, reused by follow-scroll and by
+  the PDF-sync scope paragraph's own "note bounding box" data need
+  (already in this milestone's intro, added 2026-09-05), rather than
+  building scrolling itself, per the framework-agnostic principle.
+  Measure-range selection, undo/redo, and seam markers are confirmed M5
+  territory, not this milestone's. M3's own by-ear verification (still
+  pending, see the entry above) does not block this milestone's own
+  scoping or slice work, since everything here depends only on
+  `PlaybackEngine`'s interface, not on a human having confirmed it sounds
+  right; noted explicitly in M4's own intro above to avoid the two
+  `[?]`-pending items being conflated.
+- 2026-09-06: M4's own scoping self-reviewed the same day, at the human's
+  explicit request ("Review the M4 scoping in plan.md"), before any slice
+  work starts. The milestone breakdown and slice boundaries held; what did
+  not was Slices 1-2's demo checks, caught by actually reading
+  `createGrandStaffShowcaseScore`'s and `createSatbBracketShowcaseScore`'s
+  own doc comments (`src/demo-score.ts`) instead of assuming: both say
+  outright that they are deliberately not folded into `createFullDemoScore`
+  because `appendMeasures` only ever targets staff 0, and that M2's own way
+  of checking a multi-staff fixture was never the interactive demo, it was
+  rasterizing through node-canvas and eyeballing a PNG. Slice 1's demo check
+  as first drafted hedged on this ("once one is added to
+  `createFullDemoScore`, or via a dedicated demo toggle if folding it in
+  there conflicts") instead of confronting it, and Slice 2's claimed the
+  cursor would move "staff to staff" against a demo that is, by that same
+  constraint, single-staff. Fixed by committing to one concrete design: a
+  small second canvas in the dev demo, added by Slice 1, rendering
+  `createGrandStaffShowcaseScore` directly; Slice 2's demo check now splits
+  into the existing single-staff playback demo (real audio, note-to-note,
+  including simultaneous multi-voice onsets) plus a debug-button call
+  against the new second canvas for the staff-to-staff case, rather than
+  standing up a second full `PlaybackEngine`/`AudioContext` pair just for a
+  demo check. Both slices' task text above reflect the fix directly.
+- 2026-09-06: M4 Slice 1 (multi-staff selection) done, via subagent, reviewed
+  and committed by Claude. `CanvasRenderer.setSelection` now returns
+  `{ staffIndex, index }` pairs instead of bare measure indices, closing the
+  real misfire its own doc comment used to flag: a caller feeding the old
+  return straight into `redrawMeasures` (default `staffIndex = 0`) would
+  repaint staff 0's same-numbered measure instead of the staff a non-zero-
+  staff selection actually changed. Both demo call sites (`demo/main.ts`'s
+  main canvas and the new second canvas below) now redraw each affected pair
+  on its own staff instead of batching through one `redrawMeasures` call.
+  `createGrandStaffShowcaseScore` is now exported from `src/index.ts`'s
+  barrel (it wasn't) so the demo can use it. Per this milestone's own
+  2026-09-06 recheck, `demo/index.html`/`main.ts` gained a small second
+  canvas rendering `createGrandStaffShowcaseScore` (two staves, treble over
+  bass) with its own click-to-select wiring, since `createFullDemoScore`
+  cannot include a second staff (`appendMeasures` only targets staff 0);
+  clicking a bass-staff note there now visibly redraws only that staff's
+  measure. `renderer.test.ts` gained a test asserting the returned pair
+  matches the note's real staff and that redrawing with it stays inside
+  that staff's region, plus a second test that reproduces the pre-fix bug
+  by construction (drops `staffIndex`, defaults to 0) and shows it paints
+  the wrong staff, proving the fix is not a no-op. 305 tests pass (up from
+  303); `check`/`test`/`build` all green. Flagged, not fixed here:
+  `redrawMeasures(indices, staffIndex)` still only accepts one `staffIndex`
+  for a whole batch, which is why both call sites now loop and call
+  `redrawMeasure` per pair; widening `redrawMeasures` itself to accept pairs
+  is a real but separate follow-up, out of this slice's stated scope.

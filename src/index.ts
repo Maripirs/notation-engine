@@ -20,6 +20,7 @@ export {
 	createDemoScore,
 	createDurationShowcaseScore,
 	createFullDemoScore,
+	createGrandStaffShowcaseScore,
 	createSlurShowcaseScore,
 	createTieShowcaseScore
 } from './demo-score.js';

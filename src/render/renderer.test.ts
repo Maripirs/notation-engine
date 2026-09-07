@@ -150,8 +150,11 @@ describe('CanvasRenderer region-scoped redraw', () => {
 		// have to work that out.
 		const from = layout.measures[0]!.notes[0]!.id;
 		const to = layout.measures[2]!.notes[1]!.id;
-		expect(renderer.setSelection(from)).toEqual([0]);
-		expect(renderer.setSelection(to).sort()).toEqual([0, 2]);
+		expect(renderer.setSelection(from)).toEqual([{ staffIndex: 0, index: 0 }]);
+		expect(renderer.setSelection(to).sort((a, b) => a.index - b.index)).toEqual([
+			{ staffIndex: 0, index: 0 },
+			{ staffIndex: 0, index: 2 }
+		]);
 		renderer.redrawMeasures([0, 2]);
 		expect(renderer.lastRedrawnMeasures).toEqual([0, 2]);
 	});
@@ -281,6 +284,97 @@ describe('CanvasRenderer region-scoped redraw across staves (M2 Slice 3)', () =>
 			const intruders = recorder.calls.filter((call) => withinBox(m.region, call));
 			expect(intruders).toEqual([]);
 		}
+	});
+});
+
+describe('CanvasRenderer.setSelection across staves (M4 Slice 1)', () => {
+	// Same withinBox 2D check the M2 Slice 3 block above uses, needed here for
+	// the same reason: staff 1's measures sit at the same x range as staff 0's
+	// same-numbered ones, differing only in y.
+	const withinBox = (rect: Rect, point: { x: number; right: number; y: number; bottom: number }, slack = 0.001) =>
+		point.x >= rect.x - slack &&
+		point.right <= rect.x + rect.width + slack &&
+		point.y >= rect.y - slack &&
+		point.bottom <= rect.y + rect.height + slack;
+
+	function twoStaffScore(): Score {
+		const score = new Score({ keyFifths: 0 });
+		score.appendStaff('bass');
+		for (const staffIndex of [0, 1] as const) {
+			for (let i = 0; i < 3; i++) {
+				const measure = score.appendMeasure(staffIndex);
+				for (const pitch of ['C4', 'D4', 'E4', 'F4']) {
+					score.appendNote(measure, { pitch: parsePitch(pitch), value: 'quarter' });
+				}
+			}
+		}
+		return score;
+	}
+
+	it("returns the note's real (staffIndex, index) pair, and redrawing with it touches only that staff's own measure", () => {
+		const score = twoStaffScore();
+		const layout = layoutScore(score);
+		const recorder = recordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, layout);
+		renderer.drawAll();
+		recorder.calls.length = 0;
+
+		// Select a note on staff 1 (bass), measure 1: the same "collides with
+		// staff 0's own measure 1" case the M2 Slice 3 block above exercises for
+		// `redrawMeasure`/`redrawMeasures`, but here for `setSelection` itself.
+		const noteId = score.staves[1]!.measures[1]!.notes[0]!.id;
+		const changed = renderer.setSelection(noteId);
+		expect(changed).toEqual([{ staffIndex: 1, index: 1 }]);
+
+		for (const { staffIndex, index } of changed) renderer.redrawMeasure(index, staffIndex);
+
+		const touchedRegion = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!.region;
+		expect(recorder.calls.length).toBeGreaterThan(0);
+		for (const call of recorder.calls) {
+			expect(withinBox(touchedRegion, call)).toBe(true);
+		}
+		// Staff 0's own measure 1 (the same numeric index, the other staff)
+		// stays untouched, along with every other (staffIndex, index) pair.
+		for (const m of layout.measures) {
+			if (m.staffIndex === 1 && m.index === 1) continue;
+			const intruders = recorder.calls.filter((call) => withinBox(m.region, call));
+			expect(intruders).toEqual([]);
+		}
+	});
+
+	it('reproduces the pre-fix bug: dropping staffIndex and defaulting to 0 paints the wrong staff', () => {
+		// This is the failure mode Slice 1 closes, made concrete: simulate what
+		// the old bare-`number[]`-returning `setSelection` plus a caller trusting
+		// `redrawMeasures`'s `staffIndex = 0` default would have done, and show
+		// it paints staff 0's unrelated measure instead of the one that was
+		// actually selected. If this test failed, the fix above would be
+		// unproven, not just untested.
+		const score = twoStaffScore();
+		const layout = layoutScore(score);
+		const recorder = recordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, layout);
+		renderer.drawAll();
+		recorder.calls.length = 0;
+
+		const noteId = score.staves[1]!.measures[1]!.notes[0]!.id;
+		const changed = renderer.setSelection(noteId);
+
+		// The pre-fix path: keep only the bare `index`, discard `staffIndex`,
+		// and let `redrawMeasures` fall back to its `staffIndex = 0` default.
+		const preFixIndices = changed.map(({ index }) => index);
+		renderer.redrawMeasures(preFixIndices);
+
+		const wronglyPaintedRegion = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!.region;
+		const intendedRegion = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!.region;
+		expect(recorder.calls.length).toBeGreaterThan(0);
+		// Every call landed in staff 0's measure 1, the wrong one.
+		for (const call of recorder.calls) {
+			expect(withinBox(wronglyPaintedRegion, call)).toBe(true);
+		}
+		// None of them landed in staff 1's own measure 1, the one that was
+		// actually selected: the pre-fix path leaves the true change unpainted.
+		const correctHits = recorder.calls.filter((call) => withinBox(intendedRegion, call));
+		expect(correctHits).toEqual([]);
 	});
 });
 

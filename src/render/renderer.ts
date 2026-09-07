@@ -99,29 +99,37 @@ export class CanvasRenderer {
 	}
 
 	/**
-	 * Change the selection, returning the measure indices whose appearance
-	 * changed so the caller can redraw exactly those. Selection is a render-time
-	 * concern, not a model one: nothing about the music changes when a user
-	 * clicks a note.
+	 * Change the selection, returning the `(staffIndex, index)` pairs whose
+	 * appearance changed so the caller can redraw exactly those. Selection is a
+	 * render-time concern, not a model one: nothing about the music changes
+	 * when a user clicks a note.
 	 *
-	 * Scope cut (M2 Slice 3): still returns bare measure indices, not
-	 * `(staffIndex, index)` pairs, so a caller combining this with
-	 * `redrawMeasures` implicitly redraws staff 0 only. Every score before
-	 * this slice only ever had staff 0, so nothing regresses; a genuinely
-	 * multi-staff selection UI would need this widened the same way
-	 * `redrawMeasure`/`redrawMeasures` were, left for whoever first builds one
-	 * (M2 Slice 4+ territory, not this slice's own scope).
+	 * Fixed in M4 Slice 1: this used to return bare measure indices, and a
+	 * caller feeding that straight into `redrawMeasures` (which defaults
+	 * `staffIndex` to 0) would repaint staff 0's same-numbered measure instead
+	 * of the staff the selection actually changed on, since each staff numbers
+	 * its own measures from 0 (see `LaidOutMeasure.staffIndex`'s own doc
+	 * comment). That was silent as long as every score had one staff; on a
+	 * multi-staff one it left the true change unpainted and vandalised an
+	 * unrelated measure's pixels instead. Returning the pair the note actually
+	 * lives on removes the ambiguity at the source rather than trusting every
+	 * caller to know which staff a note came from.
 	 */
-	setSelection(noteId: NoteId | null): number[] {
+	setSelection(noteId: NoteId | null): { staffIndex: number; index: number }[] {
 		if (noteId === this.#selectedNoteId) return [];
-		const affected = new Set<number>();
+		const affected = new Map<string, { staffIndex: number; index: number }>();
 		for (const id of [this.#selectedNoteId, noteId]) {
 			if (id === null) continue;
 			const measure = this.#layout.measures.find((m) => m.notes.some((note) => note.id === id));
-			if (measure) affected.add(measure.index);
+			if (measure) {
+				affected.set(`${measure.staffIndex}:${measure.index}`, {
+					staffIndex: measure.staffIndex,
+					index: measure.index
+				});
+			}
 		}
 		this.#selectedNoteId = noteId;
-		return [...affected];
+		return [...affected.values()];
 	}
 
 	/** Repaint the whole score. The baseline the region-scoped path is measured against. */

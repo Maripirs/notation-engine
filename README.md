@@ -6,6 +6,18 @@ score model plus a canvas renderer, built to replace
 [VexFlow](https://www.vexflow.com/)) in [Divisi](https://divisi.maripi.net)'s
 notation editor and practice player.
 
+## Getting started
+
+```bash
+git clone <this repo>
+cd notation-engine
+npm install
+npm run dev   # demo page at the printed localhost URL
+```
+
+See [Development](#development) below for the rest of the scripts (tests,
+bench, build).
+
 ## Why
 
 Divisi's editor is a correction tool for OMR (optical music recognition)
