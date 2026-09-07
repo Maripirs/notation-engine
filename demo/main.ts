@@ -33,6 +33,7 @@ const playbackPauseButton = document.querySelector<HTMLButtonElement>('#playback
 const playbackStopButton = document.querySelector<HTMLButtonElement>('#playback-stop')!;
 const playbackPosition = document.querySelector<HTMLElement>('#playback-position')!;
 const playbackOnset = document.querySelector<HTMLElement>('#playback-onset')!;
+const staffSelectCursorButton = document.querySelector<HTMLButtonElement>('#staff-select-cursor-demo')!;
 
 // These mirror index.html's own CSS (`body { max-width: 60rem; padding: 2rem
 // 1.5rem; }`, `#score { border: 1px solid #ddd; }`) so `systemWidthForViewport`
@@ -255,6 +256,35 @@ let playbackEngine: PlaybackEngine | null = null;
 let totalPlaybackSeconds = 0;
 let positionLoopRunning = false;
 
+/**
+ * Note ids accumulated from `onOnset` calls not yet flushed into a
+ * `setPlaybackCursor` call (M4 Slice 2).
+ *
+ * `OnsetEvent` is always one note per event, even for a chord or a
+ * simultaneous multi-voice onset (see its own doc comment in
+ * `src/playback/timeline.ts`): several such events just share the same
+ * `startSeconds`. `LookaheadScheduler.tick()` fires every event due in one
+ * pass synchronously, back to back, in the same JS turn (see
+ * `LookaheadScheduler`'s own doc comment), so every onset belonging to one
+ * moment in playback time lands in this buffer before the `queueMicrotask`
+ * flush below ever runs, however many notes sound at once. Without this
+ * batching, two simultaneous notes would each trigger their own
+ * `setPlaybackCursor` call, and the first call's single-note cursor would
+ * flash on screen for one JS turn before the second call replaced it with
+ * both notes, an artifact of scheduling order that has nothing to do with
+ * the music.
+ */
+let pendingOnsetNoteIds: NoteId[] = [];
+let onsetFlushQueued = false;
+
+function flushPendingOnsets(): void {
+	onsetFlushQueued = false;
+	if (pendingOnsetNoteIds.length === 0) return;
+	const changed = renderer.setPlaybackCursor(pendingOnsetNoteIds);
+	pendingOnsetNoteIds = [];
+	for (const { staffIndex, index } of changed) renderer.redrawMeasure(index, staffIndex);
+}
+
 function ensurePlaybackEngine(): PlaybackEngine {
 	if (playbackEngine) return playbackEngine;
 
@@ -270,9 +300,16 @@ function ensurePlaybackEngine(): PlaybackEngine {
 		audioContext,
 		// Exercises Slice 6's onset-callback half (not just its position-query
 		// half, which the rAF loop below covers): fires once per note right as
-		// it is handed to the audio clock.
+		// it is handed to the audio clock. Drives both the existing "last note"
+		// status line and (M4 Slice 2) the playback cursor, via the same-turn
+		// buffering scheme documented on `pendingOnsetNoteIds` above.
 		onOnset: (event) => {
 			playbackOnset.textContent = `note ${event.noteId} at ${event.startSeconds.toFixed(2)}s`;
+			pendingOnsetNoteIds.push(event.noteId);
+			if (!onsetFlushQueued) {
+				onsetFlushQueued = true;
+				queueMicrotask(flushPendingOnsets);
+			}
 		}
 	});
 	return playbackEngine;
@@ -322,6 +359,15 @@ playbackStopButton.addEventListener('click', () => {
 	// which may be a frame away or, since the loop only reschedules itself
 	// while isPlaying is true, may never come at all.
 	playbackPosition.textContent = `${formatPosition(0)} / ${formatPosition(totalPlaybackSeconds)}`;
+	// A hard stop silences every sounding note, so the cursor should not go on
+	// showing whichever note happened to be highlighted the instant Stop was
+	// clicked; drop it the same way. Pause leaves it alone deliberately (see
+	// PlaybackEngine.pause's own doc comment: paused audio keeps ringing to
+	// its already-scheduled stop time, so freezing the visual highlight along
+	// with it stays consistent with what is still actually sounding).
+	pendingOnsetNoteIds = [];
+	const changed = renderer.setPlaybackCursor([]);
+	for (const { staffIndex, index } of changed) renderer.redrawMeasure(index, staffIndex);
 });
 
 // --- Multi-staff selection (M4 Slice 1) ---------------------------------
@@ -371,6 +417,31 @@ staffSelectCanvas.addEventListener('pointerdown', (event) => {
 		? `Selected note ${hit.noteId} on staff ${hit.staffIndex} (${hit.staffIndex === 0 ? 'treble' : 'bass'}), ` +
 			`measure ${hit.measureIndex + 1}. Redrew staff ${hit.staffIndex}'s measure ${hit.measureIndex + 1} only.`
 		: 'Nothing selected. Click a notehead or a rest.';
+});
+
+// Temporary debug control (M4 Slice 2): confirms `setPlaybackCursor` lands
+// correctly across staves without a second `PlaybackEngine`/`AudioContext`
+// pair, which is out of this slice's scope (see plan.md's own note on why
+// the two demo parts are split: this canvas's score is the only one with a
+// staff-to-staff case to show, and the main canvas above is the only one
+// wired to real audio). Hand-picked ids rather than a hit-test result:
+// measure 2 (index 2) of both staves holds quarter notes, so its first note
+// on each staff plus the treble's second note stand in for a three-note
+// chord/voice-clash onset spanning both staves at once.
+const staffSelectChordNoteIds: NoteId[] = [
+	staffSelectScore.staves[0]!.measures[2]!.notes[0]!.id,
+	staffSelectScore.staves[0]!.measures[2]!.notes[1]!.id,
+	staffSelectScore.staves[1]!.measures[2]!.notes[0]!.id
+];
+staffSelectCursorButton.addEventListener('click', () => {
+	const changed = staffSelectRenderer.setPlaybackCursor(staffSelectChordNoteIds);
+	for (const { staffIndex, index } of changed) staffSelectRenderer.redrawMeasure(index, staffIndex);
+	staffSelectStatus.textContent =
+		`Playback cursor set to notes ${staffSelectChordNoteIds.join(', ')} ` +
+		'(measure 3 of both the treble and bass staves). ' +
+		`Redrew ${changed.length} measure(s): ` +
+		changed.map(({ staffIndex, index }) => `staff ${staffIndex} measure ${index + 1}`).join(', ') +
+		'.';
 });
 
 async function start(): Promise<void> {

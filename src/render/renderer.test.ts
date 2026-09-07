@@ -378,6 +378,141 @@ describe('CanvasRenderer.setSelection across staves (M4 Slice 1)', () => {
 	});
 });
 
+describe('CanvasRenderer.setPlaybackCursor (M4 Slice 2)', () => {
+	// Same 2D containment check the two describe blocks above already use,
+	// needed here for the same reason: a two-staff fixture's staves overlap in
+	// x, differing only in y.
+	const withinBox = (rect: Rect, point: { x: number; right: number; y: number; bottom: number }, slack = 0.001) =>
+		point.x >= rect.x - slack &&
+		point.right <= rect.x + rect.width + slack &&
+		point.y >= rect.y - slack &&
+		point.bottom <= rect.y + rect.height + slack;
+
+	function twoStaffScore(): Score {
+		const score = new Score({ keyFifths: 0 });
+		score.appendStaff('bass');
+		for (const staffIndex of [0, 1] as const) {
+			for (let i = 0; i < 3; i++) {
+				const measure = score.appendMeasure(staffIndex);
+				for (const pitch of ['C4', 'D4', 'E4', 'F4']) {
+					score.appendNote(measure, { pitch: parsePitch(pitch), value: 'quarter' });
+				}
+			}
+		}
+		return score;
+	}
+
+	it('redraws both the old and new note\'s measures when the cursor moves between them', () => {
+		// Mirrors "redraws both measures when a selection moves between them"
+		// above, one note at a time: the diff shape is the same, just fed a
+		// single-element array instead of a bare id.
+		const score = createDemoScore();
+		const layout = layoutScore(score);
+		const renderer = new CanvasRenderer(recordingContext().ctx, layout);
+
+		const from = layout.measures[0]!.notes[0]!.id;
+		const to = layout.measures[2]!.notes[1]!.id;
+		expect(renderer.setPlaybackCursor([from])).toEqual([{ staffIndex: 0, index: 0 }]);
+		expect(renderer.setPlaybackCursor([to]).sort((a, b) => a.index - b.index)).toEqual([
+			{ staffIndex: 0, index: 0 },
+			{ staffIndex: 0, index: 2 }
+		]);
+	});
+
+	it('unions every affected measure across staves for a simultaneous multi-note onset, and redrawing paints only those regions', () => {
+		// A chord/multi-voice onset is several `OnsetEvent`s sharing one
+		// `startSeconds` (see `OnsetEvent`'s own doc comment), so a host passes
+		// `setPlaybackCursor` several note ids at once. This fixture spans both
+		// staves, since that is exactly the case a single-staff score cannot
+		// exercise.
+		const score = twoStaffScore();
+		const layout = layoutScore(score);
+		const recorder = recordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, layout);
+		renderer.drawAll();
+		recorder.calls.length = 0;
+
+		// Seed a first cursor set so the chord's diff has an "old" measure to
+		// drop as well as new ones to pick up, not just the latter.
+		const first = score.staves[0]!.measures[0]!.notes[0]!.id;
+		renderer.setPlaybackCursor([first]);
+
+		const chordA = score.staves[0]!.measures[1]!.notes[0]!.id;
+		const chordB = score.staves[1]!.measures[2]!.notes[0]!.id;
+		const changed = renderer.setPlaybackCursor([chordA, chordB]);
+
+		const expectedPairs = [
+			{ staffIndex: 0, index: 0 }, // the outgoing (old) cursor set's measure
+			{ staffIndex: 0, index: 1 }, // chordA's measure
+			{ staffIndex: 1, index: 2 } // chordB's measure, the other staff
+		];
+		const sortPairs = (pairs: { staffIndex: number; index: number }[]) =>
+			[...pairs].sort((a, b) => a.staffIndex - b.staffIndex || a.index - b.index);
+		expect(sortPairs(changed)).toEqual(sortPairs(expectedPairs));
+
+		for (const { staffIndex, index } of changed) renderer.redrawMeasure(index, staffIndex);
+
+		const touchedRegions = expectedPairs.map(
+			({ staffIndex, index }) => layout.measures.find((m) => m.staffIndex === staffIndex && m.index === index)!.region
+		);
+		expect(recorder.calls.length).toBeGreaterThan(0);
+		for (const call of recorder.calls) {
+			expect(touchedRegions.some((region) => withinBox(region, call))).toBe(true);
+		}
+		// Every other (staffIndex, index) pair, on either staff, sees no
+		// intruding draw call.
+		for (const m of layout.measures) {
+			if (expectedPairs.some((p) => p.staffIndex === m.staffIndex && p.index === m.index)) continue;
+			const intruders = recorder.calls.filter((call) => withinBox(m.region, call));
+			expect(intruders).toEqual([]);
+		}
+	});
+
+	it('a note both selected and cursor-highlighted renders with the cursor colour, not the selection colour', () => {
+		// A narrower stub than `recordingContext`, since this test needs to know
+		// which colour was active at each paint call, not just where it landed.
+		// Kept local rather than folded into the shared stub for the same
+		// reason `curveRecordingContext` below is kept local to its own suite.
+		function styledRecordingContext(): { ctx: CanvasRenderingContext2D; styles: string[] } {
+			const styles: string[] = [];
+			const stub = {
+				font: '',
+				fillStyle: '',
+				strokeStyle: '',
+				textBaseline: 'alphabetic',
+				fillRect() {
+					styles.push(this.fillStyle);
+				},
+				clearRect() {},
+				fillText() {
+					styles.push(this.fillStyle);
+				}
+			};
+			return { ctx: stub as unknown as CanvasRenderingContext2D, styles };
+		}
+
+		const score = createDemoScore();
+		const layout = layoutScore(score);
+		const recorder = styledRecordingContext();
+		// Explicit, mutually distinguishable colours: the point of this test is
+		// which exact string got used, so the defaults (which merely happen to
+		// look different) would not prove anything.
+		const renderer = new CanvasRenderer(recorder.ctx, layout, {
+			foreground: '#000000',
+			selection: '#ff00ff',
+			playbackCursor: '#00ffff'
+		});
+
+		const noteId = layout.measures[0]!.notes[0]!.id;
+		renderer.setSelection(noteId);
+		renderer.setPlaybackCursor([noteId]);
+		renderer.redrawMeasure(0);
+
+		expect(recorder.styles).toContain('#00ffff');
+		expect(recorder.styles).not.toContain('#ff00ff');
+	});
+});
+
 describe('CanvasRenderer painting part decorations (M2 Slice 5)', () => {
 	it('drawAll paints a brace/bracket and its part-name label; redrawMeasure never repaints them', () => {
 		const score = new Score({ keyFifths: 0 });

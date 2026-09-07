@@ -612,7 +612,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       click-to-select and flash-redrawn-region wiring the main canvas
       already has; click a note on its lower (bass) staff and confirm only
       that staff's measure repaints.
-- [ ] **Slice 2 — Playback cursor.** `CanvasRenderer` gains a
+- [x] **Slice 2 — Playback cursor.** `CanvasRenderer` gains a
       `setPlaybackCursor(noteIds: readonly NoteId[]): { staffIndex, index }[]`
       method (mirroring `setSelection`'s own diff-and-return-affected-
       measures shape, but over a *set* of ids rather than one, since a
@@ -1878,3 +1878,29 @@ divisi splits). Unscoped.
   for a whole batch, which is why both call sites now loop and call
   `redrawMeasure` per pair; widening `redrawMeasures` itself to accept pairs
   is a real but separate follow-up, out of this slice's stated scope.
+- 2026-09-07: M4 Slice 2 (playback cursor) done, via subagent, reviewed and
+  committed by Claude. `CanvasRenderer` gains `setPlaybackCursor(noteIds):
+  { staffIndex, index }[]`, mirroring `setSelection`'s diff-and-return shape
+  but over a set of ids (a chord or simultaneous multi-voice onset can
+  highlight several notes across several staves at once), plus a new
+  `CanvasRendererOptions.playbackCursor` colour (`#0369a1`, a blue distinct
+  from `selection`'s orange/rust). `#drawOps` now checks cursor membership
+  before selection, a deliberate precedence documented inline: a played-
+  through selected note must show the moving cursor, not sit disguised as
+  merely selected. Demo wiring split in two per this milestone's own
+  2026-09-06 recheck: the main canvas's existing `onOnset` callback now also
+  drives the cursor, batching same-instant onsets into one `setPlaybackCursor`
+  call via `queueMicrotask` (since `OnsetEvent` is always one note per event,
+  even for a chord, and `LookaheadScheduler` fires every simultaneous onset
+  synchronously in one tick, so a microtask flush after that burst correctly
+  groups them); Stop also clears the cursor, Pause deliberately leaves it
+  (matching `PlaybackEngine.pause`'s already-sounding-notes-keep-ringing
+  semantics). The second canvas (Slice 1) gained a debug button calling
+  `setPlaybackCursor` directly with a hand-picked three-note chord spanning
+  both staves, no second `AudioContext`, confirming the highlight lands on
+  the right staff. `renderer.test.ts` gained three tests: a single-note
+  cursor move, a multi-staff simultaneous-onset union (asserting only the
+  affected measures repaint), and a colour-precedence test proving a note
+  both selected and cursor-highlighted paints with the cursor's colour, not
+  the selection's, via a small local styled-recording-context stub. 308
+  tests pass (up from 305); `check`/`test`/`build` all green.

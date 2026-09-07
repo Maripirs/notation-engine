@@ -103,7 +103,10 @@
 			Plays the same score shown above, at its own tempo, including the independent simultaneous
 			voices from its two-voice and voice-clash showcase measures. This exercises
 			<code>PlaybackEngine</code> end to end (M3 Slices 4-6): oscillator synthesis, the
-			play/pause/stop transport, and the position/onset hook below.
+			play/pause/stop transport, and the position/onset hook below. The onset hook also drives a
+			playback cursor (M4 Slice 2) on the score above: watch it move note to note as playback
+			runs, jointly highlighting more than one note whenever a two-voice or voice-clash measure
+			lands a simultaneous onset.
 		</p>
 		<div class="controls">
 			<button id="playback-play">Play</button>
@@ -119,9 +122,15 @@
 			bass) on its own canvas to demonstrate M4 Slice 1's fix: clicking a note on the lower
 			(bass) staff now correctly redraws only that staff's own measure, not staff 0's
 			same-numbered one, which is what the pre-fix <code>setSelection</code> would have done
-			instead.
+			instead. The button below is M4 Slice 2's own debug control: it calls
+			<code>setPlaybackCursor</code> directly with a hand-picked chord spanning both staves, with
+			no audio attached, to confirm the highlight lands on the right staff without needing a
+			second <code>PlaybackEngine</code>.
 		</p>
 		<canvas id="staff-select-demo" class="demo-canvas"></canvas>
+		<div class="controls">
+			<button id="staff-select-cursor-demo">Highlight sample chord across staves</button>
+		</div>
 		<p id="staff-select-status">Click a notehead or a rest on either staff to select it.</p>
 
 		<script type="module" src="./main.ts"></script>

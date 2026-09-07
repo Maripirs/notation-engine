@@ -31,6 +31,13 @@ export interface CanvasRendererOptions {
 	readonly background?: string | null;
 	/** Ink colour for the ops belonging to the selected note. */
 	readonly selection?: string;
+	/**
+	 * Ink colour for the ops belonging to a note currently under the playback
+	 * cursor (M4 Slice 2). Deliberately distinct from `selection`'s orange/rust
+	 * so a live editor selection and an in-progress playback highlight never
+	 * read as the same thing on screen.
+	 */
+	readonly playbackCursor?: string;
 }
 
 const DEFAULTS = {
@@ -38,7 +45,8 @@ const DEFAULTS = {
 	labelFontFamily: 'sans-serif',
 	foreground: '#111111',
 	background: '#ffffff',
-	selection: '#c2410c'
+	selection: '#c2410c',
+	playbackCursor: '#0369a1'
 } as const;
 
 export class CanvasRenderer {
@@ -46,6 +54,12 @@ export class CanvasRenderer {
 	readonly #options: Required<CanvasRendererOptions>;
 	#layout: LaidOutScore;
 	#selectedNoteId: NoteId | null = null;
+	/** The note ids currently under the playback cursor (M4 Slice 2), e.g. every
+	 *  note of a chord/multi-voice onset sounding at once. Empty, not `null`,
+	 *  when nothing is highlighted, since `setPlaybackCursor` always takes an
+	 *  array (possibly empty) rather than a nullable single id like
+	 *  `setSelection` does: a cursor is inherently a set, a selection is not. */
+	#playbackCursorNoteIds: ReadonlySet<NoteId> = new Set();
 
 	/**
 	 * Measure indices painted by the most recent draw call, in the order they
@@ -74,7 +88,8 @@ export class CanvasRenderer {
 			labelFontFamily: options.labelFontFamily ?? DEFAULTS.labelFontFamily,
 			foreground: options.foreground ?? DEFAULTS.foreground,
 			background: options.background === undefined ? DEFAULTS.background : options.background,
-			selection: options.selection ?? DEFAULTS.selection
+			selection: options.selection ?? DEFAULTS.selection,
+			playbackCursor: options.playbackCursor ?? DEFAULTS.playbackCursor
 		};
 	}
 
@@ -129,6 +144,40 @@ export class CanvasRenderer {
 			}
 		}
 		this.#selectedNoteId = noteId;
+		return [...affected.values()];
+	}
+
+	/**
+	 * Change the playback cursor to `noteIds`, returning the `(staffIndex,
+	 * index)` pairs whose appearance changed so the caller can redraw exactly
+	 * those. Mirrors `setSelection` above, but over a *set* of ids rather than
+	 * one: a chord or a simultaneous multi-voice onset (see `OnsetEvent`'s own
+	 * doc comment in `src/playback/timeline.ts`, one event per note, never one
+	 * event for several) highlights several notes across possibly several
+	 * staves at the same instant, so a single nullable id cannot represent it.
+	 *
+	 * Like `setSelection`, this does not try to be clever about only returning
+	 * notes whose highlight state actually changed: it unions "measure of
+	 * every old id" with "measure of every new id", deduplicated by
+	 * `(staffIndex, index)`. A note present in both the old and new set still
+	 * has its measure returned, which is harmless (that measure repaints to
+	 * the same appearance it already had) and keeps this method's logic a
+	 * straight mirror of `setSelection`'s rather than a second, subtly
+	 * different diff algorithm.
+	 */
+	setPlaybackCursor(noteIds: readonly NoteId[]): { staffIndex: number; index: number }[] {
+		const newIds = new Set(noteIds);
+		const affected = new Map<string, { staffIndex: number; index: number }>();
+		for (const id of [...this.#playbackCursorNoteIds, ...newIds]) {
+			const measure = this.#layout.measures.find((m) => m.notes.some((note) => note.id === id));
+			if (measure) {
+				affected.set(`${measure.staffIndex}:${measure.index}`, {
+					staffIndex: measure.staffIndex,
+					index: measure.index
+				});
+			}
+		}
+		this.#playbackCursorNoteIds = newIds;
 		return [...affected.values()];
 	}
 
@@ -210,10 +259,19 @@ export class CanvasRenderer {
 		const ctx = this.#ctx;
 		let currentStyle = '';
 		for (const op of ops) {
+			// Precedence, deliberate (M4 Slice 2): a note that is both selected and
+			// under the playback cursor at once paints with `playbackCursor`'s
+			// colour, not `selection`'s. Playback is transient and moves on its own
+			// as the piece plays, while a selection sits still until the user
+			// changes it; if selection won this tie, a played-through selected note
+			// would look exactly like an idle one for as long as it sounds, hiding
+			// the one piece of state that is actually changing right now.
 			const style =
-				op.noteId !== undefined && op.noteId === this.#selectedNoteId
-					? this.#options.selection
-					: this.#options.foreground;
+				op.noteId !== undefined && this.#playbackCursorNoteIds.has(op.noteId)
+					? this.#options.playbackCursor
+					: op.noteId !== undefined && op.noteId === this.#selectedNoteId
+						? this.#options.selection
+						: this.#options.foreground;
 			// Assigning `fillStyle`/`strokeStyle` is not free (each parses the
 			// colour string), and an op list is mostly one colour, so only write
 			// them on a change. Both are kept in step together since every op
