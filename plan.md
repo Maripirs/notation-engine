@@ -381,7 +381,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       timeline for `createSatbBracketShowcaseScore` (the project's
       actual 4-staff SATB shape) shows all four staves' onsets landing
       together on shared beats.
-- [ ] **Slice 3 — Web Audio lookahead scheduler.** A generic, drift-free
+- [x] **Slice 3 — Web Audio lookahead scheduler.** A generic, drift-free
       scheduler using the standard Web Audio scheduling technique (the
       "lookahead" pattern: a `setInterval`-driven loop, running more
       often than strictly needed, that looks a short window ahead of
@@ -1398,5 +1398,27 @@ divisi splits). Unscoped.
   checks confirmed by hand: `createTwoVoiceShowcaseScore`'s two voices open
   together at 0 and realign at 2.5 after each fills one 4/4 bar despite
   differing rhythm in between; `createSatbBracketShowcaseScore`'s 4 staves
-  all land 4-per-onset at 0/0.5/1.0/1.5. M3 Slice 3 (Web Audio lookahead
-  scheduler) is next.
+  all land 4-per-onset at 0/0.5/1.0/1.5.
+- 2026-09-06: M3 Slice 3 (Web Audio lookahead scheduler) done, via subagent
+  while the human was away; Claude reviewed the diff and ran check/test/build
+  directly before committing. `src/playback/scheduler.ts`'s
+  `LookaheadScheduler<T extends SchedulableEvent>` implements the standard
+  Web Audio lookahead pattern generically: `tick()` schedules every
+  not-yet-scheduled event whose `startSeconds` falls within
+  `lookaheadSeconds` (default 0.1s) of an injected `getCurrentTime()`, and
+  `start()`/`stop()` wrap that in a real `setInterval` loop (default 25ms)
+  for actual use; nothing in the class references a real `AudioContext`,
+  keeping it runnable in this repo's DOM-free Node test environment.
+  "Already scheduled" bookkeeping is a `Set` of array indices, deliberately
+  isolated so a `reset()` method (unused this slice, present for Slice 5's
+  future seek) can clear it in one line with no cursor to also rewind. 5 new
+  tests, all driven by a fake clock and direct `tick()` calls with no real
+  timer: exactly-once scheduling across a run spanning multiple lookahead
+  windows, a precise two-sided timing bound (never before
+  `startSeconds - lookaheadSeconds`, never later than one tick-step past it,
+  the tests' own cadence-specific tightness clearly distinguished in a
+  comment from the class's actual one-sided guarantee), never re-scheduling
+  after firing, an already-past-due event still firing on the first tick,
+  and `reset()` making an already-fired event eligible again. Bring the
+  suite to 284 (up from 279); check/build are green. M3 Slice 4 (minimal
+  oscillator synthesis) is next.
