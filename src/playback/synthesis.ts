@@ -101,8 +101,19 @@ function effectiveEnvelope(
  * same audio-clock timeline as its own start/stop, even though in practice
  * the oscillator has not started producing samples yet at this point, so a
  * plain assignment would have been equally correct here.
+ *
+ * Returns the `oscillator`/`gain` nodes it created. Nothing in this
+ * milestone up through Slice 4 needs them back (a note is simply left to run
+ * its own scheduled envelope to completion), but Slice 5's `PlaybackEngine`
+ * does: its `stop()` has to silence notes that are already sounding, which
+ * means holding onto a reference to their oscillators so it can call
+ * `oscillator.stop()` on them early, ahead of the stop time this function
+ * already scheduled.
  */
-export function playOnsetEvent(event: OnsetEvent, options: SynthesisOptions): void {
+export function playOnsetEvent(
+	event: OnsetEvent,
+	options: SynthesisOptions
+): { oscillator: OscillatorNode; gain: GainNode } {
 	const { audioContext } = options;
 	const attackSeconds = options.attackSeconds ?? DEFAULT_ATTACK_SECONDS;
 	const releaseSeconds = options.releaseSeconds ?? DEFAULT_RELEASE_SECONDS;
@@ -132,4 +143,6 @@ export function playOnsetEvent(event: OnsetEvent, options: SynthesisOptions): vo
 
 	oscillator.start(startSeconds);
 	oscillator.stop(endSeconds);
+
+	return { oscillator, gain: gainNode };
 }

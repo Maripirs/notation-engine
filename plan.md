@@ -425,7 +425,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       simultaneous voices (manual, per this repo's established avoidance
       of browser-automation dependencies for anything needing a real
       render).
-- [ ] **Slice 5 — Transport controls.** A `PlaybackEngine` (or similar)
+- [x] **Slice 5 — Transport controls.** A `PlaybackEngine` (or similar)
       wrapping Slices 2-4 behind a play/pause/stop/seek API, no UI:
       `play()` starts the scheduler from the current position, `pause()`
       stops scheduling and records elapsed position against
@@ -1446,4 +1446,42 @@ divisi splits). Unscoped.
   plan's own manual browser audibility check (`createTwoVoiceShowcaseScore`
   actually audible) is still pending human verification, same as every
   other manual demo check in this repo's established no-browser-automation
-  approach. M3 Slice 5 (transport controls) is next.
+  approach.
+- 2026-09-06: M3 Slice 5 (transport controls) done, via subagent while the
+  human was away, handed a fully worked-out design up front given this
+  slice's architectural weight (the most involved of M3's six); Claude
+  reviewed the diff line by line, hand-traced all four tests' arithmetic,
+  and ran check/test/build directly before committing.
+  `src/playback/playback-engine.ts`'s `PlaybackEngine` wraps Slices 2-4
+  behind play/pause/stop/seek, taking precomputed `events` directly (no
+  model-layer dependency, same discipline every other `src/playback` file
+  follows). Position tracking is a `basePosition`/`baseAudioTime` pair:
+  while playing, true position is `basePosition + (currentTime -
+  baseAudioTime)`; while paused/stopped, `baseAudioTime` is `null` and
+  position is simply the frozen `basePosition`, which is what lets `pause()`
+  "record elapsed position against a clock that never pauses" without
+  actually stopping the clock. `play()` builds a fresh `LookaheadScheduler`
+  over only the events still ahead of the resume point, remapped from
+  piece-time to real audio-clock time. `pause()` freezes position and halts
+  future scheduling but deliberately leaves already-sounding notes ringing
+  (only `stop()` silences them); `stop()` and `seek()` share a
+  `haltAndSilence()` cleanup that calls `oscillator.stop(currentTime)` on
+  every tracked node (re-calling `stop()` early is valid per the Web Audio
+  spec), leaving no dangling nodes. A note already "in progress" at a seek
+  target is deliberately excluded, not resumed: this engine has no way to
+  resume mid-envelope, so restarting its attack at the seek point would
+  falsify its real onset, documented as an honest scope cut rather than a
+  gap. `playOnsetEvent` (Slice 4) gained a small additive change: it now
+  returns the `{ oscillator, gain }` nodes it creates instead of `void`, so
+  `stop()` has something to hold onto; `synthesis.test.ts` needed no edits
+  and still passes. A `tick()` escape hatch (mirroring
+  `LookaheadScheduler.tick()`'s own reason for existing) lets tests drive
+  scheduling deterministically against a mock `AudioContext` with a
+  controllable `currentTime`, never a real timer. 4 new tests (pause/resume
+  preserving position across a large simulated gap, a mid-timeline seek
+  scheduling only the correct remaining event, a straddling note correctly
+  excluded rather than restarted, and `stop()` giving every already-created
+  oscillator a second, silencing `stop()` call) bring the suite to 300 (up
+  from 296); check/build are green. The plan's own manual by-ear demo check
+  of real play/pause/stop/seek is still pending human verification. M3
+  Slice 6 (playback position hook) is next, the milestone's last slice.
