@@ -16,12 +16,31 @@ import {
 	layoutScore,
 	loadSmuflFont,
 	PlaybackEngine,
+	regionForNote,
 	relayoutMeasure,
 	type LaidOutScore,
 	type NoteId
 } from '../src/index.js';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#score')!;
+/**
+ * The scrollable wrapper around `canvas` (M4 Slice 4's demo check). Its
+ * `max-height` is fixed and deliberately modest in `index.html`'s CSS
+ * (`#score-scroll`'s own comment there has the exact figure and the reasoning),
+ * chosen so `createFullDemoScore()`'s full height does not fit without
+ * scrolling once it casts off into multiple systems. `systemWidthForViewport()`
+ * below is left exactly as it already was rather than pinned to some other,
+ * demo-specific width: at a typical viewport width `createFullDemoScore()`
+ * (26 measures, not the 4-measure score `systemWidthForViewport`'s own
+ * original comment describes, see that comment) already casts off into well
+ * over a dozen systems (checked directly by running `layoutScore` at 910px,
+ * this repo's effective body content width, and reading `layout.systems.length`
+ * before writing any of this), so there is already a real multi-system case
+ * for auto-scroll to follow without changing the layout options at all; only
+ * the wrapper's height needed to shrink to make that vertical overflow, and
+ * therefore scrolling, actually happen.
+ */
+const scoreScroll = document.querySelector<HTMLElement>('#score-scroll')!;
 const status = document.querySelector<HTMLElement>('#status')!;
 const timings = document.querySelector<HTMLElement>('#timings')!;
 const upButton = document.querySelector<HTMLButtonElement>('#up')!;
@@ -331,12 +350,41 @@ let positionLoopRunning = false;
 let pendingOnsetNoteIds: NoteId[] = [];
 let onsetFlushQueued = false;
 
+/**
+ * Auto-scroll `#score-scroll` so the playback cursor's measure stays on
+ * screen as playback proceeds into a later system (M4 Slice 4's demo check).
+ *
+ * `regionForNote` hands back the measure's region in the canvas's own
+ * coordinate space; turning that into an actual scroll position is this
+ * function's job, not the engine's, per `regionForNote`'s own doc comment
+ * (the same framework-agnostic split `pointerdown` above already follows for
+ * click coordinates). The canvas is one unstyled element with no child node
+ * per note to hand to `Element.scrollIntoView`, so this computes a manual
+ * `scrollTo` instead: `canvas.offsetTop` accounts for the canvas's own
+ * position within the wrapper (0 today, since the canvas is the wrapper's
+ * only child, but read rather than assumed in case that ever changes), and
+ * centring on the region's vertical midpoint rather than snapping to its top
+ * edge keeps a system from sitting flush against the wrapper's rim.
+ */
+function followPlaybackCursor(noteId: NoteId): void {
+	const region = regionForNote(layout, noteId);
+	if (!region) return;
+	const targetTop = canvas.offsetTop + region.y + region.height / 2 - scoreScroll.clientHeight / 2;
+	scoreScroll.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
+}
+
 function flushPendingOnsets(): void {
 	onsetFlushQueued = false;
 	if (pendingOnsetNoteIds.length === 0) return;
-	const changed = renderer.setPlaybackCursor(pendingOnsetNoteIds);
+	const noteIds = pendingOnsetNoteIds;
+	const changed = renderer.setPlaybackCursor(noteIds);
 	pendingOnsetNoteIds = [];
 	for (const { staffIndex, index } of changed) renderer.redrawMeasure(index, staffIndex);
+	// Any one note from this onset identifies the right measure to follow; the
+	// first is as good as any other since a simultaneous chord's notes all
+	// share the same measure region on their own staff, or an adjacent one at
+	// worst.
+	followPlaybackCursor(noteIds[0]!);
 }
 
 function ensurePlaybackEngine(): PlaybackEngine {

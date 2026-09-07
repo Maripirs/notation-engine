@@ -35,6 +35,21 @@
 				cursor: pointer;
 				max-width: 100%;
 			}
+			/*
+			 * Wraps #score only (M4 Slice 4). max-height is fixed and deliberately
+			 * smaller than the full demo score's laid-out height at any typical
+			 * viewport width (the full score, `createFullDemoScore`, already casts
+			 * off into well over a dozen systems there, see main.ts's own comment
+			 * on `scoreScroll` for the check that confirmed this), so the score
+			 * overflows vertically and this wrapper scrolls, giving the playback-
+			 * cursor auto-scroll (M4 Slice 4) something real to demonstrate. #score
+			 * keeps its own border (declared above) so it looks the same as before
+			 * this wrapper existed; this element only adds the scrolling behaviour.
+			 */
+			#score-scroll {
+				max-height: 22rem;
+				overflow-y: auto;
+			}
 			.controls {
 				display: flex;
 				gap: 0.5rem;
@@ -90,9 +105,15 @@
 			Zoom in/out (M4 Slice 3) re-lays-out the whole score at a different <code>staffSpacePx</code>,
 			the single knob that scales the whole render: whatever note is currently selected or under
 			the playback cursor stays correctly highlighted through the rescale, with no extra call
-			telling it to.
+			telling it to. The score sits in a height-capped scrolling box, so it does not all fit
+			on screen at once; during playback (below) the box auto-scrolls to keep the playback
+			cursor's current measure in view as it moves into later systems (M4 Slice 4), using
+			<code>regionForNote</code> for the target rectangle and a plain <code>scrollTo</code>
+			here in the demo for the actual scroll.
 		</p>
-		<canvas id="score"></canvas>
+		<div id="score-scroll">
+			<canvas id="score"></canvas>
+		</div>
 		<div class="controls">
 			<button id="down" disabled>&darr; semitone</button>
 			<button id="up" disabled>&uarr; semitone</button>

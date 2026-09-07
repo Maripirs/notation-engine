@@ -656,7 +656,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       smoothly, with whatever note is currently selected and/or
       playback-cursor-highlighted staying correctly highlighted through
       the change.
-- [ ] **Slice 4 — Scroll-into-view region lookup.** One small, pure,
+- [x] **Slice 4 — Scroll-into-view region lookup.** One small, pure,
       exported helper, `regionForNote(layout: LaidOutScore, noteId: NoteId): Rect | null`
       (naming open to whatever reads clearest against `hit-test.ts`'s own
       naming), returning the region a host should scroll into view for a
@@ -1923,3 +1923,48 @@ divisi splits). Unscoped.
   correct here despite being a whole-canvas repaint, since every pixel's
   position changed, unlike an ordinary edit. 309 tests pass (up from 308);
   `check`/`test`/`build` all green.
+- 2026-09-07: M4 Slice 4 (scroll-into-view region lookup) done, via subagent,
+  reviewed and committed by Claude. New `regionForNote(layout, noteId): Rect
+  | null` in its own file, `src/layout/region-for-note.ts` (kept separate
+  from `hit-test.ts` rather than folded in: that file's own scope is
+  specifically "canvas point -> note id", the opposite direction, and its
+  DOM-element-avoidance framing doesn't apply to this lookup), mirroring
+  `CanvasRenderer.setSelection`'s own measure search as a standalone pure
+  function rather than a private method, exported from `src/layout/index.ts`.
+  A lookup primitive only, not a scrolling implementation, per the
+  framework-agnostic principle: it hands back a `Rect`, a host decides what
+  "scroll into view" means for its own container. 4 new tests (first
+  measure, a later system after forced cast-off, a non-zero staff, and the
+  `null` case for an unknown id), each comparing against the layout's own
+  `region` directly rather than a hand-computed rectangle. Demo check: the
+  main canvas is now wrapped in a height-capped `#score-scroll` (`max-height:
+  22rem`), small enough that `createFullDemoScore` (already casting off into
+  well over a dozen systems at typical widths, confirmed directly rather than
+  assumed) overflows and scrolls; the existing onset-cursor flush now also
+  calls `regionForNote` and a manual `scrollTo` to keep the playback cursor's
+  measure in view as playback proceeds into later systems. 313 tests pass (up
+  from 309); `check`/`test`/`build` all green.
+
+  This closes all 4 of M4's slices. What's solid: multi-staff selection no
+  longer misfires onto the wrong staff (Slice 1); a playback cursor primitive
+  distinct from selection, with documented precedence and correct behaviour
+  across simultaneous multi-staff onsets (Slice 2); confirmation, not just
+  assumption, that `NoteId`-keyed state survives a live rescale for free
+  (Slice 3); and a scroll-into-view lookup reused by two real host needs
+  (follow-scroll, and the PDF-sync data need named in this milestone's own
+  intro) rather than a single-purpose one-off (Slice 4). What's simplified or
+  punted, spanning the milestone: `redrawMeasures(indices, staffIndex)` still
+  takes one `staffIndex` for a whole batch (flagged at Slice 1, both demo call
+  sites work around it by looping); the zoom control's `staffSpacePx` bounds
+  (5-20) are not derived from anything principled, just sanity limits; the
+  demo's playback-cursor auto-scroll follows only the first note id of a
+  simultaneous onset (harmless, since a chord's notes share the same or an
+  adjacent measure region); and, per this milestone's own intro, the actual
+  PDF-pane rendering and page-level sync stay Divisi's own job, this engine
+  only exposes the position data. No gaps were found spanning into a slice
+  that wasn't this milestone's own (measure-range selection, undo/redo, seam
+  markers, confirmed M5 territory throughout). M4 stays `[?]`, not `[x]`:
+  awaiting the human's own review of the scoping and a pass through
+  `npm run dev`, the same M1/M2/M3 convention, and separately from M3's own
+  still-outstanding by-ear verification tracked under M3, not duplicated
+  here.
