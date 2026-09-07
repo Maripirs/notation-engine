@@ -196,4 +196,90 @@ describe('PlaybackEngine', () => {
 			expect(osc.stoppedAt[1]).toBeCloseTo(0.02, 10);
 		}
 	});
+
+	it('positionSeconds reads back the seek target immediately, both while stopped and while playing', () => {
+		const { audioContext, setCurrentTime } = mockAudioContext();
+		const events = [event('a', A4, 0, 1), event('b', B4, 5, 1)];
+		const engine = new PlaybackEngine({ events, audioContext, lookaheadSeconds: 0.1 });
+
+		// Seeking while stopped just records where a later play() resumes from;
+		// positionSeconds must reflect it immediately, with no play() at all.
+		setCurrentTime(0);
+		engine.seek(3);
+		expect(engine.positionSeconds).toBeCloseTo(3, 10);
+
+		setCurrentTime(10);
+		expect(engine.positionSeconds).toBeCloseTo(3, 10);
+
+		// Seeking while actively playing immediately re-anchors position to the
+		// new point and keeps advancing from there in real time.
+		engine.play();
+		setCurrentTime(10.5);
+		expect(engine.positionSeconds).toBeCloseTo(3.5, 10);
+
+		engine.seek(8);
+		expect(engine.positionSeconds).toBeCloseTo(8, 10);
+
+		setCurrentTime(11);
+		expect(engine.positionSeconds).toBeCloseTo(8.5, 10);
+
+		engine.stop();
+	});
+
+	it('onOnset fires once per event, in order, with the correct noteId and piece-time startSeconds', () => {
+		const { audioContext, setCurrentTime } = mockAudioContext();
+		const events = [
+			event('a', A4, 0, 0.5),
+			event('b', B4, 1, 0.5),
+			event('c', C5, 2, 0.5)
+		];
+		const onOnsetCalls: OnsetEvent[] = [];
+		const engine = new PlaybackEngine({
+			events,
+			audioContext,
+			lookaheadSeconds: 0.1,
+			onOnset: (onsetEvent) => onOnsetCalls.push(onsetEvent)
+		});
+
+		setCurrentTime(0);
+		engine.play();
+
+		for (let i = 0; i < 20; i++) {
+			setCurrentTime(audioContext.currentTime + 0.2);
+			engine.tick();
+		}
+
+		expect(onOnsetCalls).toHaveLength(3);
+		expect(onOnsetCalls.map((e) => e.noteId)).toEqual(['a', 'b', 'c']);
+		expect(onOnsetCalls.map((e) => e.startSeconds)).toEqual([0, 1, 2]);
+
+		engine.stop();
+	});
+
+	it('onOnset receives the original piece-time startSeconds, not the remapped audio-clock-time value', () => {
+		const { audioContext, setCurrentTime } = mockAudioContext();
+		// A single event at piece-time 2s. play() is called well after the audio
+		// clock has already advanced (currentTime 10), so the scheduler's own
+		// remapped startSeconds (10 + 2 = 12) is clearly different from the
+		// original piece-time value (2) that onOnset must actually receive.
+		const events = [event('a', A4, 2, 0.5)];
+		const onOnsetCalls: OnsetEvent[] = [];
+		const engine = new PlaybackEngine({
+			events,
+			audioContext,
+			lookaheadSeconds: 0.1,
+			onOnset: (onsetEvent) => onOnsetCalls.push(onsetEvent)
+		});
+
+		setCurrentTime(10);
+		engine.play();
+		setCurrentTime(12.05);
+		engine.tick();
+
+		expect(onOnsetCalls).toHaveLength(1);
+		expect(onOnsetCalls[0]!.startSeconds).toBe(2);
+		expect(onOnsetCalls[0]!.startSeconds).not.toBe(12);
+
+		engine.stop();
+	});
 });

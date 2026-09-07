@@ -13,6 +13,22 @@ export interface PlaybackEngineOptions {
 	readonly lookaheadSeconds?: number;
 	/** Passed through to the internal `LookaheadScheduler`. */
 	readonly intervalMs?: number;
+	/**
+	 * Called once per event, at the moment it is actually scheduled: built
+	 * directly off the internal `LookaheadScheduler`'s own `onSchedule` (see
+	 * `play()`'s doc comment), not a separate polling mechanism of its own.
+	 * "Scheduled", here and everywhere else in this file, means "handed to the
+	 * audio clock for imminent playback", not "audibly sounding this instant":
+	 * the scheduler's own lookahead window (see `LookaheadScheduler`'s doc
+	 * comment) means this can fire up to `lookaheadSeconds` before the note is
+	 * actually heard, exactly as "scheduled" already means throughout this
+	 * system. The event this callback receives always carries its original,
+	 * piece-time `startSeconds`, i.e. the same value a caller would compare
+	 * against `positionSeconds` or a note's own position in the score, never
+	 * the real-audio-clock time `play()` internally remaps it to for the
+	 * scheduler's own use.
+	 */
+	readonly onOnset?: (event: OnsetEvent) => void;
 }
 
 /**
@@ -33,6 +49,15 @@ export interface PlaybackEngineOptions {
  * never pauses)": the audio clock is never actually stopped, only the
  * mapping from it back to piece-time position is frozen at pause and
  * re-anchored at the next `play()`/`seek()`.
+ *
+ * Position observability (Slice 6): `positionSeconds` (above) answers "where
+ * is playback right now"; `onOnset`, if supplied, answers "which note just
+ * started", firing once per event right as `play()`'s internal
+ * `LookaheadScheduler` schedules it, with that event's original piece-time
+ * `startSeconds` (not the real-audio-clock time it was remapped to for
+ * scheduling purposes, see `play()`'s own doc comment). Both are read-only
+ * hooks a future caller (e.g. a score cursor) can poll or subscribe to; this
+ * class draws nothing and tracks no notion of "the current note" itself.
  */
 export class PlaybackEngine {
 	private readonly events: readonly OnsetEvent[];
@@ -40,11 +65,12 @@ export class PlaybackEngine {
 	private readonly synthesisOptions: Omit<SynthesisOptions, 'audioContext'>;
 	private readonly lookaheadSeconds: number | undefined;
 	private readonly intervalMs: number | undefined;
+	private readonly onOnset: ((event: OnsetEvent) => void) | undefined;
 
 	private basePosition = 0;
 	private baseAudioTime: number | null = null;
 	private playing = false;
-	private scheduler: LookaheadScheduler<OnsetEvent> | null = null;
+	private scheduler: LookaheadScheduler<OnsetEvent & { readonly pieceTimeStartSeconds: number }> | null = null;
 	private readonly activeOscillators = new Set<OscillatorNode>();
 
 	constructor(options: PlaybackEngineOptions) {
@@ -53,6 +79,7 @@ export class PlaybackEngine {
 		this.synthesisOptions = options.synthesisOptions ?? {};
 		this.lookaheadSeconds = options.lookaheadSeconds;
 		this.intervalMs = options.intervalMs;
+		this.onOnset = options.onOnset;
 	}
 
 	/** True while the engine is actively scheduling/sounding events. */
@@ -61,11 +88,10 @@ export class PlaybackEngine {
 	}
 
 	/** Elapsed position in the piece, in seconds. 0 at construction, frozen
-	 *  while paused/stopped, advancing in real time while playing. Slice 6
-	 *  (a later, separate task) builds a fuller position/onset-callback API on
-	 *  top of this; this getter is the minimal piece this slice already needs
-	 *  internally for pause() to work, exposed publicly since Slice 6 needs
-	 *  exactly this same value and there is no reason to hide it until then. */
+	 *  while paused/stopped, advancing in real time while playing. Also used
+	 *  internally by pause() to capture the frozen position, and is this
+	 *  slice's position-query half of the "playback position hook" alongside
+	 *  `onOnset` (see the class-level doc comment above). */
 	get positionSeconds(): number {
 		if (this.baseAudioTime === null) return this.basePosition;
 		return this.basePosition + (this.audioContext.currentTime - this.baseAudioTime);
@@ -84,6 +110,18 @@ export class PlaybackEngine {
 	 * same "drop anything already past" filter is also the correct behaviour
 	 * for a seek into the middle of the timeline, not just an incidental
 	 * consequence of reusing this method.
+	 *
+	 * Each remapped event also carries its original, unshifted piece-time
+	 * `startSeconds` alongside the remapped one (as `pieceTimeStartSeconds`),
+	 * purely so `onOnset`, wired straight into the scheduler's own
+	 * `onSchedule` below, can hand a caller back the piece-time value rather
+	 * than the real-audio-clock one `playOnsetEvent` itself needs: those two
+	 * numbers are only ever equal when `basePosition` was 0 and playback
+	 * started at `audioContext.currentTime === 0`, and differ in every other
+	 * case (a resume, a seek, or simply a real `AudioContext` whose clock did
+	 * not start at 0), so conflating them would silently hand a future caller
+	 * (e.g. a score cursor comparing against `positionSeconds`) the wrong
+	 * number.
 	 */
 	play(): void {
 		if (this.playing) return;
@@ -92,14 +130,15 @@ export class PlaybackEngine {
 		const baseAudioTime = this.audioContext.currentTime;
 		this.baseAudioTime = baseAudioTime;
 
-		const remainingEvents: OnsetEvent[] = this.events
+		const remainingEvents: Array<OnsetEvent & { readonly pieceTimeStartSeconds: number }> = this.events
 			.filter((event) => event.startSeconds >= basePosition)
 			.map((event) => ({
 				...event,
-				startSeconds: baseAudioTime + (event.startSeconds - basePosition)
+				startSeconds: baseAudioTime + (event.startSeconds - basePosition),
+				pieceTimeStartSeconds: event.startSeconds
 			}));
 
-		const scheduler = new LookaheadScheduler<OnsetEvent>({
+		const scheduler = new LookaheadScheduler<OnsetEvent & { readonly pieceTimeStartSeconds: number }>({
 			events: remainingEvents,
 			getCurrentTime: () => this.audioContext.currentTime,
 			onSchedule: (event) => {
@@ -108,6 +147,12 @@ export class PlaybackEngine {
 					...this.synthesisOptions
 				});
 				this.activeOscillators.add(oscillator);
+				this.onOnset?.({
+					noteId: event.noteId,
+					pitch: event.pitch,
+					startSeconds: event.pieceTimeStartSeconds,
+					durationSeconds: event.durationSeconds
+				});
 			},
 			lookaheadSeconds: this.lookaheadSeconds,
 			intervalMs: this.intervalMs

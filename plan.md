@@ -236,7 +236,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
 - [ ] Review this scoping (drafted with you live this session, off a
       fresh codebase survey rather than solo) before slice work starts.
 
-### M3 — Phase 3: Sound / playback [ ]
+### M3 — Phase 3: Sound / playback [?]
 
 Est. 1-2 months, drafted more uncertain than M1/M2's own estimates since
 the original scoping pass was necessarily speculative (see below); the
@@ -442,7 +442,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       leaving no dangling scheduled nodes; demo check: play/pause/stop/
       seek controls in the dev demo control real audible playback
       correctly by ear.
-- [ ] **Slice 6 — Playback position hook.** A minimal, UI-free way for a
+- [x] **Slice 6 — Playback position hook.** A minimal, UI-free way for a
       future caller to know what is currently playing: the
       `PlaybackEngine` exposes a current-position query (elapsed
       seconds) and an onset callback fired as each event starts, built
@@ -1483,5 +1483,89 @@ divisi splits). Unscoped.
   excluded rather than restarted, and `stop()` giving every already-created
   oscillator a second, silencing `stop()` call) bring the suite to 300 (up
   from 296); check/build are green. The plan's own manual by-ear demo check
-  of real play/pause/stop/seek is still pending human verification. M3
-  Slice 6 (playback position hook) is next, the milestone's last slice.
+  of real play/pause/stop/seek is still pending human verification.
+- 2026-09-06: M3 Slice 6 (playback position hook) done, via subagent while
+  the human was away; Claude reviewed the diff, hand-traced the new tests'
+  arithmetic, and ran check/test/build directly before committing.
+  `PlaybackEngine` gains `onOnset?: (event: OnsetEvent) => void`
+  (`PlaybackEngineOptions`), fired once per event at the exact moment the
+  internal `LookaheadScheduler`'s own `onSchedule` fires, per the plan's own
+  instruction to build this "directly off Slice 3's scheduler loop rather
+  than a separate polling mechanism". The one real subtlety: `play()`
+  remaps every event's `startSeconds` from piece-time to real audio-clock
+  time before scheduling it (so `playOnsetEvent` fires at the right wall
+  time), but a caller's `onOnset` wants the original piece-time value (the
+  same number `positionSeconds` or a note's own score position would use),
+  so each internally-scheduled event now also carries a
+  `pieceTimeStartSeconds` field threaded through untouched, and `onOnset` is
+  called with a fresh event built from that field rather than the remapped
+  one, verified by a test that deliberately starts `play()` well after the
+  audio clock has advanced so the two numbers are clearly different and
+  provably not conflated. `positionSeconds` itself (the query half of this
+  slice, already built in Slice 5) needed no code change, just the
+  acceptance criteria's own explicit "after a seek" case added to test
+  coverage (both seeking while stopped and while actively playing). 3 new
+  tests bring the suite to 303 (up from 300); check/build are green. The
+  plan's own manual on-screen-counter-vs-stopwatch demo check is still
+  pending human verification, same status as every other manual check
+  across this milestone.
+
+  **M3 is now feature-complete across all 6 slices** and set to `[?]`, not
+  `[x]`: awaiting explicit human review and sign-off, the same convention
+  M1/M2 used, since the human was away for this milestone's entire
+  build-out (all 6 slices delegated to a fresh subagent each, reviewed and
+  committed directly by Claude in between per the standing "clean context
+  per slice" approach) and M3's own scoping review task (below) is still
+  unchecked. What is genuinely solid: a score-wide tempo model with a pure,
+  well-tested duration-to-seconds conversion (Slice 1); a playback timeline
+  walking each staff/voice independently and correctly collapsing tied
+  chains, including 3+ note chains, into single onsets (Slice 2); a
+  drift-free Web Audio lookahead scheduler, generic over an injected clock
+  and callback, fully unit-testable with no real timer or audio API (Slice
+  3); minimal but real oscillator/envelope synthesis with a correctly
+  guarded short-note fallback (Slice 4); a play/pause/stop/seek transport
+  whose position-tracking and node-cleanup mechanisms were worked out and
+  reviewed in real detail, including the deliberate pause-vs-stop asymmetry
+  and the seek-excludes-in-progress-notes scope cut (Slice 5); and a
+  position query plus onset callback built directly off the scheduler's own
+  loop, correctly distinguishing piece-time from audio-clock time (Slice
+  6). Every slice's automated verification (`check`/`test`/`build`) stayed
+  green throughout, and the four real M2 gaps the milestone's own recheck
+  surfaced before slice work started were fixed standalone ahead of time
+  (see the 2026-09-06 Log entry above), so no M3 slice had to work around
+  stale M2 limitations.
+
+  What is simplified or punted, collected here since this is the
+  milestone's closing report: a single score-wide tempo only, no mid-score
+  tempo changes, the `keyFifthsAt`-style walk-back accessor this would need
+  is explicitly deferred to a later phase (Slice 1). `LookaheadScheduler.tick()`
+  does a plain O(n) scan of every event on every call rather than tracking a
+  sorted cursor, a documented, deliberate simplification fine at this
+  milestone's scale (Slice 3). One timbre (`'triangle'`) for every voice and
+  staff; per-part timbre (e.g. distinguishing SATB voices) is real but
+  separate, punted work (Slice 4). `pause()` deliberately leaves an
+  already-sounding note ringing to whatever stop time it was already given,
+  rather than silencing it (only `stop()`/`seek()` do that); a `seek()` into
+  the middle of a note already in progress excludes that note entirely
+  rather than attempting to resume it mid-envelope, since this engine's
+  synthesis model has no way to resume a note partway through its own
+  attack/release shape (Slice 5). `PlaybackEngine`'s own `activeOscillators`
+  tracking set is only ever pruned by `stop()`/`seek()`, not as each
+  oscillator naturally finishes on its own (no `onended` cleanup wired up),
+  so a very long playback session with no manual stop/seek would grow that
+  set unboundedly in memory; harmless at any realistic score length this
+  engine targets, but worth a note here since no test exercises it (Slice
+  5, not caught until this closing-report pass). And, spanning every slice:
+  no repeat-playback semantics (a `repeatStart`/`repeatEnd` pair, M1 Slice
+  8, plays through with no jump or ending-bracket logic, since nothing in
+  this milestone's scope touches barline semantics at all), no visual
+  playback cursor (explicitly M4's job per this file's own M4 entry, this
+  milestone only exposes the position/onset data an M4 cursor would
+  consume), and every manual, by-ear/by-eye demo check across Slices 4-6
+  (real audible playback, real transport controls, a real on-screen
+  position counter) is still outstanding, per this repo's established
+  no-browser-automation-dependency principle: these need a human in an
+  actual browser, not something a subagent or Claude can verify from the
+  command line. None of this blocks M4; all of it is either flagged in its
+  owning slice's own code comments or listed here for whoever scopes M4's
+  actual cursor work to see in one place.
