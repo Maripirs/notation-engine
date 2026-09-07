@@ -399,7 +399,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       lookahead passes, and that advancing the fake clock past an
       event's onset never re-schedules it; demo check: none at this
       slice (no sound wired up yet), deferred to Slice 4.
-- [ ] **Slice 4 — Minimal oscillator synthesis.** A synthesis layer
+- [x] **Slice 4 — Minimal oscillator synthesis.** A synthesis layer
       wired as Slice 3's "play this event" callback: for each scheduled
       onset, an `OscillatorNode` (a simple, concretely-buildable
       waveform, e.g. triangle, chosen over sampled/soundfont playback
@@ -1420,5 +1420,30 @@ divisi splits). Unscoped.
   comment from the class's actual one-sided guarantee), never re-scheduling
   after firing, an already-past-due event still firing on the first tick,
   and `reset()` making an already-fired event eligible again. Bring the
-  suite to 284 (up from 279); check/build are green. M3 Slice 4 (minimal
-  oscillator synthesis) is next.
+  suite to 284 (up from 279); check/build are green.
+- 2026-09-06: M3 Slice 4 (minimal oscillator synthesis) done, via subagent
+  while the human was away; Claude reviewed the diff and ran check/test/build
+  directly before committing. `src/playback/pitch-to-frequency.ts` adds
+  `midiToFrequency`/`pitchToFrequency` (`440 * 2^((midi-69)/12)`, built on
+  `toMidi`), living in `playback` rather than `model` for the same layering
+  reason `model` knows nothing about canvas drawing either.
+  `src/playback/synthesis.ts`'s `playOnsetEvent(event, options)` creates one
+  triangle-wave `OscillatorNode` plus a `GainNode` attack/release envelope
+  (defaults 10ms/50ms, gain 0.2 to leave headroom under 4 simultaneous SATB
+  voices), connected oscillator -> gain -> `audioContext.destination`,
+  started/stopped at the event's own start/end; a note shorter than
+  attack+release scales both ramps down proportionally rather than
+  overlapping incoherently. Follows the same "take the real DOM type, hand
+  tests a stub cast via `as unknown as AudioContext`" precedent
+  `CanvasRenderer`/`CanvasRenderingContext2D` already set, so no jsdom or
+  real Web Audio API needed in tests. Signature is a direct fit for
+  `LookaheadScheduler`'s `onSchedule` callback, documented for Slice 5 to
+  wire up. 12 new tests (6 pitch-to-frequency: A4=440Hz exactly, middle C
+  and C#4 against independently worked-out reference values; 6 synthesis:
+  node creation/connection, triangle waveform and frequency, start/stop
+  timing, the normal envelope shape, and the short-note scaled-down
+  fallback) bring the suite to 296 (up from 284); check/build are green. The
+  plan's own manual browser audibility check (`createTwoVoiceShowcaseScore`
+  actually audible) is still pending human verification, same as every
+  other manual demo check in this repo's established no-browser-automation
+  approach. M3 Slice 5 (transport controls) is next.
