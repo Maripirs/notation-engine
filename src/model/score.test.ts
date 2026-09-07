@@ -60,6 +60,14 @@ describe('Score', () => {
 		expect(score.findNote(note.id)).toBe(note);
 		expect(formatPitch(note.pitch!)).toBe('D4');
 	});
+
+	it('defaults tempoBpm to 120 when ScoreOptions omits it', () => {
+		expect(new Score().tempoBpm).toBe(120);
+	});
+
+	it('takes an explicit tempoBpm when given', () => {
+		expect(new Score({ tempoBpm: 90 }).tempoBpm).toBe(90);
+	});
 });
 
 describe('Note.durationWholes', () => {

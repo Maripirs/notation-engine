@@ -410,6 +410,13 @@ export interface ScoreOptions {
 	 *  M2 Slice 3. Add further staves (with their own clefs) via
 	 *  `appendStaff`. */
 	readonly clef?: ClefType;
+	/** Score-wide tempo in quarter-note beats per minute (the MIDI/MusicXML
+	 *  convention, independent of the prevailing time signature's beat unit).
+	 *  Defaults to 120. Like `keyFifths`/`time`, this is a single score-wide
+	 *  starting value with no per-measure change tracked yet: a future phase
+	 *  would add a mid-score tempo change following the same `keyFifthsAt`-style
+	 *  walk-back accessor, if that's ever needed. */
+	readonly tempoBpm?: number;
 }
 
 /**
@@ -478,6 +485,11 @@ export class Score {
 	keyFifths: number;
 	/** Same idea as `keyFifths`, for the time signature. See `timeAt`. */
 	time: TimeSignature;
+	/** Score-wide tempo in quarter-note beats per minute. See `ScoreOptions
+	 *  .tempoBpm`: like `keyFifths`/`time` this is a single starting value with
+	 *  no mid-score change tracked yet, so playback (`src/playback`) reads this
+	 *  field directly rather than through a walk-back accessor. */
+	tempoBpm: number;
 	/**
 	 * `staves[0]`'s own measures, kept as a convenience accessor for the same
 	 * reason `clef` is: every score built before M2 Slice 3 (and `buildScore`'s
@@ -533,6 +545,7 @@ export class Score {
 	constructor(options: ScoreOptions = {}) {
 		this.keyFifths = options.keyFifths ?? 0;
 		this.time = options.time ?? { beats: 4, beatType: 4 };
+		this.tempoBpm = options.tempoBpm ?? 120;
 		this.staves = [new Staff(0, options.clef ?? 'treble')];
 		this.parts = [{ staffIndices: [0] }];
 	}

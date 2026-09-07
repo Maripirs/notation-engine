@@ -328,7 +328,7 @@ Slice 6 exposing the minimal position hook M4 will eventually consume.
 pass; `npm run check`/`test`/`build` stay green throughout.
 
 **Tasks — Claude:**
-- [ ] **Slice 1 — Tempo model.** A score-wide tempo (beats per minute,
+- [x] **Slice 1 — Tempo model.** A score-wide tempo (beats per minute,
       quarter-note-based per MIDI/MusicXML convention), stored as
       `tempoBpm` on `ScoreOptions`/`Score` (default 120), the same
       pattern `keyFifths`/`time` already use for a score-wide musical
@@ -1358,3 +1358,18 @@ divisi splits). Unscoped.
   import/export, edit ops touching `Part`/`CrossStaffBeam`) — those are
   separate milestones' scope, not bugs, and stay in M2's closing report
   as-is.
+- 2026-09-06: M3 Slice 1 (tempo model) done, via subagent while the human was
+  away; Claude reviewed the diff and ran check/test/build directly before
+  committing. `Score` gains `tempoBpm` (quarter-note beats per minute,
+  defaulting to 120), following the exact `keyFifths`/`time` pattern on
+  `ScoreOptions` and the constructor: a single score-wide starting value, no
+  per-measure change tracked, matching this slice's own explicit scope cut.
+  A new `src/playback` layer (fourth alongside `model`/`layout`/`render`,
+  `src/index.ts`'s own top-of-file comment updated accordingly) holds
+  `durationToSeconds(durationWholes, bpm)`, a pure function with no
+  dependency on any model type: `seconds = durationWholes * 4 * (60 / bpm)`.
+  5 new tests (2 on `Score.tempoBpm`'s default/override, 3 on
+  `durationToSeconds` covering a BPM range, a plain/dotted/tripleted duration
+  range, and a zero-duration edge case, all via hand-computed expected values
+  in the test's own comments) bring the suite to 273 (up from 268);
+  check/build are green. M3 Slice 2 (playback timeline) is next.
