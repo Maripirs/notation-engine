@@ -643,7 +643,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       list (no second `PlaybackEngine`/`AudioContext` pair, that is out of
       this slice's scope) and confirms the highlight lands correctly across
       staves.
-- [ ] **Slice 3 — Zoom.** No new scaling primitive (per the survey above,
+- [x] **Slice 3 — Zoom.** No new scaling primitive (per the survey above,
       `staffSpacePx` already is one); this slice proves and demos that
       Slices 1-2's new `NoteId`-keyed state survives a live rescale.
       Acceptance: a unit test that relays a score out at one `staffSpacePx`,
@@ -1904,3 +1904,22 @@ divisi splits). Unscoped.
   both selected and cursor-highlighted paints with the cursor's colour, not
   the selection's, via a small local styled-recording-context stub. 308
   tests pass (up from 305); `check`/`test`/`build` all green.
+- 2026-09-07: M4 Slice 3 (zoom) done, via subagent, reviewed and committed by
+  Claude. No new scaling primitive needed, per the milestone's own survey:
+  `staffSpacePx` already scales the whole render, so zoom is just
+  `layoutScore` at a new value plus `renderer.setLayout`. This slice proved
+  and demoed that Slices 1-2's `NoteId`-keyed selection/playback-cursor
+  state survives a rescale for free, since `setLayout` never touches either
+  field. `renderer.test.ts` gained a test laying a score out at
+  `staffSpacePx: 7`, selecting a note and setting a different note as the
+  playback cursor, laying the same score out again at `staffSpacePx: 15`
+  with only `setLayout` (no new `setSelection`/`setPlaybackCursor` call),
+  and asserting both tints reapply to each note's new-scale coordinates,
+  plus a sanity check that the coordinates actually changed so the
+  assertions aren't vacuous. The dev demo's main canvas gained Zoom in/out
+  buttons (`setZoom`, clamped `staffSpacePx` 5-20) doing the same
+  relayout-setLayout-resize-redraw sequence the resize handler and
+  `transposeSelected`'s full-relayout fallback already use; `drawAll` is
+  correct here despite being a whole-canvas repaint, since every pixel's
+  position changed, unlike an ordinary edit. 309 tests pass (up from 308);
+  `check`/`test`/`build` all green.

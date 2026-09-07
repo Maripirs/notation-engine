@@ -16,7 +16,8 @@ import { createDemoScore } from '../demo-score.js';
 import { layoutScore, relayoutMeasure } from '../layout/layout.js';
 import { parsePitch } from '../model/pitch.js';
 import { buildScore, Score } from '../model/score.js';
-import type { LaidOutScore, Rect } from '../layout/types.js';
+import type { NoteId } from '../model/score.js';
+import type { DrawOp, LaidOutScore, Rect } from '../layout/types.js';
 import { CanvasRenderer } from './renderer.js';
 
 interface Recorded {
@@ -510,6 +511,101 @@ describe('CanvasRenderer.setPlaybackCursor (M4 Slice 2)', () => {
 
 		expect(recorder.styles).toContain('#00ffff');
 		expect(recorder.styles).not.toContain('#ff00ff');
+	});
+});
+
+describe('CanvasRenderer selection and playback cursor survive a rescale (M4 Slice 3)', () => {
+	// A third local stub, alongside `recordingContext` and `styledRecordingContext`
+	// above: this one needs both a call's colour and its coordinates in the same
+	// record, since the point of this suite is "the *same note* keeps the *right
+	// tint* once its ops have moved to new coordinates", which neither of the
+	// other two stubs alone can show.
+	function styledPositionRecordingContext(): {
+		ctx: CanvasRenderingContext2D;
+		calls: { x: number; y: number; style: string }[];
+	} {
+		const calls: { x: number; y: number; style: string }[] = [];
+		const stub = {
+			font: '',
+			fillStyle: '',
+			strokeStyle: '',
+			textBaseline: 'alphabetic',
+			fillRect(x: number, y: number) {
+				calls.push({ x, y, style: this.fillStyle });
+			},
+			clearRect() {},
+			fillText(_text: string, x: number, y: number) {
+				calls.push({ x, y, style: this.fillStyle });
+			}
+		};
+		return { ctx: stub as unknown as CanvasRenderingContext2D, calls };
+	}
+
+	/** Every op belonging to `id` that carries an `(x, y)` origin. Excludes
+	 *  `curve` ops (ties/slurs), which use `(x0, y0)` instead: this demo score
+	 *  has none on the notes under test, and the point here is comparing
+	 *  origins across two layouts, not covering every op shape. */
+	function opsWithOriginFor(layout: LaidOutScore, id: NoteId): Extract<DrawOp, { x: number; y: number }>[] {
+		return layout.measures
+			.flatMap((m) => m.ops)
+			.filter((op): op is Extract<DrawOp, { x: number; y: number }> => op.kind !== 'curve' && op.noteId === id);
+	}
+
+	it('reapplies both tints to the same notes\' new draw ops after setLayout at a different staffSpacePx, with no new setSelection/setPlaybackCursor calls', () => {
+		// staffSpacePx is "the single knob that scales the whole render" (see
+		// `LayoutOptions.staffSpacePx`'s own doc comment): laying the same score
+		// out again at a different value is mechanically a full zoom, and this
+		// test's whole claim is that `#selectedNoteId`/`#playbackCursorNoteIds`
+		// (keyed by `NoteId`, not by measure index or pixel position) go on
+		// finding the right ops after that, with no call telling them to.
+		const score = createDemoScore();
+		const smallLayout = layoutScore(score, { staffSpacePx: 7 });
+
+		const selectedNoteId = smallLayout.measures[0]!.notes[0]!.id;
+		const cursorNoteId = smallLayout.measures[2]!.notes[1]!.id;
+
+		const recorder = styledPositionRecordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, smallLayout, {
+			foreground: '#000000',
+			selection: '#ff00ff',
+			playbackCursor: '#00ffff'
+		});
+		renderer.setSelection(selectedNoteId);
+		renderer.setPlaybackCursor([cursorNoteId]);
+
+		// The relayout-and-swap a zoom control performs: a fresh `layoutScore`
+		// call at a different `staffSpacePx`, then `setLayout`. No further
+		// `setSelection`/`setPlaybackCursor` call follows.
+		const largeLayout = layoutScore(score, { staffSpacePx: 15 });
+		renderer.setLayout(largeLayout);
+		recorder.calls.length = 0;
+		renderer.drawAll();
+
+		const selectedOpsAtNewScale = opsWithOriginFor(largeLayout, selectedNoteId);
+		const cursorOpsAtNewScale = opsWithOriginFor(largeLayout, cursorNoteId);
+		expect(selectedOpsAtNewScale.length).toBeGreaterThan(0);
+		expect(cursorOpsAtNewScale.length).toBeGreaterThan(0);
+
+		// Every call painted at the selected note's *new*, large-scale
+		// coordinates used the selection colour...
+		for (const op of selectedOpsAtNewScale) {
+			const call = recorder.calls.find((c) => c.x === op.x && c.y === op.y);
+			expect(call?.style).toBe('#ff00ff');
+		}
+		// ...and every call at the cursor note's new coordinates used the cursor
+		// colour: the tint followed the note to where it actually landed this
+		// time, not to wherever it used to be.
+		for (const op of cursorOpsAtNewScale) {
+			const call = recorder.calls.find((c) => c.x === op.x && c.y === op.y);
+			expect(call?.style).toBe('#00ffff');
+		}
+
+		// The two notes really did move: same note, a different `staffSpacePx`,
+		// so its ops land at different coordinates. Without this, the assertions
+		// above would pass just as well against a renderer that had silently
+		// kept painting the stale, small-scale layout.
+		const selectedOpsAtOldScale = opsWithOriginFor(smallLayout, selectedNoteId);
+		expect(selectedOpsAtNewScale[0]!.x).not.toBeCloseTo(selectedOpsAtOldScale[0]!.x, 5);
 	});
 });
 

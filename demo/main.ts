@@ -28,6 +28,8 @@ const upButton = document.querySelector<HTMLButtonElement>('#up')!;
 const downButton = document.querySelector<HTMLButtonElement>('#down')!;
 const fullButton = document.querySelector<HTMLButtonElement>('#full')!;
 const flashButton = document.querySelector<HTMLButtonElement>('#flash')!;
+const zoomOutButton = document.querySelector<HTMLButtonElement>('#zoom-out')!;
+const zoomInButton = document.querySelector<HTMLButtonElement>('#zoom-in')!;
 const playbackPlayButton = document.querySelector<HTMLButtonElement>('#playback-play')!;
 const playbackPauseButton = document.querySelector<HTMLButtonElement>('#playback-pause')!;
 const playbackStopButton = document.querySelector<HTMLButtonElement>('#playback-stop')!;
@@ -42,6 +44,19 @@ const staffSelectCursorButton = document.querySelector<HTMLButtonElement>('#staf
 const BODY_MAX_WIDTH_PX = 960;
 const BODY_HORIZONTAL_PADDING_PX = 48;
 const CANVAS_BORDER_PX = 2;
+
+/**
+ * Bounds and step for the zoom control (M4 Slice 3). `staffSpacePx` is
+ * "the single knob that scales the whole render" (see `LayoutOptions`'s own
+ * doc comment in `src/layout/layout.ts`), so zooming is nothing more than
+ * re-laying-out at a different value of it; these three constants just keep
+ * a human mashing the button from zooming the score into an unreadable
+ * sliver or off past any plausible viewport. Not derived from anything
+ * principled, just wide enough to be useful and narrow enough to stay sane.
+ */
+const MIN_STAFF_SPACE_PX = 5;
+const MAX_STAFF_SPACE_PX = 20;
+const ZOOM_STEP_STAFF_SPACE_PX = 1;
 
 /**
  * How wide a system is allowed to be at the current viewport size.
@@ -239,6 +254,45 @@ window.addEventListener('resize', () => {
 		timings.textContent = `whole-score repaint                ${lastFullDrawMs.toFixed(2)} ms`;
 	}, 150);
 });
+
+/**
+ * Rescale the score by `deltaStaffSpacePx` (positive to zoom in, negative to
+ * zoom out), clamped to `MIN_STAFF_SPACE_PX`/`MAX_STAFF_SPACE_PX`.
+ *
+ * This is the whole zoom feature: `layoutScore` re-derives every coordinate
+ * in the score from `staffSpacePx` alone (see that option's own doc comment
+ * for why nothing else needs to change), so this function is a relayout at a
+ * new value of it, `setLayout`, a resize, and a redraw, the same four steps
+ * `transposeSelected`'s full-relayout fallback and the `resize` handler
+ * below already do. `drawAll` is the right call here even though it is a
+ * whole-canvas repaint: every pixel's position just changed, which is not
+ * true of an ordinary edit, so this is not a violation of the
+ * region-scoped-redraw invariant those other paths exist to prove. Whatever
+ * note is currently selected and/or playback-cursor-highlighted stays
+ * highlighted afterwards for free: both are keyed by `NoteId`, which
+ * `setLayout` never touches (see `CanvasRenderer.setLayout`'s own doc
+ * comment), so `#drawOps` finds the same note's new ops and tints them
+ * exactly as before.
+ */
+function setZoom(deltaStaffSpacePx: number): void {
+	const next = Math.min(
+		MAX_STAFF_SPACE_PX,
+		Math.max(MIN_STAFF_SPACE_PX, layoutOptions.staffSpacePx + deltaStaffSpacePx)
+	);
+	if (next === layoutOptions.staffSpacePx) return;
+
+	layoutOptions = { ...layoutOptions, staffSpacePx: next };
+	layout = layoutScore(score, layoutOptions);
+	renderer.setLayout(layout);
+	sizeCanvas();
+	lastFullDrawMs = drawAll();
+	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
+	status.textContent = `Zoomed to staffSpacePx ${next}. Repainted all ${layout.measures.length} measures.`;
+	timings.textContent = `whole-score repaint                ${lastFullDrawMs.toFixed(2)} ms`;
+}
+
+zoomOutButton.addEventListener('click', () => setZoom(-ZOOM_STEP_STAFF_SPACE_PX));
+zoomInButton.addEventListener('click', () => setZoom(ZOOM_STEP_STAFF_SPACE_PX));
 
 // --- Playback -----------------------------------------------------------
 //

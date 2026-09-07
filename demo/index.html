@@ -87,6 +87,10 @@
 			timings below compare that against repainting the whole system. The score is capped at a
 			fixed width, so it casts measures off onto a new system (a new staff line) rather than
 			shrinking to fit; each system repeats the clef and key signature, as real engraving does.
+			Zoom in/out (M4 Slice 3) re-lays-out the whole score at a different <code>staffSpacePx</code>,
+			the single knob that scales the whole render: whatever note is currently selected or under
+			the playback cursor stays correctly highlighted through the rescale, with no extra call
+			telling it to.
 		</p>
 		<canvas id="score"></canvas>
 		<div class="controls">
@@ -94,6 +98,8 @@
 			<button id="up" disabled>&uarr; semitone</button>
 			<button id="full">Redraw whole score</button>
 			<button id="flash">Flash redrawn region</button>
+			<button id="zoom-out">Zoom out</button>
+			<button id="zoom-in">Zoom in</button>
 		</div>
 		<p id="status">Loading Bravura&hellip;</p>
 		<pre id="timings"></pre>
