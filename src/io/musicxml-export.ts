@@ -30,12 +30,13 @@
 
 import {
 	diatonicIndex,
-	measureCapacityWholes,
 	noteEvents,
 	type ClefType,
+	type Measure,
+	type MeasurePassthrough,
 	type Note,
 	type NoteId,
-	type NoteValue,
+	type OpaqueElement,
 	type Part,
 	type Score,
 	type TimeSignature
@@ -46,6 +47,16 @@ import {
 	stemDirectionForNotes,
 	type BeamGroup
 } from '../layout/index.js';
+import {
+	add,
+	compare,
+	lcm,
+	noteDurationQuarters,
+	sub,
+	wholesToQuarters,
+	ZERO,
+	type Rational
+} from './rational.js';
 
 /**
  * Serialize `score` as a MusicXML 4.0 `score-partwise` document.
@@ -58,6 +69,14 @@ import {
  * parts, and all five barline shapes. `<divisions>` is one value per part, the
  * LCM of every note's exact duration denominator in that part, so every
  * `<duration>` comes out a whole number.
+ *
+ * Plus, since M6 Slice 3, every passthrough payload an import kept (see
+ * `src/model/passthrough.ts`), written back verbatim at its anchor and in its
+ * schema position: the score header before `<part-list>`, a part's or
+ * group's extras inside its `<score-part>`/`<part-group>`, a measure's
+ * positional elements at their onset in their voice stream, attribute and
+ * barline extras merged into the `<attributes>`/`<barline>` written here, and
+ * a note's extras slotted between the children written here.
  */
 export function exportMusicXml(score: Score): string {
 	const xml = new XmlBuilder();
@@ -68,16 +87,62 @@ export function exportMusicXml(score: Score): string {
 	);
 	xml.open('score-partwise', { version: '4.0' });
 
+	// MusicXML puts the header (`<work>`, `<identification>`, `<defaults>`,
+	// `<credit>`, ...) before `<part-list>`, in that order, which is the order
+	// an import kept it in.
+	for (const el of score.headerPassthrough) xml.element(el);
+
 	const emitted = planEmittedParts(score);
 	const groups = planPartGroups(score, emitted);
 
 	writePartList(xml, emitted, groups);
+	// The tempo direction is written only when no passthrough already states
+	// the model's tempo: an imported score's own metronome mark comes back
+	// verbatim (with whatever `<words>` it carried), and a second, synthesized
+	// one would double it. A score that states no tempo still gets one.
+	const writeTempo = passthroughTempo(score) !== score.tempoBpm;
 	for (let partIndex = 0; partIndex < emitted.length; partIndex++) {
-		writePart(xml, score, emitted, partIndex);
+		writePart(xml, score, emitted, partIndex, writeTempo);
 	}
 
 	xml.close('score-partwise');
 	return xml.toString();
+}
+
+/**
+ * The tempo an export's passthrough states, found the way `importMusicXml`'s
+ * `findTempo` finds one (the first `<metronome>` with a `<per-minute>`, else
+ * the first `<sound tempo>`), so "would re-import read the model's tempo back
+ * out of the passthrough" is answered by the same rule. Measures are scanned
+ * staff by staff, which is document order for every score export writes.
+ */
+function passthroughTempo(score: Score): number | undefined {
+	let soundTempo: number | undefined;
+	const visit = (el: OpaqueElement): number | undefined => {
+		if (el.name === 'metronome') {
+			const perMinute = el.children.find((c) => c.name === 'per-minute');
+			const bpm = perMinute ? Number.parseFloat(perMinute.text.trim()) : Number.NaN;
+			if (Number.isFinite(bpm)) return bpm;
+		}
+		if (el.name === 'sound' && soundTempo === undefined && el.attrs.tempo !== undefined) {
+			const bpm = Number.parseFloat(el.attrs.tempo);
+			if (Number.isFinite(bpm)) soundTempo = bpm;
+		}
+		for (const c of el.children) {
+			const found = visit(c);
+			if (found !== undefined) return found;
+		}
+		return undefined;
+	};
+	for (const staff of score.staves) {
+		for (const measure of staff.measures) {
+			for (const anchor of measure.passthrough) {
+				const found = visit(anchor.element);
+				if (found !== undefined) return found;
+			}
+		}
+	}
+	return soundTempo;
 }
 
 // --- Part normalization -----------------------------------------------------
@@ -94,6 +159,8 @@ interface EmittedPart {
 	readonly id: string;
 	readonly name: string;
 	readonly staffIndices: readonly number[];
+	/** The model part's `<score-part>` extras (M6 Slice 3). */
+	readonly passthrough: readonly OpaqueElement[];
 }
 
 /**
@@ -106,6 +173,8 @@ interface EmittedPart {
  * Part ids are `P1`, `P2`, ... in emission order. Synthetic parts are named
  * `Part 1`, `Part 2`, ... counting only the synthetic ones, so a score with
  * one named and one unnamed staff gets `Soprano` then `Part 1`, not `Part 2`.
+ * A synthetic part still carries the passthrough of an unnamed model part
+ * covering exactly its staff (an imported `<score-part>` with an empty name).
  */
 function planEmittedParts(score: Score): EmittedPart[] {
 	const emitted: EmittedPart[] = [];
@@ -120,18 +189,28 @@ function planEmittedParts(score: Score): EmittedPart[] {
 		const id = `P${emitted.length + 1}`;
 		if (named) {
 			const staffIndices = [...named.staffIndices].sort((a, b) => a - b);
-			emitted.push({ id, name: named.name!, staffIndices });
+			emitted.push({ id, name: named.name!, staffIndices, passthrough: named.passthrough ?? NO_EXTRAS });
 			for (const covered of staffIndices) {
 				if (!staffToPartIndex.has(covered)) staffToPartIndex.set(covered, emitted.length - 1);
 			}
 		} else {
 			syntheticCount++;
-			emitted.push({ id, name: `Part ${syntheticCount}`, staffIndices: [staffIndex] });
+			const unnamed = score.parts.find(
+				(part) => part.staffIndices.length === 1 && part.staffIndices[0] === staffIndex
+			);
+			emitted.push({
+				id,
+				name: `Part ${syntheticCount}`,
+				staffIndices: [staffIndex],
+				passthrough: unnamed?.passthrough ?? NO_EXTRAS
+			});
 			staffToPartIndex.set(staffIndex, emitted.length - 1);
 		}
 	}
 	return emitted;
 }
+
+const NO_EXTRAS: readonly OpaqueElement[] = Object.freeze([]);
 
 /** A `<part-group>` bracket/brace wrapping a contiguous run of emitted parts. */
 interface PartGroupPlan {
@@ -139,6 +218,8 @@ interface PartGroupPlan {
 	readonly symbol: 'brace' | 'bracket';
 	readonly firstEmittedIndex: number;
 	readonly lastEmittedIndex: number;
+	/** The group part's `<part-group>` extras (M6 Slice 3). */
+	readonly passthrough: readonly OpaqueElement[];
 }
 
 /**
@@ -178,7 +259,8 @@ function planPartGroups(score: Score, emitted: readonly EmittedPart[]): PartGrou
 			number: groups.length + 1,
 			symbol: part.staffIndices.length === 2 ? 'brace' : 'bracket',
 			firstEmittedIndex: coveredIndices[0]!,
-			lastEmittedIndex: coveredIndices[coveredIndices.length - 1]!
+			lastEmittedIndex: coveredIndices[coveredIndices.length - 1]!,
+			passthrough: part.passthrough ?? NO_EXTRAS
 		});
 	}
 	return groups;
@@ -194,12 +276,18 @@ function writePartList(
 		for (const group of groups) {
 			if (group.firstEmittedIndex === i) {
 				xml.open('part-group', { type: 'start', number: String(group.number) });
+				const slots = new SlotMerger(xml, group.passthrough, PART_GROUP_ORDER);
+				slots.before('group-symbol');
 				xml.leaf('group-symbol', group.symbol);
+				slots.rest();
 				xml.close('part-group');
 			}
 		}
 		xml.open('score-part', { id: emitted[i]!.id });
+		const slots = new SlotMerger(xml, emitted[i]!.passthrough, SCORE_PART_ORDER);
+		slots.before('part-name');
 		xml.leaf('part-name', emitted[i]!.name);
+		slots.rest();
 		xml.close('score-part');
 		for (const group of groups) {
 			if (group.lastEmittedIndex === i) {
@@ -216,7 +304,8 @@ function writePart(
 	xml: XmlBuilder,
 	score: Score,
 	emitted: readonly EmittedPart[],
-	partIndex: number
+	partIndex: number,
+	writeTempo: boolean
 ): void {
 	const part = emitted[partIndex]!;
 	const isFirstPart = partIndex === 0;
@@ -225,34 +314,46 @@ function writePart(
 	const firstStaffIndex = partStaves[0]!;
 
 	// `<divisions>` is per part, so it is the LCM of every note's denominator
-	// across every staff and every measure this part owns.
+	// across every staff and every measure this part owns (and of its
+	// positional passthrough; see `divisionsForPart`).
 	const everyNote: Note[] = [];
+	const everyAnchor: MeasurePassthrough[] = [];
 	for (const staffIndex of partStaves) {
-		for (const measure of score.staves[staffIndex]!.measures) everyNote.push(...measure.notes);
+		for (const measure of score.staves[staffIndex]!.measures) {
+			everyNote.push(...measure.notes);
+			everyAnchor.push(...measure.passthrough);
+		}
 	}
-	const divisions = divisionsForNotes(everyNote);
+	const divisions = divisionsForPart(everyNote, everyAnchor);
 	const measureCount = score.staves[firstStaffIndex]!.measures.length;
 
 	xml.open('part', { id: part.id });
 	for (let m = 0; m < measureCount; m++) {
 		xml.open('measure', { number: String(m + 1) });
+		const firstMeasure = score.staves[firstStaffIndex]!.measures[m]!;
+
+		// Passthrough that led the source measure (a `<print new-system>`,
+		// conventionally ahead of everything else) leads it again.
+		for (const anchor of firstMeasure.passthrough) {
+			if (anchor.lead) xml.element(rescaleDivisionValues(anchor.element, divisions / anchor.divisions));
+		}
 
 		// A repeat-start barline is conventionally attached to the measure it
 		// opens (MusicXML's `<barline location="left">`), and the model keeps it
 		// on `Measure.startBarline` for the same reason, so it leads the measure.
-		if (score.staves[firstStaffIndex]!.measures[m]!.startBarline === 'repeatStart') {
-			xml.open('barline', { location: 'left' });
-			xml.leaf('bar-style', 'heavy-light');
-			xml.selfClose('repeat', { direction: 'forward' });
-			xml.close('barline');
-		}
+		writeBarlines(
+			xml,
+			firstMeasure.startBarline === 'repeatStart' ? { style: 'heavy-light', repeat: 'forward' } : undefined,
+			firstMeasure.barlinePassthrough.filter((b) => b.attrs.location === 'left'),
+			'left'
+		);
 
 		writeMeasureAttributes(xml, score, part, m, divisions, multiStaff);
 
 		// The metronome mark rides in the very first measure of the very first
 		// part only: it is a score-wide value with no per-part or per-measure
 		// form in the model.
-		if (isFirstPart && m === 0) {
+		if (writeTempo && isFirstPart && m === 0) {
 			xml.open('direction', { placement: 'above' });
 			xml.open('direction-type');
 			xml.open('metronome');
@@ -266,7 +367,12 @@ function writePart(
 
 		writeMeasureNotes(xml, score, partStaves, m, divisions, multiStaff);
 
-		writeRightBarline(xml, score.endBarlineAt(m, firstStaffIndex));
+		writeBarlines(
+			xml,
+			rightBarlineMarkup(score.endBarlineAt(m, firstStaffIndex)),
+			firstMeasure.barlinePassthrough.filter((b) => b.attrs.location !== 'left'),
+			'right'
+		);
 		xml.close('measure');
 	}
 	xml.close('part');
@@ -277,9 +383,17 @@ function writePart(
  * (divisions, key, time, `<staves>` for a multi-staff part, one `<clef>` per
  * staff, in that DTD-mandated order). A later measure gets a fresh, minimal
  * `<attributes>` only when its own model object carries a key and/or time
- * change, or any of the part's staves changes clef here (M5 Slice 5), and
- * then only the changed elements: no divisions, and a `<clef>` only for the
- * staves whose clef actually changed.
+ * change, or any of the part's staves states a clef here (M5 Slice 5), and
+ * then only those elements: no divisions, and a `<clef>` only for the staves
+ * whose measure states one.
+ *
+ * A stated clef is written even when it equals the clef already in force (a
+ * `setClefRange` restore that turned out to be no change, or an imported
+ * courtesy restatement): it costs one redundant, harmless element and keeps
+ * the source's restatements across a round trip. The measure's
+ * `attributesPassthrough` (M6 Slice 3: `<staff-details>`, `<transpose>`, ...)
+ * is merged in schema order, and on its own is reason enough to write the
+ * block.
  */
 function writeMeasureAttributes(
 	xml: XmlBuilder,
@@ -290,22 +404,31 @@ function writeMeasureAttributes(
 	multiStaff: boolean
 ): void {
 	const firstStaffIndex = part.staffIndices[0]!;
+	const measure = score.staves[firstStaffIndex]!.measures[m]!;
+	const extras = measure.attributesPassthrough;
 
 	if (m === 0) {
 		xml.open('attributes');
+		const slots = new SlotMerger(xml, extras, ATTRIBUTES_ORDER);
+		slots.before('divisions');
 		xml.leaf('divisions', String(divisions));
+		slots.before('key');
 		xml.open('key');
 		xml.leaf('fifths', String(score.keyFifthsAt(0, firstStaffIndex)));
 		xml.close('key');
+		slots.before('time');
 		const time = score.timeAt(0, firstStaffIndex);
 		xml.open('time');
 		xml.leaf('beats', String(time.beats));
 		xml.leaf('beat-type', String(time.beatType));
 		xml.close('time');
+		slots.before('staves');
 		if (multiStaff) xml.leaf('staves', String(part.staffIndices.length));
+		slots.before('clef');
 		for (let k = 0; k < part.staffIndices.length; k++) {
 			writeClef(xml, score.clefAt(0, part.staffIndices[k]!), k + 1);
 		}
+		slots.rest();
 		xml.close('attributes');
 		return;
 	}
@@ -313,32 +436,39 @@ function writeMeasureAttributes(
 	// Mid-score change: read the measure object directly off the part's first
 	// staff. A change is `!== undefined`; the walk-back accessors are for
 	// "what is in force here", which is not the question at a change boundary.
-	const measure = score.staves[firstStaffIndex]!.measures[m]!;
-	// Clef changes (M5 Slice 5) are per staff, unlike key/time, so every staff
-	// of the part is checked, each against its own previous measure's
-	// *resolved* clef: a `setClefRange` restore at `to + 1` writes an explicit
-	// clef equal to what was already in force, which is no change at all and
-	// emits nothing.
+	// Clefs (M5 Slice 5) are per staff, unlike key/time, so every staff of the
+	// part is checked.
 	const clefChanges: { readonly clef: ClefType; readonly number: number }[] = [];
 	for (let k = 0; k < part.staffIndices.length; k++) {
-		const staffIndex = part.staffIndices[k]!;
-		const clef = score.clefAt(m, staffIndex);
-		if (clef !== score.clefAt(m - 1, staffIndex)) clefChanges.push({ clef, number: k + 1 });
+		const clef = score.staves[part.staffIndices[k]!]!.measures[m]!.clef;
+		if (clef !== undefined) clefChanges.push({ clef, number: k + 1 });
 	}
-	if (measure.keyFifths === undefined && measure.time === undefined && clefChanges.length === 0) return;
+	if (
+		measure.keyFifths === undefined &&
+		measure.time === undefined &&
+		clefChanges.length === 0 &&
+		extras.length === 0
+	) {
+		return;
+	}
 	xml.open('attributes');
+	const slots = new SlotMerger(xml, extras, ATTRIBUTES_ORDER);
 	if (measure.keyFifths !== undefined) {
+		slots.before('key');
 		xml.open('key');
 		xml.leaf('fifths', String(measure.keyFifths));
 		xml.close('key');
 	}
 	if (measure.time !== undefined) {
+		slots.before('time');
 		xml.open('time');
 		xml.leaf('beats', String(measure.time.beats));
 		xml.leaf('beat-type', String(measure.time.beatType));
 		xml.close('time');
 	}
+	if (clefChanges.length > 0) slots.before('clef');
 	for (const change of clefChanges) writeClef(xml, change.clef, change.number);
+	slots.rest();
 	xml.close('attributes');
 }
 
@@ -364,10 +494,20 @@ function writeClef(xml: XmlBuilder, clef: ClefType, number: number): void {
 /**
  * One measure column's note streams. For every `(staff, voice)` pair in the
  * part, in staff order then first-seen voice order, emit that stream's notes;
- * before every stream except the very first, emit a `<backup>` of the full
- * measure so the next stream starts back at the downbeat. That one rule covers
- * both a single staff's extra voices and a multi-staff part's second staff,
- * and composes if a part ever has both at once (no current fixture does).
+ * before every stream except the very first, emit a `<backup>` to the downbeat
+ * so the next stream starts there. That one rule covers both a single staff's
+ * extra voices and a multi-staff part's second staff, and composes if a part
+ * ever has both at once (no current fixture does). The backup is exactly as
+ * long as the time cursor has advanced: a full measure after a complete voice,
+ * and less after an incomplete one (an OMR measure a voice did not fill),
+ * which a fixed full-measure backup would overshoot.
+ *
+ * Positional passthrough (M6 Slice 3) rides in its own stream: written just
+ * before the event at its onset, after the last event when it sits at the
+ * stream's end, and, when its onset falls inside a longer event, after the
+ * stream via a `<backup>` to that onset (never a `<forward>`, which import
+ * reads as a rest gap). A staff whose measure has no notes but does hold
+ * passthrough gets a stream of its own with just that.
  */
 function writeMeasureNotes(
 	xml: XmlBuilder,
@@ -377,32 +517,46 @@ function writeMeasureNotes(
 	divisions: number,
 	multiStaff: boolean
 ): void {
+	let cursor: Rational = ZERO;
 	let firstStream = true;
 	for (let k = 0; k < partStaves.length; k++) {
 		const staffIndex = partStaves[k]!;
 		const staff = score.staves[staffIndex]!;
 		const measure = staff.measures[m]!;
 		const time = score.timeAt(m, staffIndex);
-		const fullMeasureDuration = Math.round(measureCapacityWholes(time) * 4 * divisions);
 		const middleLine = middleLineForClef(score.clefAt(m, staffIndex));
 
-		for (const [, voiceNotes] of groupNotesByVoice(measure.notes)) {
-			if (!firstStream) {
+		const streams = [...groupNotesByVoice(measure.notes)];
+		const anchorsByVoice = anchorsByStream(measure, streams.map(([voice]) => voice));
+		if (streams.length === 0 && anchorsByVoice.size > 0) streams.push([[...anchorsByVoice.keys()][0]!, []]);
+
+		for (const [voice, voiceNotes] of streams) {
+			if (!firstStream && cursor.num > 0) {
 				xml.open('backup');
-				xml.leaf('duration', String(fullMeasureDuration));
+				xml.leaf('duration', String(toDivisions(cursor, divisions)));
 				xml.close('backup');
 			}
 			firstStream = false;
 
 			const beamPlan = buildBeamPlan(voiceNotes, time, middleLine);
+			const anchors = anchorsByVoice.get(voice) ?? [];
+			const writeAnchor = (anchor: MeasurePassthrough): void => {
+				xml.element(rescaleDivisionValues(anchor.element, divisions / anchor.divisions));
+			};
+			const inside: MeasurePassthrough[] = [];
+			let next = 0;
+			let t: Rational = ZERO;
 			// One event per onset (M6 Slice 2): a chord's heads are written
 			// back to back, every one after the anchor carrying `<chord/>`, so a
 			// reader advances its time cursor once per chord. That is also why
-			// no `<backup>` above ever needs to know about chords: it rewinds a
-			// full measure, and the chord's members never moved the cursor.
+			// no `<backup>` above ever needs to know about chords: the chord's
+			// members never moved the cursor.
 			const events = noteEvents(voiceNotes);
+			const sourceBracketed = tupletRunsWithSourceBrackets(events);
 			for (let ei = 0; ei < events.length; ei++) {
 				const chord = events[ei]!;
+				while (next < anchors.length && compare(anchorOnset(anchors[next]!), t) < 0) inside.push(anchors[next++]!);
+				while (next < anchors.length && compare(anchorOnset(anchors[next]!), t) === 0) writeAnchor(anchors[next++]!);
 				for (const note of chord) {
 					writeNote(xml, score, note, {
 						divisions,
@@ -412,12 +566,98 @@ function writeMeasureNotes(
 						beamPlan,
 						chord,
 						previousAnchor: events[ei - 1]?.[0],
-						nextAnchor: events[ei + 1]?.[0]
+						nextAnchor: events[ei + 1]?.[0],
+						regenerateTuplets: !sourceBracketed.has(ei)
 					});
 				}
+				t = add(t, noteDurationQuarters(chord[0]!));
 			}
+			// At (or, clamped, past) the stream's end: in order, after the last
+			// event. An onset past the end only arises when a stream is shorter
+			// than the passthrough read into it, and moving it to the end is the
+			// one placement that needs no `<forward>`.
+			while (next < anchors.length && compare(anchorOnset(anchors[next]!), t) < 0) inside.push(anchors[next++]!);
+			while (next < anchors.length) writeAnchor(anchors[next++]!);
+			// Inside an event: back up to each onset, latest first, so every
+			// step is a `<backup>`. Equal onsets keep their order.
+			inside.sort((a, b) => compare(anchorOnset(b), anchorOnset(a)));
+			for (const anchor of inside) {
+				const onset = anchorOnset(anchor);
+				xml.open('backup');
+				xml.leaf('duration', String(toDivisions(sub(t, onset), divisions)));
+				xml.close('backup');
+				t = onset;
+				writeAnchor(anchor);
+			}
+			cursor = t;
 		}
 	}
+}
+
+/**
+ * Indices of the events in tuplet runs (see `writeNote`) whose brackets came
+ * from the source: some head in the run carries a passthrough `<tuplet>`.
+ * The model holds a tuplet's ratio (`Note.tuplet`), not where its bracket
+ * starts and stops, so it cannot tell two adjacent triplets from one long
+ * run; the source's own `<tuplet>` elements (with their `<tuplet-actual>`
+ * display children) are kept verbatim instead, and regenerating the run's
+ * brackets as well would write them twice. A score built in code has no such
+ * passthrough, so its runs are bracketed from the model as before.
+ */
+function tupletRunsWithSourceBrackets(events: readonly (readonly Note[])[]): Set<number> {
+	const indices = new Set<number>();
+	let runStart = -1;
+	let runHasSource = false;
+	const close = (end: number): void => {
+		if (runStart !== -1 && runHasSource) for (let i = runStart; i < end; i++) indices.add(i);
+		runStart = -1;
+		runHasSource = false;
+	};
+	events.forEach((event, i) => {
+		if (event[0]!.tuplet === null) {
+			close(i);
+			return;
+		}
+		if (runStart === -1) runStart = i;
+		if (event.some(hasSourceTuplet)) runHasSource = true;
+	});
+	close(events.length);
+	return indices;
+}
+
+function hasSourceTuplet(note: Note): boolean {
+	return note.passthrough.some((el) => el.name === 'notations' && el.children.some((c) => c.name === 'tuplet'));
+}
+
+/** A positional payload's onset in quarters, this file's time unit. */
+function anchorOnset(anchor: MeasurePassthrough): Rational {
+	return wholesToQuarters(anchor.onset);
+}
+
+function toDivisions(quarters: Rational, divisions: number): number {
+	return (quarters.num * divisions) / quarters.den;
+}
+
+/**
+ * A measure's non-lead positional passthrough grouped by the voice stream
+ * export will write it in, each list sorted by onset (stable, so equal onsets
+ * keep source order). An anchor whose voice has no notes here (import never
+ * makes one; a hand-built score could) joins the staff's first stream, or,
+ * on a staff with no notes in this measure, one stream shared by all.
+ */
+function anchorsByStream(measure: Measure, voices: readonly number[]): Map<number, MeasurePassthrough[]> {
+	const byVoice = new Map<number, MeasurePassthrough[]>();
+	// No notes at all on this staff: everything shares one stream.
+	const fallback = voices[0] ?? measure.passthrough.find((anchor) => !anchor.lead)?.voice ?? 1;
+	for (const anchor of measure.passthrough) {
+		if (anchor.lead) continue;
+		const voice = voices.includes(anchor.voice) ? anchor.voice : fallback;
+		const list = byVoice.get(voice);
+		if (list) list.push(anchor);
+		else byVoice.set(voice, [anchor]);
+	}
+	for (const list of byVoice.values()) list.sort((a, b) => compare(anchorOnset(a), anchorOnset(b)));
+	return byVoice;
 }
 
 /** Group a measure's notes by `note.voice`, first-seen order preserved, each
@@ -478,6 +718,9 @@ interface NoteContext {
 	/** Anchors of the voice's neighbouring events, for tuplet run edges. */
 	readonly previousAnchor: Note | undefined;
 	readonly nextAnchor: Note | undefined;
+	/** False when the source's own `<tuplet>` brackets for this note's run
+	 *  are in passthrough (`tupletRunsWithSourceBrackets`). */
+	readonly regenerateTuplets: boolean;
 }
 
 /**
@@ -486,20 +729,46 @@ interface NoteContext {
  * pitch-or-rest, duration, `<tie>` (the sounding element), voice, type, dots,
  * time-modification, stem, staff, beam, then `<notations>` (the visual
  * elements, `<tied>`/`<tuplet>`/`<slur>`). Anything absent is simply skipped.
+ *
+ * `Note.passthrough` (M6 Slice 3) is slotted into that same order
+ * (`NOTE_ORDER`): a `<cue/>` first, a `<notehead>` after `<stem>`, a `<lyric>`
+ * after `<notations>`, an unmatched `<tie>` after the model's own. Two
+ * passthrough names are merged rather than slotted, since the model writes
+ * the same element: a `<rest>`'s display children go inside the `<rest>`
+ * written here, and the first passthrough `<notations>` (already cut down to
+ * what the model does not own) is merged into the model's `<notations>`, any
+ * further one written right after it.
  */
 function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext): void {
 	const anchor = ctx.chord[0]!;
 	const isAnchor = note === anchor;
+	const extras = note.passthrough;
+	const restExtra = note.pitch === null ? extras.find((e) => e.name === 'rest') : undefined;
+	const notationsExtras = extras.filter((e) => e.name === 'notations');
+	const slots = new SlotMerger(
+		xml,
+		extras.length === 0 ? extras : extras.filter((e) => e.name !== 'rest' && e.name !== 'notations'),
+		NOTE_ORDER
+	);
 
 	xml.open('note');
 
 	// `<chord/>` precedes `<pitch>` in MusicXML's fixed child order.
+	slots.before('chord');
 	if (note.chordWithPrevious) xml.selfClose('chord');
 
+	slots.before('pitch');
 	if (note.pitch === null) {
 		// A whole-measure rest (M6 Slice 1) says so, so a reader fills the bar
 		// with it whatever the time signature, rather than trusting a `<type>`.
-		xml.selfClose('rest', note.isMeasureRest ? { measure: 'yes' } : undefined);
+		const restAttrs = note.isMeasureRest ? { ...restExtra?.attrs, measure: 'yes' } : restExtra?.attrs;
+		if (restExtra && restExtra.children.length > 0) {
+			xml.open('rest', restAttrs);
+			for (const c of restExtra.children) xml.element(c);
+			xml.close('rest');
+		} else {
+			xml.selfClose('rest', restAttrs);
+		}
 	} else {
 		xml.open('pitch');
 		xml.leaf('step', note.pitch.step);
@@ -510,13 +779,15 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 
 	// Every head of a chord states the chord's (the anchor's) duration, as
 	// MusicXML expects; `<chord/>` is what keeps a reader from adding it twice.
-	const quarters = noteDurationQuarters(anchor);
-	xml.leaf('duration', String((quarters.num * ctx.divisions) / quarters.den));
+	slots.before('duration');
+	xml.leaf('duration', String(toDivisions(noteDurationQuarters(anchor), ctx.divisions)));
 
+	slots.before('tie');
 	const tiedInto = score.tiedFromNote(note.id) !== undefined;
 	if (tiedInto) xml.selfClose('tie', { type: 'stop' });
 	if (note.tiedToId !== null) xml.selfClose('tie', { type: 'start' });
 
+	slots.before('voice');
 	xml.leaf('voice', String(note.voice));
 	// `NoteValue` and MusicXML's `<type>` names coincide exactly, rests
 	// included: a real file carries `<type>` on a rest too, so this does not
@@ -525,9 +796,12 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 	// `<type>whole</type>` into a 3/4 bar would state a duration the
 	// `<duration>` contradicts. MusicXML makes `<type>` optional for exactly
 	// this case, and MuseScore omits it too.
+	slots.before('type');
 	if (!note.isMeasureRest) xml.leaf('type', note.value);
+	slots.before('dot');
 	for (let d = 0; d < note.dots; d++) xml.selfClose('dot');
 
+	slots.before('time-modification');
 	if (note.tuplet) {
 		xml.open('time-modification');
 		xml.leaf('actual-notes', String(note.tuplet.actualNotes));
@@ -540,6 +814,7 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 	// rule over every head of its chord (one stem, so one direction, written
 	// on each head the way MuseScore does). The anchor decides both, since
 	// beam membership and stem presence are the chord's, not one head's.
+	slots.before('stem');
 	const membership = ctx.beamPlan.get(anchor.id);
 	if (note.pitch !== null && anchor.value !== 'whole') {
 		const direction = membership
@@ -551,10 +826,12 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 		xml.leaf('stem', direction);
 	}
 
+	slots.before('staff');
 	if (ctx.multiStaff) xml.leaf('staff', String(ctx.staffNumber));
 
 	// `<beam>` only on the anchor: a chord is one beam member, and readers
 	// (MuseScore among them) take the first note of a chord as its beam carrier.
+	slots.before('beam');
 	if (membership && isAnchor) xml.leaf('beam', membership.position, { number: '1' });
 
 	// A tuplet "run" is consecutive same-voice, same-measure events whose
@@ -563,8 +840,9 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 	// event is a run of one and carries both.
 	const previous = ctx.previousAnchor;
 	const next = ctx.nextAnchor;
-	const tupletRunStart = isAnchor && note.tuplet !== null && (previous === undefined || previous.tuplet === null);
-	const tupletRunStop = isAnchor && note.tuplet !== null && (next === undefined || next.tuplet === null);
+	const inRun = ctx.regenerateTuplets && isAnchor && note.tuplet !== null;
+	const tupletRunStart = inRun && (previous === undefined || previous.tuplet === null);
+	const tupletRunStop = inRun && (next === undefined || next.tuplet === null);
 
 	const slurStops: number[] = [];
 	const slurStarts: number[] = [];
@@ -581,148 +859,261 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 		tupletRunStop ||
 		slurStops.length > 0 ||
 		slurStarts.length > 0;
+	slots.before('notations');
 	if (hasNotations) {
-		xml.open('notations');
+		const merged = notationsExtras[0];
+		xml.open('notations', merged?.attrs);
 		if (tiedInto) xml.selfClose('tied', { type: 'stop' });
 		if (note.tiedToId !== null) xml.selfClose('tied', { type: 'start' });
 		if (tupletRunStart) xml.selfClose('tuplet', { type: 'start', number: '1' });
 		if (tupletRunStop) xml.selfClose('tuplet', { type: 'stop', number: '1' });
 		for (const number of slurStops) xml.selfClose('slur', { type: 'stop', number: String(number) });
 		for (const number of slurStarts) xml.selfClose('slur', { type: 'start', number: String(number) });
+		if (merged) for (const c of merged.children) xml.element(c);
 		xml.close('notations');
+		for (let i = 1; i < notationsExtras.length; i++) xml.element(notationsExtras[i]!);
+	} else {
+		for (const el of notationsExtras) xml.element(el);
 	}
 
+	slots.rest();
 	xml.close('note');
 }
 
-/**
- * Emit the right-hand `<barline>` for a resolved end-barline type. `normal`
- * (and the `repeatStart` a boundary resolves to when the *next* measure opens
- * a repeat, which that measure's own left barline draws) emit nothing at all,
- * which is what a plain measure boundary looks like in MusicXML.
- */
-function writeRightBarline(
-	xml: XmlBuilder,
-	end: ReturnType<Score['endBarlineAt']>
-): void {
-	let style: string;
-	let repeat: 'backward' | undefined;
+/** The model's right-hand barline for a resolved end-barline type: `normal`
+ *  (and the `repeatStart` a boundary resolves to when the *next* measure
+ *  opens a repeat, which that measure's own left barline draws) is none at
+ *  all, which is what a plain measure boundary looks like in MusicXML. */
+function rightBarlineMarkup(end: ReturnType<Score['endBarlineAt']>): BarlineMarkup | undefined {
 	switch (end) {
 		case 'double':
-			style = 'light-light';
-			break;
+			return { style: 'light-light' };
 		case 'final':
-			style = 'light-heavy';
-			break;
+			return { style: 'light-heavy' };
 		case 'repeatEnd':
-			style = 'light-heavy';
-			repeat = 'backward';
-			break;
+			return { style: 'light-heavy', repeat: 'backward' };
 		default:
-			return;
+			return undefined;
 	}
-	xml.open('barline', { location: 'right' });
-	xml.leaf('bar-style', style);
-	if (repeat) xml.selfClose('repeat', { direction: repeat });
+}
+
+interface BarlineMarkup {
+	readonly style: string;
+	readonly repeat?: 'forward' | 'backward';
+}
+
+/**
+ * The `<barline>`s at one location: the model's own (`markup`), with the
+ * first passthrough barline there merged into it (its attributes, and its
+ * children slotted around the model's `<bar-style>`/`<repeat>`, minus any
+ * `bar-style`/`repeat` of its own the model now states), then any further
+ * passthrough barline as-is. With no model barline, the passthrough ones are
+ * written as they were read.
+ */
+function writeBarlines(
+	xml: XmlBuilder,
+	markup: BarlineMarkup | undefined,
+	extras: readonly OpaqueElement[],
+	location: 'left' | 'right'
+): void {
+	if (!markup) {
+		for (const el of extras) xml.element(el);
+		return;
+	}
+	const merged = extras[0];
+	const mergedChildren = merged
+		? merged.children.filter((c) => c.name !== 'bar-style' && !(markup.repeat && c.name === 'repeat'))
+		: NO_EXTRAS;
+	xml.open('barline', { ...merged?.attrs, location });
+	const slots = new SlotMerger(xml, mergedChildren, BARLINE_ORDER);
+	slots.before('bar-style');
+	xml.leaf('bar-style', markup.style);
+	slots.before('repeat');
+	if (markup.repeat) xml.selfClose('repeat', { direction: markup.repeat });
+	slots.rest();
 	xml.close('barline');
+	for (let i = 1; i < extras.length; i++) xml.element(extras[i]!);
+}
+
+// --- Passthrough helpers ------------------------------------------------------
+
+/**
+ * Child order the MusicXML 4.0 schema fixes for each container export merges
+ * passthrough into. Only the order matters (a name's index is its slot); a
+ * name not listed sorts last.
+ */
+const NOTE_ORDER = slotOrder([
+	'grace',
+	'cue',
+	'chord',
+	'pitch',
+	'unpitched',
+	'rest',
+	'duration',
+	'tie',
+	'instrument',
+	'footnote',
+	'level',
+	'voice',
+	'type',
+	'dot',
+	'accidental',
+	'time-modification',
+	'stem',
+	'notehead',
+	'notehead-text',
+	'staff',
+	'beam',
+	'notations',
+	'lyric',
+	'play',
+	'listen'
+]);
+
+const ATTRIBUTES_ORDER = slotOrder([
+	'footnote',
+	'level',
+	'divisions',
+	'key',
+	'time',
+	'staves',
+	'part-symbol',
+	'instruments',
+	'clef',
+	'staff-details',
+	'transpose',
+	'for-part',
+	'directive',
+	'measure-style'
+]);
+
+const BARLINE_ORDER = slotOrder([
+	'bar-style',
+	'footnote',
+	'level',
+	'wavy-line',
+	'segno',
+	'coda',
+	'fermata',
+	'ending',
+	'repeat'
+]);
+
+const SCORE_PART_ORDER = slotOrder([
+	'identification',
+	'part-link',
+	'part-name',
+	'part-name-display',
+	'part-abbreviation',
+	'part-abbreviation-display',
+	'group',
+	'score-instrument',
+	'player',
+	'midi-device',
+	'midi-instrument'
+]);
+
+const PART_GROUP_ORDER = slotOrder([
+	'group-name',
+	'group-name-display',
+	'group-abbreviation',
+	'group-abbreviation-display',
+	'group-symbol',
+	'group-barline',
+	'group-time',
+	'footnote',
+	'level'
+]);
+
+function slotOrder(names: readonly string[]): ReadonlyMap<string, number> {
+	return new Map(names.map((name, i) => [name, i]));
+}
+
+/**
+ * Interleaves passthrough elements with the ones export writes itself, in
+ * schema order. The caller announces each element it is about to write with
+ * `before(name)`, which first writes every pending passthrough element whose
+ * slot comes earlier; `rest()` writes whatever is left. A passthrough element
+ * sharing a slot with the model's (an unmatched `<tie>` next to the model's
+ * ties) therefore lands after it, and elements in one slot keep their order.
+ */
+class SlotMerger {
+	readonly #pending: readonly OpaqueElement[];
+	#next = 0;
+
+	constructor(
+		private readonly xml: XmlBuilder,
+		extras: readonly OpaqueElement[],
+		private readonly order: ReadonlyMap<string, number>
+	) {
+		this.#pending =
+			extras.length < 2 ? extras : [...extras].sort((a, b) => this.#slot(a.name) - this.#slot(b.name));
+	}
+
+	before(name: string): void {
+		if (this.#next >= this.#pending.length) return;
+		const slot = this.#slot(name);
+		while (this.#next < this.#pending.length && this.#slot(this.#pending[this.#next]!.name) < slot) {
+			this.xml.element(this.#pending[this.#next++]!);
+		}
+	}
+
+	rest(): void {
+		while (this.#next < this.#pending.length) this.xml.element(this.#pending[this.#next++]!);
+	}
+
+	#slot(name: string): number {
+		return this.order.get(name) ?? this.order.size;
+	}
+}
+
+/**
+ * A positional payload's division-valued children (`<offset>` in a
+ * `<direction>`/`<harmony>`, `<duration>` in a `<figured-bass>`) scaled by
+ * `factor`, the part's `<divisions>` over the one it was read under. 1 in the
+ * usual case (`divisionsForPart` folds the source divisions in), which returns
+ * the payload itself untouched; otherwise only the path to a changed value is
+ * copied.
+ */
+function rescaleDivisionValues(el: OpaqueElement, factor: number): OpaqueElement {
+	if (factor === 1) return el;
+	if (el.children.length === 0) {
+		if (el.name !== 'offset' && el.name !== 'duration') return el;
+		const value = Number(el.text.trim());
+		return Number.isFinite(value) && el.text.trim() !== '' ? { ...el, text: String(value * factor) } : el;
+	}
+	let changed = false;
+	const scaled = el.children.map((c) => {
+		const out = rescaleDivisionValues(c, factor);
+		if (out !== c) changed = true;
+		return out;
+	});
+	return changed ? { ...el, children: scaled } : el;
 }
 
 // --- Exact-fraction divisions ---------------------------------------------
-
-/**
- * A non-negative rational, kept exact so `<divisions>` can be derived without
- * ever going through the float `durationWholes`: a tripleted eighth's real
- * duration is 1/12 of a whole, which no `number` holds exactly, and rounding
- * that back to an integer `<duration>` only works if the divisor was chosen
- * from the exact denominator in the first place.
- */
-interface Rational {
-	readonly num: number;
-	readonly den: number;
-}
-
-function gcd(a: number, b: number): number {
-	a = Math.abs(a);
-	b = Math.abs(b);
-	while (b !== 0) {
-		[a, b] = [b, a % b];
-	}
-	return a === 0 ? 1 : a;
-}
-
-function reduce(r: Rational): Rational {
-	const g = gcd(r.num, r.den);
-	return { num: r.num / g, den: r.den / g };
-}
-
-function mul(a: Rational, b: Rational): Rational {
-	return reduce({ num: a.num * b.num, den: a.den * b.den });
-}
-
-function lcm(a: number, b: number): number {
-	return (a / gcd(a, b)) * b;
-}
-
-/**
- * Each note value's plain duration in quarter notes, as an exact fraction
- * reconstructed from `NOTE_VALUE_WHOLES[value] * 4` rather than read off the
- * float: whole 4/1 down to 64th 1/16.
- */
-const QUARTERS_PER_VALUE: Readonly<Record<NoteValue, Rational>> = {
-	whole: { num: 4, den: 1 },
-	half: { num: 2, den: 1 },
-	quarter: { num: 1, den: 1 },
-	eighth: { num: 1, den: 2 },
-	'16th': { num: 1, den: 4 },
-	'32nd': { num: 1, den: 8 },
-	'64th': { num: 1, den: 16 }
-};
-
-/** The dot multiplier `2 - 2**-dots` as an exact fraction: 1/1, 3/2, 7/4. */
-const DOT_MULTIPLIER: Readonly<Record<0 | 1 | 2, Rational>> = {
-	0: { num: 1, den: 1 },
-	1: { num: 3, den: 2 },
-	2: { num: 7, den: 4 }
-};
-
-/** A note's duration in quarter notes, exact, dots and tuplet ratio folded in
- *  the same way `Note.durationWholes` folds them, but as a reduced fraction. */
-function noteDurationQuarters(note: Note): Rational {
-	if (note.measureRestWholes !== null) return quartersFromWholes(note.measureRestWholes);
-	let quarters = mul(QUARTERS_PER_VALUE[note.value], DOT_MULTIPLIER[note.dots]);
-	if (note.tuplet) {
-		quarters = mul(quarters, { num: note.tuplet.normalNotes, den: note.tuplet.actualNotes });
-	}
-	return quarters;
-}
-
-/**
- * A whole-measure rest's length, which the model holds as a float (a time
- * signature's `beats / beatType`, e.g. 0.375 for 3/8), back as an exact
- * fraction of quarters: the smallest denominator that makes it whole. Any
- * real time signature's beat type is a small power of two (or, rarely, some
- * other small integer), so the search ends almost at once; the cap only
- * guards a corrupt value from looping, falling back to the float rounded at
- * 1/1024 of a quarter.
- */
-function quartersFromWholes(wholes: number): Rational {
-	const quarters = wholes * 4;
-	for (let den = 1; den <= 1024; den++) {
-		const num = Math.round(quarters * den);
-		if (Math.abs(num / den - quarters) < 1e-9) return reduce({ num, den });
-	}
-	return reduce({ num: Math.round(quarters * 1024), den: 1024 });
-}
 
 /**
  * `<divisions>` (divisions per quarter note) for a part: the LCM of every
  * note's exact-fraction denominator, so multiplying any note's duration by it
  * lands on a whole number. A part with no notes at all falls back to 1, since
  * an LCM over nothing is undefined and `<divisions>` still has to be positive.
+ *
+ * Positional passthrough (M6 Slice 3) joins in twice: its onsets must land on
+ * whole divisions too (a `<backup>` may have to reach one), and the
+ * `<divisions>` it was read under is folded in so that, in the usual case,
+ * the part keeps the source's own value and a `<direction>`'s `<offset>`
+ * (counted in divisions) is written back untouched. When the LCM still comes
+ * out a multiple of it (an edit introduced a finer subdivision),
+ * `rescaleDivisionValues` scales those values instead.
  */
-function divisionsForNotes(notes: readonly Note[]): number {
+function divisionsForPart(notes: readonly Note[], anchors: readonly MeasurePassthrough[]): number {
 	let divisions = 1;
 	for (const note of notes) divisions = lcm(divisions, noteDurationQuarters(note).den);
+	for (const anchor of anchors) {
+		divisions = lcm(divisions, wholesToQuarters(anchor.onset).den);
+		divisions = lcm(divisions, anchor.divisions);
+	}
 	return divisions;
 }
 
@@ -736,7 +1127,7 @@ function escapeAttr(value: string): string {
 	return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/"/g, '&quot;');
 }
 
-function formatAttrs(attrs: Record<string, string> | undefined): string {
+function formatAttrs(attrs: Readonly<Record<string, string>> | undefined): string {
 	if (!attrs) return '';
 	return Object.entries(attrs)
 		.map(([key, value]) => ` ${key}="${escapeAttr(value)}"`)
@@ -762,7 +1153,7 @@ class XmlBuilder {
 		this.lines.push(line);
 	}
 
-	open(tag: string, attrs?: Record<string, string>): void {
+	open(tag: string, attrs?: Readonly<Record<string, string>>): void {
 		this.lines.push(`${this.indent}<${tag}${formatAttrs(attrs)}>`);
 		this.depth++;
 	}
@@ -772,12 +1163,30 @@ class XmlBuilder {
 		this.lines.push(`${this.indent}</${tag}>`);
 	}
 
-	leaf(tag: string, text: string, attrs?: Record<string, string>): void {
+	leaf(tag: string, text: string, attrs?: Readonly<Record<string, string>>): void {
 		this.lines.push(`${this.indent}<${tag}${formatAttrs(attrs)}>${escapeText(text)}</${tag}>`);
 	}
 
-	selfClose(tag: string, attrs?: Record<string, string>): void {
+	selfClose(tag: string, attrs?: Readonly<Record<string, string>>): void {
 		this.lines.push(`${this.indent}<${tag}${formatAttrs(attrs)}/>`);
+	}
+
+	/**
+	 * A passthrough element (M6 Slice 3), verbatim: its attributes, then its
+	 * children recursively, or its text if it has none. An element with
+	 * children carried only indentation as text (MusicXML has no mixed
+	 * content), which is regenerated here rather than copied.
+	 */
+	element(el: OpaqueElement): void {
+		if (el.children.length > 0) {
+			this.open(el.name, el.attrs);
+			for (const c of el.children) this.element(c);
+			this.close(el.name);
+		} else if (el.text !== '') {
+			this.leaf(el.name, el.text, el.attrs);
+		} else {
+			this.selfClose(el.name, el.attrs);
+		}
 	}
 
 	toString(): string {

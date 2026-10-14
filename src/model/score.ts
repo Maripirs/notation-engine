@@ -14,6 +14,7 @@
 
 import type { Pitch } from './pitch.js';
 import { parsePitch, pitchesEqual, transpose } from './pitch.js';
+import { NO_PASSTHROUGH, type MeasurePassthrough, type OpaqueElement } from './passthrough.js';
 
 /** Note values Divisi draws, whole down to 64th. */
 export type NoteValue = 'whole' | 'half' | 'quarter' | 'eighth' | '16th' | '32nd' | '64th';
@@ -157,6 +158,8 @@ export interface NoteSpec {
 	 * pitched note in the same voice (`Score.appendNote` throws otherwise).
 	 */
 	readonly chordWithPrevious?: boolean;
+	/** See `Note.passthrough`. */
+	readonly passthrough?: readonly OpaqueElement[];
 }
 
 export class Note {
@@ -176,6 +179,17 @@ export class Note {
 	/** See `NoteSpec.chordWithPrevious`. `false` for a chord's anchor and for
 	 *  every ordinary note or rest. */
 	readonly chordWithPrevious: boolean;
+	/**
+	 * Unmodelled children of this note's `<note>` (M6 Slice 3, see
+	 * `passthrough.ts`), in source order: `<lyric>`, `<notehead>`, `<cue>`, a
+	 * `<notations>` cut down to the children the model does not own, a
+	 * `<tie>`/`<tied>`/`<slur>` end that never found its partner, ... Export
+	 * slots each back into its schema position. It belongs to this note alone,
+	 * so edits that keep the note (a transpose) keep it, and a chord member
+	 * carries its own. Replaced wholesale, never mutated: the array and every
+	 * element are immutable, which is what lets `Score.clone` share them.
+	 */
+	passthrough: readonly OpaqueElement[];
 
 	constructor(id: NoteId, spec: NoteSpec) {
 		this.id = id;
@@ -187,6 +201,7 @@ export class Note {
 		this.tiedToId = spec.tiedToId ?? null;
 		this.measureRestWholes = spec.measureRestWholes ?? null;
 		this.chordWithPrevious = spec.chordWithPrevious ?? false;
+		this.passthrough = spec.passthrough ?? NO_PASSTHROUGH;
 		if (this.measureRestWholes !== null && this.pitch !== null) {
 			throw new Error(`Note ${id}: measureRestWholes is only valid on a rest (pitch: null)`);
 		}
@@ -305,6 +320,33 @@ export class Measure {
 	 * end barline at the same boundary; see `Score.endBarlineAt`.
 	 */
 	startBarline?: 'repeatStart';
+	/**
+	 * `<measure>` children the model does not hold, each anchored at the onset
+	 * and voice stream it was read at (M6 Slice 3; see `MeasurePassthrough`).
+	 * Held by the staff the stream belongs to. Replaced wholesale, never
+	 * mutated, like `Note.passthrough`.
+	 */
+	passthrough: readonly MeasurePassthrough[] = NO_PASSTHROUGH;
+	/**
+	 * Children of this measure's `<attributes>` the model does not own
+	 * (`<staff-details>`, `<transpose>`, `<measure-style>`, ...), which export
+	 * merges, in schema order, into the `<attributes>` it writes for the
+	 * measure (writing one just for them if the model has nothing to state).
+	 * Kept on the part's first staff, the one export reads a part's
+	 * attributes from. An `<attributes>` with nothing owned in it at all is
+	 * positional `passthrough` instead, so a mid-measure one stays mid-measure.
+	 */
+	attributesPassthrough: readonly OpaqueElement[] = NO_PASSTHROUGH;
+	/**
+	 * `<barline>` elements, minus whatever the model read out of them into
+	 * `startBarline`/`endBarline` (`bar-style`, and `repeat` when the model
+	 * holds the repeat), each still carrying its `location`: an `<ending>`, a
+	 * `<fermata>`, a `bar-style` the model has no shape for (`dashed`,
+	 * `heavy`, ...). Export merges each into the barline it writes at that
+	 * location, or writes it alone. Kept on the part's first staff, like
+	 * `attributesPassthrough`.
+	 */
+	barlinePassthrough: readonly OpaqueElement[] = NO_PASSTHROUGH;
 
 	constructor(index: number, staffIndex: number) {
 		this.index = index;
@@ -357,6 +399,14 @@ export class Staff {
 export interface Part {
 	readonly name?: string;
 	readonly staffIndices: readonly number[];
+	/**
+	 * Unowned children of the `<score-part>` this part came from
+	 * (`<score-instrument>`, `<midi-instrument>`, `<part-abbreviation>`, ...),
+	 * or, for a part that records a bracket/brace group, of its `<part-group
+	 * type="start">` (`<group-name>`, `<group-barline>`, ...). M6 Slice 3;
+	 * export merges them back in schema order.
+	 */
+	readonly passthrough?: readonly OpaqueElement[];
 }
 
 export interface TimeSignature {
@@ -638,6 +688,13 @@ export class Score {
 	 *  `addCrossStaffBeam` was called. See `CrossStaffBeam`'s own comment for
 	 *  what this does and does not model. */
 	readonly crossStaffBeams: CrossStaffBeam[] = [];
+	/**
+	 * The score header the model does not hold (M6 Slice 3): every
+	 * `<score-partwise>` child before `<part-list>` (`<work>`,
+	 * `<movement-title>`, `<identification>`, `<defaults>`, `<credit>`), in
+	 * source order, written back ahead of the part list.
+	 */
+	headerPassthrough: readonly OpaqueElement[] = NO_PASSTHROUGH;
 
 	// Note id -> owning measure. Maintained on insert so an edit can answer
 	// "which measure did I just touch" in O(1) instead of scanning the score.
@@ -684,8 +741,8 @@ export class Score {
 	/** Add a new `Part` grouping `staffIndices`, returning it. See `Part`'s own
 	 *  comment: this only records the grouping, it draws no brace/bracket
 	 *  (Slice 5's job). */
-	addPart(staffIndices: readonly number[], name?: string): Part {
-		const part: Part = { name, staffIndices };
+	addPart(staffIndices: readonly number[], name?: string, passthrough?: readonly OpaqueElement[]): Part {
+		const part: Part = passthrough && passthrough.length > 0 ? { name, staffIndices, passthrough } : { name, staffIndices };
 		this.parts.push(part);
 		return part;
 	}
@@ -1119,7 +1176,9 @@ export class Score {
 	 * `CrossStaffBeam` is a fresh object, and every array is fresh, so mutating
 	 * anything in the clone (a note's pitch, a measure's barline, a staff's
 	 * clef, a part's staff list, a `tiedToId`) cannot reach back into the
-	 * source, or vice versa.
+	 * source, or vice versa. Passthrough payloads (M6 Slice 3) are the one
+	 * thing shared, and only because they are immutable: an edit replaces a
+	 * payload list, it never mutates one.
 	 *
 	 * The three private indexes (`#measureOfNote`, `#tieSourceOfTarget`,
 	 * `#crossStaffBeamOfNote`) are rebuilt against the freshly created objects
@@ -1154,6 +1213,11 @@ export class Score {
 				}
 				if (measure.endBarline !== undefined) measureCopy.endBarline = measure.endBarline;
 				if (measure.startBarline !== undefined) measureCopy.startBarline = measure.startBarline;
+				// Passthrough payloads are immutable (see `passthrough.ts`), so the
+				// copy shares them; only reassigning the field can change one.
+				measureCopy.passthrough = measure.passthrough;
+				measureCopy.attributesPassthrough = measure.attributesPassthrough;
+				measureCopy.barlinePassthrough = measure.barlinePassthrough;
 				for (const note of measure.notes) {
 					const noteCopy = new Note(note.id, {
 						pitch: note.pitch === null ? null : { ...note.pitch },
@@ -1162,7 +1226,8 @@ export class Score {
 						dots: note.dots,
 						tuplet: note.tuplet === null ? undefined : { ...note.tuplet },
 						measureRestWholes: note.measureRestWholes,
-						chordWithPrevious: note.chordWithPrevious
+						chordWithPrevious: note.chordWithPrevious,
+						passthrough: note.passthrough
 					});
 					// Set directly, not through the spec's `tiedToId` (which would
 					// run `#linkTie`): see this method's own doc comment.
@@ -1179,12 +1244,14 @@ export class Score {
 		}
 
 		for (const part of this.parts) {
-			copy.parts.push(
-				part.name === undefined
-					? { staffIndices: [...part.staffIndices] }
-					: { name: part.name, staffIndices: [...part.staffIndices] }
-			);
+			const partCopy: { name?: string; staffIndices: number[]; passthrough?: readonly OpaqueElement[] } = {
+				staffIndices: [...part.staffIndices]
+			};
+			if (part.name !== undefined) partCopy.name = part.name;
+			if (part.passthrough !== undefined) partCopy.passthrough = part.passthrough;
+			copy.parts.push(partCopy);
 		}
+		copy.headerPassthrough = this.headerPassthrough;
 
 		for (const slur of this.slurs) {
 			copy.slurs.push({ startNoteId: slur.startNoteId, endNoteId: slur.endNoteId });

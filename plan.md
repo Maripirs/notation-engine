@@ -987,7 +987,7 @@ element by Slice 3 and stays there.
       `<chord>` count at 0 with note counts matching source except
       remaining grace notes. Demo: a chord showcase score plus Les Djinns
       loadable in `npm run dev`.
-- [ ] **Slice 3: Lossless passthrough.** Unmodelled elements are kept
+- [x] **Slice 3: Lossless passthrough.** Unmodelled elements are kept
       on import as opaque XML subtrees anchored where they appeared: on a
       `Note` (e.g. `<notations>` children, `<lyric>`, `<notehead>`), on a
       `Measure` at an onset (`<direction>`, `<print>`, `<harmony>`), or on
@@ -2681,3 +2681,82 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   inherits D major from an earlier showcase, so the chord showcase states
   `keyFifths: 0` explicitly; `layout.systems.length` reports 372 for Les
   Djinns' 62 multi-staff systems (counts per staff, probably), worth a look.
+- 2026-10-14: M6 Slice 3 (lossless passthrough) done, via subagent.
+  Payload representation: `src/model/passthrough.ts` declares
+  `OpaqueElement`, structurally identical to io's `XmlElement`, so the
+  parser's frozen nodes are stored as-is with no conversion while `model`
+  still imports nothing from `io` (a serialized string was rejected: every
+  promotion and every equality check would reparse). Payloads are immutable,
+  so `Score.clone` (undo) shares them by reference.
+  Anchor kinds: `Note.passthrough` (unowned `<note>` children: `<lyric>`,
+  `<notehead>`, `<cue>`, a `<notations>` cut down to unowned children, a
+  `<rest>`'s display-step/octave, and any `<tie>`/`<tied>`/`<slur>` end that
+  found no partner); `Measure.passthrough` (`MeasurePassthrough`: element +
+  exact onset in wholes + voice stream + `lead` (a `<print>` before anything
+  else) + the `<divisions>` it was read at), holding `<direction>`,
+  `<print>`, `<harmony>`, `<sound>`, grace `<note>`s, an `<attributes>` with
+  nothing modelled in it, unknown names; `Measure.attributesPassthrough` and
+  `.barlinePassthrough` (unowned children of an owned `<attributes>`, and
+  barlines minus what `startBarline`/`endBarline` took, merged back in
+  schema order); `Score.headerPassthrough` (`<work>`, `<identification>`,
+  ...) and `Part.passthrough` (`<score-part>`/`<part-group>` extras). The
+  importer decides by `*_OWNED` sets, so promotion is "add the name, read
+  it". Stream rule: an element right after a note is in that note's stream
+  at its model clock (so OMR `<duration>`/`<type>` disagreements do not shift
+  it); after a `<backup>`/`<forward>` it is in the next note's stream at the
+  source cursor if a note follows before the cursor moves again, else the
+  previous note's; a grace note is in its own staff/voice at that stream's
+  clock, i.e. right before its principal. Export writes an anchor before the
+  event at its onset, at the stream end, or (onset inside a longer event)
+  after the stream via `<backup>`, never `<forward>` (import reads that as a
+  rest). Export's backup between streams is now the actual cursor, not a
+  fixed full measure. Part `<divisions>` folds in each anchor's source
+  divisions (so `<offset>` stays verbatim; otherwise it is rescaled).
+  `<tuplet>` brackets are passed through (the model has the ratio, not
+  bracket extents, so adjacent triplets used to merge into one bracket);
+  export regenerates brackets only for a run with none from the source. The
+  tempo direction export writes is passed through like any direction, and
+  export skips its own when passthrough already states the model's tempo; a
+  direction of exactly export's own tempo shape in part 1 measure 1 is
+  model-owned instead, so a built score gains no payload on round trip.
+  Import fixes found by the new re-import equivalence check: measure 1's
+  attributes are now read across every `<attributes>` block (Audiveris puts
+  `<key>` in a second block, so the global key read as 0 and the real key
+  became a measure-0 change); mid-score clefs are exported whenever a
+  measure states one (redundant restatements survive).
+  Normalization list (the corpus test's `NORMALIZED`, counts may differ):
+  `accidental` (not written), `attributes` (blocks in one measure merged),
+  `backup`, `beam` (primary level only), `notations` (several on one note
+  merge when the model writes one), `staff` (written iff multi-staff part),
+  `staves` (same), `stem`, `tuplet` (bare source runs get brackets), `type`
+  (not on measure rests), `voice` (written on every note). Asserted exactly,
+  not waived: nonzero `<alter>` count, `<duration>` minus backups, one
+  synthesized tempo direction when the source has none, and one
+  `clef`/`sign`/`line` per `dropped.clef`.
+  Corpus result: `dropped` is `{}` for 4 files and only `clef` (a
+  mid-measure clef change overridden in the same measure; the model has one
+  clef per measure) for Brahms 4, Faure 5, Gardiner 2; everything else moved
+  to a new `passthrough` tally (e.g. Brahms `articulations` 872, `wedge` 479,
+  `tuplet` 461, `grace` 11, `tied` 27 and `slur` 9 unpaired ends). For all 7,
+  `export(import(f))` matches the source modulo the list above,
+  `import(export(import(f)))` is equivalent to `import(f)` with payloads
+  compared (`assertScoresEquivalent` now compares every payload kind, as
+  multisets, `<offset>` by the time it means), the second export is
+  byte-identical, and a transpose keeps the note's payload and after undo
+  the export is byte-identical again.
+  Timings (Brahms, same machine): import 230-234 -> 240-244 ms, export 87-89
+  -> 110-132 ms (it now writes the ~4k payload elements it used to drop).
+  Tests: 479 -> 503 (17 in new `src/io/passthrough.test.ts`, 7 corpus
+  round-trip tests, diagnostics test reworked); `check`/`build` green.
+  Noticed, not fixed: XML attributes on modelled elements are not preserved
+  (`<note default-x>`, `<time symbol="common">`, `<measure width>`, measure
+  numbers are renumbered, `score-partwise version`); `<key><mode>` and other
+  sub-children of modelled elements are tallied as dropped; `<unpitched>`
+  becomes a rest (dropped); a `<part-group>` over one staff is dropped;
+  unmatched slur ends keep their source `number`, so on re-import one could
+  pair with a regenerated slur of the same number (none in the corpus);
+  Slice 7's `setTie`/delete ops must clear a note's passthrough tie/tied of
+  the same type, and duration edits must drop passthrough `<tuplet>`s of the
+  run they change; the breve fallback in Coleridge-Taylor still loses a
+  breve's length (now a passthrough-free fallback, listed under fallbacks);
+  layout ignores all passthrough (nothing is drawn yet, by design).

@@ -27,6 +27,8 @@ export type {
 	TupletRatio
 } from './score.js';
 export { assertScoresEquivalent } from './score-equivalence.js';
+export type { Fraction, MeasurePassthrough, OpaqueElement } from './passthrough.js';
+export { NO_PASSTHROUGH, opaqueElementKey } from './passthrough.js';
 export { EditHistory } from './edit-history.js';
 export type { EditHistoryOptions } from './edit-history.js';
 export {

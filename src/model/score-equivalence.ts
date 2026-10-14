@@ -26,6 +26,16 @@
 //     `exportMusicXml` invents a synthetic "Part N" name for every staff no
 //     named model `Part` covers, so those names are noise, not signal.
 //
+// Passthrough payloads (M6 Slice 3) *are* compared, since a round trip that
+// lost a dynamic or a lyric is exactly what they exist to prevent: each
+// payload by `opaqueElementKey` (attribute order and re-indentation ignored,
+// `<offset>`/`<duration>` values compared as the time they mean, so a
+// `<divisions>` change does not count). A measure's positional payloads are
+// compared as a multiset of (lead, voice, onset, element) rather than a list:
+// export may legitimately reorder two payloads at different onsets or in
+// different streams (it writes stream by stream), and nothing reads their
+// relative order.
+//
 // Every mismatch throws an `Error` naming the first thing that differed, so a
 // failing round-trip test points straight at the divergence.
 
@@ -33,8 +43,9 @@
 // file is re-exported *from* `index.js`, so pulling `index.js` back in here
 // would be a circular import for no benefit (everything needed lives in
 // `pitch.js` / `score.js`).
+import { opaqueElementKey, type MeasurePassthrough, type OpaqueElement } from './passthrough.js';
 import { formatPitch, type Pitch } from './pitch.js';
-import type { Note, Score } from './score.js';
+import type { Measure, Note, Part, Score } from './score.js';
 
 /**
  * Throw unless `actual` and `expected` represent the same music. See this
@@ -50,6 +61,8 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 	if (actual.tempoBpm !== expected.tempoBpm) {
 		fail('score.tempoBpm', actual.tempoBpm, expected.tempoBpm);
 	}
+
+	assertEqual('score.headerPassthrough', payloadListKey(actual.headerPassthrough), payloadListKey(expected.headerPassthrough));
 
 	if (actual.staves.length !== expected.staves.length) {
 		fail('staves.length', actual.staves.length, expected.staves.length);
@@ -83,6 +96,7 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 				expectedStaff.measures[m]!.startBarline ?? 'none'
 			);
 
+			assertMeasurePassthroughEquivalent(where, actualStaff.measures[m]!, expectedStaff.measures[m]!);
 			assertMeasureNotesEquivalent(where, actual, expected, actualStaff.measures[m]!.notes, expectedStaff.measures[m]!.notes);
 		}
 	}
@@ -145,6 +159,7 @@ function assertNoteEquivalent(
 	// Chord membership (M6 Slice 2): the same heads in the same order but
 	// regrouped into different chords would sound and draw differently.
 	assertEqual(`${where} chordWithPrevious`, actualNote.chordWithPrevious, expectedNote.chordWithPrevious);
+	assertEqual(`${where} passthrough`, notePayloadKey(actualNote.passthrough), notePayloadKey(expectedNote.passthrough));
 
 	// Tie linkage: both must either start no tie, or start one that lands on a
 	// note of the same pitch.
@@ -165,6 +180,67 @@ function groupByVoice(notes: readonly Note[]): Map<number, Note[]> {
 		else byVoice.set(note.voice, [note]);
 	}
 	return byVoice;
+}
+
+// --- Passthrough payloads -------------------------------------------------
+
+function assertMeasurePassthroughEquivalent(where: string, actual: Measure, expected: Measure): void {
+	assertEqual(`${where} passthrough`, anchoredKeys(actual.passthrough), anchoredKeys(expected.passthrough));
+	assertEqual(
+		`${where} attributesPassthrough`,
+		payloadListKey(actual.attributesPassthrough),
+		payloadListKey(expected.attributesPassthrough)
+	);
+	assertEqual(
+		`${where} barlinePassthrough`,
+		payloadListKey(actual.barlinePassthrough),
+		payloadListKey(expected.barlinePassthrough)
+	);
+}
+
+function anchoredKeys(anchors: readonly MeasurePassthrough[]): string {
+	return anchors
+		.map(
+			(a) =>
+				`${a.lead ? 'lead' : `v${a.voice}@${a.onset.num}/${a.onset.den}`} ${opaqueElementKey(a.element, a.divisions)}`
+		)
+		.sort()
+		.join('\n');
+}
+
+/**
+ * A note's payload key, minus `<notations><tuplet>`: tuplet brackets are
+ * presentation of `Note.tuplet` (compared above), like beams. Export writes a
+ * source's brackets back verbatim but brackets a run the source left bare
+ * itself, and a re-import keeps those as passthrough, so they may appear
+ * without the music having changed.
+ */
+function notePayloadKey(elements: readonly OpaqueElement[]): string {
+	const withoutBrackets: OpaqueElement[] = [];
+	for (const el of elements) {
+		if (el.name !== 'notations') {
+			withoutBrackets.push(el);
+			continue;
+		}
+		const rest = el.children.filter((c) => c.name !== 'tuplet');
+		if (rest.length > 0) withoutBrackets.push({ ...el, children: rest });
+	}
+	return payloadListKey(withoutBrackets);
+}
+
+/** A payload list as a multiset: export writes payloads back in MusicXML's
+ *  schema order (a `<notehead>` before a `<lyric>`, a `<score-instrument>`
+ *  before a `<midi-instrument>`), which need not be the order a source file
+ *  used, and nothing reads their relative order. */
+function payloadListKey(elements: readonly OpaqueElement[] | undefined): string {
+	return (elements ?? [])
+		.map((el) => opaqueElementKey(el))
+		.sort()
+		.join('\n');
+}
+
+function partPassthroughKey(part: Part): string {
+	return part.passthrough && part.passthrough.length > 0 ? ` +${payloadListKey(part.passthrough)}` : '';
 }
 
 // --- Slurs, addressed by note position ----------------------------------
@@ -213,7 +289,7 @@ function namedPartKeys(score: Score): Set<string> {
 	for (const part of score.parts) {
 		if (part.name === undefined || part.name === '') continue;
 		if (/^Part \d+$/.test(part.name)) continue;
-		keys.add(`${sortedIndices(part.staffIndices)}::${part.name}`);
+		keys.add(`${sortedIndices(part.staffIndices)}::${part.name}${partPassthroughKey(part)}`);
 	}
 	return keys;
 }
@@ -227,7 +303,7 @@ function partGroupKeys(score: Score): Set<string> {
 		if (part.staffIndices.length < 2) continue;
 		if (part.name !== undefined && part.name !== '') continue;
 		const symbol = part.staffIndices.length === 2 ? 'brace' : 'bracket';
-		keys.add(`${sortedIndices(part.staffIndices)}::${symbol}`);
+		keys.add(`${sortedIndices(part.staffIndices)}::${symbol}${partPassthroughKey(part)}`);
 	}
 	return keys;
 }

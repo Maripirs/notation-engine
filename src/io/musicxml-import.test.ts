@@ -262,7 +262,7 @@ describe('importMusicXml: mid-score clef changes (M5 Slice 5)', () => {
 describe('importMusicXml — tolerance for unsupported content', () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it('drops lyrics, grace notes, articulations and dynamics, warns once on a truly unknown element', () => {
+	it('keeps lyrics, grace notes, articulations and dynamics out of the model quietly, warns once on a truly unknown element', () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const xml = doc(`
       <part-list><score-part id="P1"><part-name>Test</part-name></score-part></part-list>
@@ -286,14 +286,15 @@ describe('importMusicXml — tolerance for unsupported content', () => {
 
 		const score = importMusicXml(xml);
 
-		// The grace note is gone; the four real quarter notes survive intact.
+		// The grace note is not a model note (it is passthrough since M6 Slice
+		// 3); the four real quarter notes survive intact.
 		const notes = score.staves[0]!.measures[0]!.notes;
 		expect(notes.map((n) => n.pitch?.step)).toEqual(['C', 'D', 'E', 'F']);
 		expect(notes.every((n) => n.value === 'quarter')).toBe(true);
 
 		const messages = warn.mock.calls.map((call) => String(call[0]));
 		expect(messages.some((m) => m.includes('florble'))).toBe(true);
-		// The known-irrelevant elements are dropped silently.
+		// The known unmodelled elements are passed through silently.
 		for (const quiet of ['lyric', 'grace', 'articulations', 'direction', 'dynamics', 'staccato']) {
 			expect(messages.some((m) => m.includes(quiet))).toBe(false);
 		}
@@ -502,8 +503,8 @@ describe('importMusicXml: no-<type> fallback (M6 Slice 1)', () => {
 	});
 });
 
-describe('importMusicXml: drop diagnostics (M6 Slice 1)', () => {
-	it('tallies drops per element name and keeps the console quiet', () => {
+describe('importMusicXml: drop and passthrough diagnostics (M6 Slices 1, 3)', () => {
+	it('tallies passthrough and genuine drops per element name and keeps the console quiet', () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const diagnostics = createImportDiagnostics();
 		importMusicXml(
@@ -514,6 +515,7 @@ describe('importMusicXml: drop diagnostics (M6 Slice 1)', () => {
         <measure number="1">
           <attributes>
             <divisions>1</divisions>
+            <key><fifths>0</fifths><mode>major</mode></key>
             <time><beats>4</beats><beat-type>4</beat-type></time>
             <staff-details/>
           </attributes>
@@ -531,8 +533,14 @@ describe('importMusicXml: drop diagnostics (M6 Slice 1)', () => {
       </part>`),
 			{ diagnostics }
 		);
-		expect(Object.fromEntries([...diagnostics.dropped].sort(([a], [b]) => a.localeCompare(b)))).toEqual({
-			// The `<chord/>` note is kept since M6 Slice 2, so no `chord` here.
+		const sorted = (map: Map<string, number>): Record<string, number> =>
+			Object.fromEntries([...map].sort(([x], [y]) => x.localeCompare(y)));
+		// Since M6 Slice 3 the only genuine loss here is `<mode>`: a child of
+		// the modelled `<key>` the model has no field for.
+		expect(sorted(diagnostics.dropped)).toEqual({ mode: 1 });
+		expect(sorted(diagnostics.passthrough)).toEqual({
+			// The tempo direction is exactly export's own shape in the first
+			// measure, so it is `Score.tempoBpm`, not passthrough.
 			articulations: 1,
 			dynamics: 1,
 			ending: 1,
