@@ -686,8 +686,207 @@ pass; `npm run check`/`test`/`build` stay green throughout.
 
 ### M5 — Phase 5: Reparity with E2-E12 [ ]
 
-Est. 1-2 months. Re-port seam markers, measure-range selection, undo/redo;
-MusicXML import (Audiveris output) and export. Unscoped.
+Est. 1-2 months. Re-port the editor features Divisi currently runs on OSMD
+(`OMR_EDITOR_PLAN.md` E4 seam markers, E7 bar-range clef change, E8 undo/
+redo) onto this engine's own model, plus MusicXML import (Audiveris output)
+and export, the format bridge nothing in M0-M4 needed. Scoped 2026-09-07
+(Claude, solo per the standing "keep making progress" instruction), `[ ]`
+not `[~]` since M4 is still `[?]` pending review. Scoped against M0-M4's
+real, built code into 6 sequential slices below, each with acceptance
+criteria in M1-M4's style (unit-test assertions plus a demo check).
+
+A survey of the current code found no MusicXML anywhere (the only `xml`
+matches in `src/` are prose in doc comments), one reachable edit op
+(`Score.transposeNote`; the `append*`/`add*`/`setTie` methods are
+score-construction, not editing), no undo/redo of any kind, and selection
+that is strictly single-note (`CanvasRenderer.setSelection(noteId | null)`;
+`setPlaybackCursor` takes a set but is the playback cursor, a different
+concept). So this milestone builds four things with no partial form in the
+engine today, ordered so the riskiest (import) sits early while the format
+is fresh and each later slice only depends on earlier ones:
+
+- **MusicXML export before import.** Export is the smaller, fully-specified
+  half (the model is the source of truth; every field it has maps to a
+  known MusicXML element) and gives import a round-trip oracle
+  (`import(export(fixture))` structurally equals `fixture`) rather than
+  import being checked only against hand-written XML. New code lives in a
+  new `src/io/` module depending only on `model` (not layout/render/
+  playback), the same one-way layering `playback` already follows;
+  `src/index.ts`'s "four layers" header comment updates to five, the way M3
+  Slice 1 updated it when `playback` landed.
+- **Undo/redo is structural, not a MusicXML snapshot.** E8 (the OSMD
+  editor's undo) snapshots the `workingXml` string because that editor is
+  MusicXML-native; this engine is model-native, so undo/redo snapshots the
+  `Score` itself (a deep, id-preserving clone) and does not route through
+  `src/io/` at all. This keeps undo independent of export/import
+  correctness and speed, and a transpose's undo restores the exact prior
+  model with no parse step. It does depend on a reliable `Score.clone`,
+  which slice 3 builds and tests as its own deliverable.
+- **Measure-range selection is a new renderer/hit-test concern, independent
+  of everything else.** `hit-test.ts` today is point -> note only; range
+  selection needs point -> `(staffIndex, measureIndex)` (click a measure
+  body) plus a range-state primitive on `CanvasRenderer` with its own
+  tint, distinct from both note-selection and the playback cursor so the
+  three never collide once this sits inside E2's editor. Slice 4 builds the
+  primitive; slice 5 is E7's actual payload (change a bar range's clef),
+  which is also the first per-measure clef change the model has ever had
+  and follows the exact `keyFifthsAt`/`timeAt`/`endBarlineAt`
+  per-measure-override-plus-walk-back precedent M1 Slices 7-8 set.
+- **Seam markers are a pure overlay, never model state.** Per E4, a seam
+  marker is anchored to a measure boundary (E3's report gains a
+  `boundary_measure` per segment) and is "overlay DOM only, never written
+  into the MusicXML" so a saved draft stays clean. Here that is a
+  `CanvasRenderer.setSeamMarkers(boundaries)` layer painted outside every
+  measure's own ops/region, the same `LaidOutScore.partDecorations`
+  pattern M2 Slice 5 used for braces/brackets, so `redrawMeasure` never
+  disturbs a marker and a marker never inflates a measure's region. The
+  engine draws marks a host passes in; it owns no seam concept, does no
+  OMR mapping, and persists nothing.
+
+Not in scope, confirmed against the roadmap: lyrics, repeats/endings/codas
+playback semantics, grace notes, articulations, and the choral-scan edge
+cases (British rests, divisi splits) are M6, so MusicXML import is
+deliberately import-*tolerant* (it skips `<lyric>`, `<articulations>`,
+`<grace>`, and unknown elements without failing) rather than
+import-*complete*. The host-side PDF pane and page-level scroll-sync stay
+Divisi's own `divisi-omr-editor` job per M4's intro; this milestone still
+only exposes position data (`regionForNote` from M4 Slice 4, plus slice
+6's boundary-region lookup). Note-level pixel mapping onto the scan stays
+blocked on OMR data the pipeline discards, tracked in that plan, not here.
+
+**Acceptance criteria (whole milestone):** all 6 slices' criteria below
+pass; `npm run check`/`test`/`build` stay green throughout.
+
+**Tasks — Claude:**
+- [x] **Slice 1 — MusicXML export.** A pure `exportMusicXml(score: Score):
+      string` in a new `src/io/` module, emitting `score-partwise` MusicXML
+      covering everything the model can represent: parts and their staves,
+      per-staff clefs (treble/bass/treble8) and per-measure clef changes
+      once slice 5 adds them, initial and mid-score key/time signatures (M1
+      Slice 7), `tempoBpm` as a metronome direction, notes and rests with
+      `<type>`/dots/`<time-modification>` for tuplets, explicit `<beam>`
+      elements from the computed beam groups, `<stem>` direction,
+      `<tie>`/`<tied>` and `<slur>` spans, `<staff>` numbers for
+      multi-staff parts, and all five barline types (M1 Slice 8) as
+      `<barline>` with `<bar-style>`/`<repeat>`. `<divisions>` is one value
+      per part, the LCM of every note's denominator in that part.
+      Acceptance: unit tests asserting the emitted tree for
+      `createFullDemoScore` and `createSatbBracketShowcaseScore` has the
+      expected `part`/`measure`/`note` counts and structure, that
+      key/time/tempo/clef/barline round-trip as the right elements, and
+      that a tie across a barline and a triplet each emit the correct
+      paired markup; the emitted string parses as well-formed XML (via the
+      test env's `DOMParser` or a tiny bundled parser, no schema validator
+      required). Demo check: a "Download MusicXML" button in `npm run dev`
+      writes a file that opens in MuseScore/Verovio and reads as the same
+      score on screen (manual, this repo's established
+      no-browser-automation approach for anything needing a real external
+      renderer).
+- [ ] **Slice 2 — MusicXML import.** `importMusicXml(xml: string): Score`
+      in `src/io/`, parsing the `score-partwise` subset slice 1 emits plus
+      tolerant handling of what Audiveris adds that this model does not
+      represent (`<lyric>`, `<direction>` dynamics, `<articulations>`,
+      `<grace>`: skipped, not fatal; an unknown element is logged once and
+      ignored). Builds the `Part`/`Staff` structure from `<part>` +
+      `<staff>`, resolves `<tie>`/`<slur>` endpoints in a second pass once
+      every note id exists (the same forward-reference problem `buildScore`
+      already solves for `extra.tiedToNext`), and maps `<divisions>` +
+      `<duration>` back to `durationWholes`. Acceptance: unit tests
+      importing hand-written fixtures (a one-part single-staff score, an
+      SATB multi-staff part, a mid-score key change, a tie across a
+      barline, a triplet) and asserting the resulting `Score`'s
+      measures/voices/pitches/durations; a round-trip test asserting
+      `importMusicXml(exportMusicXml(s))` is structurally equal to `s` for
+      every showcase score in `demo-score.ts`; a tolerance test importing a
+      fixture full of `<lyric>`/`<grace>`/`<articulations>` and asserting
+      it succeeds with those dropped. Demo check: a real Audiveris MusicXML
+      file checked into `src/test/fixtures/` loads and renders in `npm run
+      dev` via an "Open MusicXML" control.
+- [ ] **Slice 3 — Undo/redo.** A `Score.clone()` (deep, id-preserving)
+      plus an `EditHistory` holding a bounded stack of clones (cap
+      configurable, default ~100): `record(score)` pushes and clears the
+      redo stack, `undo()`/`redo()` return the neighbouring snapshot, and a
+      `dirty` flag is `current !== lastSaved`. `transposeNote` (and every
+      future edit op) is expected to `record` the pre-edit state; the demo
+      wires this so a run of transposes is fully reversible. Acceptance:
+      unit tests for `Score.clone` producing an independent tree that
+      re-lays-out identically and shares no mutable node with its source, a
+      no-op edit recording nothing, undo->redo round-trip, record clearing
+      redo, the cap dropping the oldest entry, and `dirty` tracking across
+      a `markSaved()`; a test that undoing a transpose restores the exact
+      prior `Pitch` and that `relayoutMeasure` on the restored measure
+      produces the pre-edit draw ops. Demo check: Undo/Redo buttons and
+      Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z in `npm run dev` reverse and replay a
+      sequence of transposes, with the dirty indicator clearing on save
+      and reappearing on the next edit.
+- [ ] **Slice 4 — Measure-range selection.** Measure-level hit-testing
+      (`hitTestMeasure(layout, x, y): { staffIndex, measureIndex } | null`,
+      alongside `hit-test.ts`'s existing note lookup) and a
+      `CanvasRenderer.setMeasureRange(range: { staffIndex, from, to } |
+      null): { staffIndex, index }[]` primitive mirroring `setSelection`'s
+      diff-and-return-affected-measures shape but over a contiguous run,
+      with its own `CanvasRendererOptions.measureRange` tint distinct from
+      `selection` and `playbackCursor`. Range is single-staff and
+      contiguous (matching E7's "bar range"); an out-of-order `from`/`to`
+      normalizes. Acceptance: unit tests for `hitTestMeasure` resolving a
+      click to the right `(staffIndex, measureIndex)` including on a
+      non-zero staff and in a later system after cast-off, the
+      affected-measures diff over a range grown/shrunk/moved/cleared, and
+      region-scoped redraw touching only the range's own measures
+      (extending `renderer.test.ts`'s region proof to a measure range).
+      Demo check: shift-click or drag across measures on the second canvas
+      (`createGrandStaffShowcaseScore`, from M4 Slice 1) highlights the
+      contiguous range, and only the measures whose membership changed
+      repaint.
+- [ ] **Slice 5 — Range clef change (E7 payload).** `Measure` gains an
+      optional `clef` field, `undefined` meaning "same as the previous
+      measure" (or the staff's own `Staff.clef` for measure 0), with
+      `Score.clefAt(staffIndex, measureIndex)` walking back to the nearest
+      earlier explicit value, the exact shape `keyFifthsAt`/`timeAt`/
+      `endBarlineAt` already use. A `Score.setClefRange(staffIndex, from,
+      to, clef)` edit op sets the range's first measure and restores the
+      prior clef at `to + 1` if the range does not run to the staff end; it
+      records one `EditHistory` entry (slice 3). Layout draws a courtesy
+      clef at the change measure and repeats it at a system break falling
+      on or before it (the same handling M1 Slice 7 added for mid-score key
+      changes), and all clef-dependent line/ledger/key-position math
+      (`CLEF_LINES`/`KEY_SIGNATURE_OCTAVES`, per-staff since M2 Slice 3)
+      reads `clefAt` instead of the staff's single clef. Acceptance: unit
+      tests for `clefAt` walk-back (including a range that reverts
+      partway), `setClefRange` recording exactly one undo entry and its
+      undo restoring every affected measure's clef, layout drawing the
+      courtesy clef at the change and at a preceding system break, and
+      notehead/ledger positions following the new clef mid-staff. Demo
+      check: select a bar range (slice 4), click a clef button, see the
+      clef change with a courtesy glyph and the notes reposition, then Undo
+      restores it in one step.
+- [ ] **Slice 6 — Seam markers.** A pure `regionForMeasureBoundary(layout:
+      LaidOutScore, staffIndex: number, boundaryIndex: number): Rect |
+      null` in `src/layout/` (reusing the measure lookup `regionForNote`
+      already does, per M4 Slice 4's "reuse, don't re-traverse" note)
+      returning the vertical strip a host should mark, and a
+      `CanvasRenderer.setSeamMarkers(boundaries: readonly { staffIndex,
+      boundaryIndex }[]): void` overlay painted from a marker list held
+      outside every measure's ops/region exactly like M2 Slice 5's
+      `partDecorations`, so `redrawMeasure` never erases a marker and a
+      marker never inflates a measure's region. Markers are never model
+      state: the engine draws what it is handed and owns no seam concept,
+      no OMR mapping, no persistence. Acceptance: unit tests for
+      `regionForMeasureBoundary` against known fixture coordinates (a
+      boundary in the first system, one in a later system after cast-off,
+      one on a non-zero staff, and `null` for an out-of-range index), and a
+      test that transposing a note in a measure adjacent to a seam and
+      calling `redrawMeasure` leaves the seam overlay's draw ops intact.
+      Demo check: a hand-picked boundary list passed to `npm run dev` draws
+      vertical seam marks at the right measure boundaries, and they survive
+      a scoped redraw when a neighbouring note is transposed.
+
+**Tasks — Human:**
+- [ ] Review this scoping before slice work starts, the same M1/M2/M3/M4
+      convention. It was drafted solo against M0-M4's built code while M4
+      is itself still `[?]`; if M4's own review changes anything structural
+      (the renderer's selection/redraw API in particular), slices 4-6 may
+      need a light re-check.
 
 ### M6 — Phase 6: Real-world edge cases [ ]
 
@@ -1968,3 +2167,47 @@ divisi splits). Unscoped.
   `npm run dev`, the same M1/M2/M3 convention, and separately from M3's own
   still-outstanding by-ear verification tracked under M3, not duplicated
   here.
+- 2026-09-07: M5 (reparity with E2-E12 plus MusicXML I/O) scoped, by Claude
+  solo per the standing "keep making progress" instruction, `[ ]` not `[~]`
+  since M4 is still `[?]`. Scoped against M0-M4's built code: confirmed no
+  MusicXML anywhere, one reachable edit op (`transposeNote`), no undo/redo,
+  single-note-only selection. Split into 6 slices: MusicXML export, then
+  import (round-trip-tested against export, deliberately import-tolerant not
+  import-complete so lyrics/grace/articulations stay M6), then structural
+  (not XML-snapshot) undo/redo via a new `Score.clone`, then a
+  measure-range selection primitive plus measure-level hit-testing, then
+  E7's range clef-change payload (the model's first per-measure clef,
+  following the `keyFifthsAt`/`timeAt`/`endBarlineAt` precedent), then E4
+  seam markers as a pure overlay reusing M2 Slice 5's `partDecorations`
+  pattern, never model state. Three judgment calls: export before import
+  (gives import a round-trip oracle); undo/redo structural rather than
+  E8-style XML snapshots since this engine is model-native; E7's clef op
+  in-scope as its own droppable slice. Flagged for human review, same
+  convention as M1-M4.
+- 2026-09-07: M5 Slice 1 (MusicXML export) done, via subagent, reviewed and
+  re-verified in the main session before recording. New `src/io/` module
+  (fifth layer): `exportMusicXml` emits `score-partwise` 4.0 covering parts
+  and staves, per-staff clefs, initial and mid-score key/time signatures,
+  `tempoBpm` as a metronome direction, notes/rests with
+  `<type>`/`<dot>`/`<time-modification>`, computed `<beam>`/`<stem>`,
+  `<tie>`+`<tied>`, `<slur>`, `<staff>`+`<backup>` for multi-staff and
+  multi-voice, and all five barline shapes; `<divisions>` is a per-part LCM
+  computed from exact rationals so every `<duration>` is an integer. Part
+  normalization: a named model `Part` becomes one `<part>` (multi-staff
+  named parts carry `<staves>`), staves in no named part get a synthetic
+  `<part>`, and an unnamed 2+-staff grouping becomes a `<part-group>` (brace
+  for two, bracket for more), so `createSatbBracketShowcaseScore` exports as
+  four bracketed parts. `computeBeamGroups`/`stemDirectionForNotes`/a new
+  `middleLineForClef` are now exported from `layout`; `src/io` imports those
+  three pure functions, a deliberate, documented exception to the
+  "io depends only on model" note (they carry no geometry, and duplicating
+  the beam-break rule would be worse). 327 tests pass (up from 313);
+  `check`/`build` green; bench flat at 0.278-0.336ms scoped edit, unchanged.
+  Three simplifications left for review: only the primary `<beam number="1">`
+  is emitted (no secondary beams over 16ths inside an eighth group); a
+  tuplet "run" is any maximal stretch of consecutive tupleted notes, so a
+  six-note all-triplet measure emits one `<tuplet>` bracket rather than two
+  groups of three (per-note `<time-modification>` is still correct); and a
+  two-voice measure's `<stem>`/`<beam>` directions follow pitch, not
+  layout's voice-1-up/voice-2-down override. Demo check outstanding: the
+  "Download MusicXML" button in `npm run dev` was not built.

@@ -432,6 +432,15 @@ const CLEF_LINES: Readonly<Record<ClefType, ClefLines>> = {
 	}
 };
 
+/** The diatonic index of a clef's middle staff line, for callers outside
+ *  layout that need the same middle-line reference `computeBeamGroups` and
+ *  `stemDirectionForNotes` take. `src/io` uses it to derive stem direction
+ *  and beam grouping for MusicXML `<stem>`/`<beam>` without importing layout's
+ *  geometry. */
+export function middleLineForClef(clef: ClefType): number {
+	return CLEF_LINES[clef].middleLine;
+}
+
 /** Staff positions of key-signature accidentals, in the order they are
  *  written. The *step* order is universal (every clef writes a sharp key
  *  signature as F, C, G, D, A, E, B and a flat one as B, E, A, D, G, C, F);
@@ -2749,7 +2758,7 @@ function stemXEdges(
 /** A run of consecutive beamable notes sharing one beam. Always two or more
  *  members: `computeBeamGroups` never reports a group of one, since a lone
  *  eligible note is indistinguishable from an ordinary unbeamed one. */
-interface BeamGroup {
+export interface BeamGroup {
 	readonly notes: readonly Note[];
 	/**
 	 * The one stem direction shared by the whole group, decided once here
@@ -2818,7 +2827,7 @@ function beatDurationWholes(time: TimeSignature): number {
  * real time in the beat-position tracker; it simply never starts or extends
  * a group of its own.
  */
-function computeBeamGroups(
+export function computeBeamGroups(
 	notes: readonly Note[],
 	time: TimeSignature,
 	middleLine: number,
@@ -2906,7 +2915,7 @@ function computeBeamGroups(
  * that never passes it (ties, slurs, and a single-voice measure's own notes)
  * keeps exactly the pitch-based rule below, unchanged.
  */
-function stemDirectionForNotes(
+export function stemDirectionForNotes(
 	diatonicIndices: readonly number[],
 	middleLine: number,
 	voiceOverride?: 'up' | 'down'
