@@ -12,6 +12,8 @@ import {
 	computePlaybackTimeline,
 	createFullDemoScore,
 	createGrandStaffShowcaseScore,
+	EditHistory,
+	exportMusicXml,
 	hitTest,
 	layoutScore,
 	loadSmuflFont,
@@ -55,6 +57,10 @@ const playbackStopButton = document.querySelector<HTMLButtonElement>('#playback-
 const playbackPosition = document.querySelector<HTMLElement>('#playback-position')!;
 const playbackOnset = document.querySelector<HTMLElement>('#playback-onset')!;
 const staffSelectCursorButton = document.querySelector<HTMLButtonElement>('#staff-select-cursor-demo')!;
+const undoButton = document.querySelector<HTMLButtonElement>('#undo')!;
+const redoButton = document.querySelector<HTMLButtonElement>('#redo')!;
+const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
+const dirtyIndicator = document.querySelector<HTMLElement>('#dirty')!;
 
 // These mirror index.html's own CSS (`body { max-width: 60rem; padding: 2rem
 // 1.5rem; }`, `#score { border: 1px solid #ddd; }`) so `systemWidthForViewport`
@@ -104,9 +110,19 @@ function formatPosition(seconds: number): string {
 	return `${minutes}:${secondsWithinMinute.toFixed(1).padStart(4, '0')}`;
 }
 
-const score = createFullDemoScore();
+/**
+ * The demo's undo/redo stack, and the owner of the live score. There is no
+ * module-level `score` variable on purpose: `EditHistory`'s constructor clones
+ * what it is given, and `undo`/`redo` swap a *different* `Score` object in as
+ * `current` (see `EditHistory`'s own header comment), so any long-lived
+ * reference to "the score" would silently go stale after the first undo.
+ * Every read below goes through `history.current` instead, and every edit
+ * through `history.record`. The renderer itself never holds a `Score`, only
+ * a `LaidOutScore`, so it needs no re-pointing beyond the usual `setLayout`.
+ */
+const history = new EditHistory(createFullDemoScore());
 let layoutOptions = { staffSpacePx: 11, systemWidthPx: systemWidthForViewport() };
-let layout: LaidOutScore = layoutScore(score, layoutOptions);
+let layout: LaidOutScore = layoutScore(history.current, layoutOptions);
 let selected: NoteId | null = null;
 
 const ctx = canvas.getContext('2d')!;
@@ -137,16 +153,21 @@ function transposeSelected(semitones: number): void {
 	if (selected === null) return;
 	const started = performance.now();
 
-	const touched = score.transposeNote(selected, semitones);
+	// Routed through `record` so the pre-edit state is snapshotted for undo.
+	// `record` only keeps that snapshot when the edit reports a change, so a
+	// no-op on a rest leaves the undo stack (and the dirty flag) alone.
+	const noteId = selected;
+	const touched = history.record((score) => score.transposeNote(noteId, semitones));
 	if (touched === null) {
 		status.textContent = 'Rests have no pitch to transpose.';
 		return;
 	}
+	markScoreChanged();
 
 	// Try the incremental path first. It declines when the edit would change the
 	// measure's width or overflow the canvas, which a transpose never does but a
 	// duration edit would, and then the only correct answer is a full pass.
-	const updated = relayoutMeasure(score, layout, touched, layoutOptions);
+	const updated = relayoutMeasure(history.current, layout, touched, layoutOptions);
 	let scoped = true;
 	if (updated) {
 		layout = updated;
@@ -154,7 +175,7 @@ function transposeSelected(semitones: number): void {
 		renderer.redrawMeasure(touched);
 	} else {
 		scoped = false;
-		layout = layoutScore(score, layoutOptions);
+		layout = layoutScore(history.current, layoutOptions);
 		renderer.setLayout(layout);
 		sizeCanvas();
 		renderer.drawAll();
@@ -166,6 +187,81 @@ function transposeSelected(semitones: number): void {
 		? `Transposed note ${selected} in measure ${touched + 1}. Redrew measure ${touched + 1} only.`
 		: `Transposed note ${selected}: the edit changed the system's geometry, so the whole score was re-laid-out.`;
 	report(elapsed, touched);
+}
+
+/**
+ * Step the history one way or the other and repaint.
+ *
+ * Unlike `transposeSelected`, this always does a full re-layout rather than
+ * a scoped one: the score `undo`/`redo` swaps in is a different object that
+ * could in principle differ from the old one in any measure, and working out
+ * which would mean diffing two scores. A whole-score pass is simpler and
+ * always correct, and at demo scale it is fast enough not to matter. The
+ * selection survives for free: `Score.clone` preserves note ids, and the
+ * renderer keys its highlight by `NoteId` (see `setZoom`'s doc comment below),
+ * so the same note is still selected and tinted in the restored score.
+ */
+function stepHistory(direction: 'undo' | 'redo'): void {
+	const restored = direction === 'undo' ? history.undo() : history.redo();
+	if (restored === null) return;
+	markScoreChanged();
+
+	layout = layoutScore(history.current, layoutOptions);
+	renderer.setLayout(layout);
+	sizeCanvas();
+	lastFullDrawMs = drawAll();
+	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
+	status.textContent = direction === 'undo'
+		? 'Undid transpose. Re-laid-out and repainted the whole score.'
+		: 'Redid transpose. Re-laid-out and repainted the whole score.';
+	timings.textContent = `whole-score repaint                ${lastFullDrawMs.toFixed(2)} ms`;
+}
+
+/**
+ * Refresh everything that depends on the history's state: the Undo/Redo
+ * buttons' enabled state and the saved/unsaved indicator. Called after every
+ * record, undo, redo and save, and once at startup.
+ */
+function refreshHistoryControls(): void {
+	undoButton.disabled = !history.canUndo;
+	redoButton.disabled = !history.canRedo;
+	const dirty = history.dirty;
+	dirtyIndicator.textContent = dirty ? 'Unsaved changes' : 'Saved';
+	dirtyIndicator.classList.toggle('dirty', dirty);
+}
+
+/**
+ * Bookkeeping after any change to `history.current` (an edit, an undo or a
+ * redo): refresh the history controls, and flag the playback timeline as
+ * stale so the next Play rebuilds it from the current score (see
+ * `playbackTimelineStale` below).
+ */
+function markScoreChanged(): void {
+	playbackTimelineStale = true;
+	refreshHistoryControls();
+}
+
+/**
+ * Download the current score as MusicXML, then bless it as the saved
+ * baseline. A temporary `<a download>` is the standard way to hand the
+ * browser a file from memory without a server round trip; the object URL is
+ * revoked right after the click, since the download has already captured the
+ * Blob by then.
+ */
+function saveMusicXml(): void {
+	const xml = exportMusicXml(history.current);
+	const blob = new Blob([xml], { type: 'application/vnd.recordare.musicxml+xml' });
+	const url = URL.createObjectURL(blob);
+	const link = document.createElement('a');
+	link.href = url;
+	link.download = 'score.musicxml';
+	document.body.append(link);
+	link.click();
+	link.remove();
+	URL.revokeObjectURL(url);
+	history.markSaved();
+	refreshHistoryControls();
+	status.textContent = 'Saved the score as score.musicxml.';
 }
 
 /**
@@ -224,7 +320,14 @@ canvas.addEventListener('pointerdown', (event) => {
 });
 
 window.addEventListener('keydown', (event) => {
-	if (event.key === 'ArrowUp') transposeSelected(1);
+	// Cmd on macOS, Ctrl elsewhere; either is accepted on any platform rather
+	// than sniffing the OS. `event.key` is lowercase 'z' without Shift and
+	// usually uppercase 'Z' with it, so compare case-insensitively.
+	const modifier = event.metaKey || event.ctrlKey;
+	const key = event.key.toLowerCase();
+	if (modifier && key === 'z') stepHistory(event.shiftKey ? 'redo' : 'undo');
+	else if (modifier && key === 'y') stepHistory('redo');
+	else if (event.key === 'ArrowUp') transposeSelected(1);
 	else if (event.key === 'ArrowDown') transposeSelected(-1);
 	else return;
 	event.preventDefault();
@@ -232,6 +335,9 @@ window.addEventListener('keydown', (event) => {
 
 upButton.addEventListener('click', () => transposeSelected(1));
 downButton.addEventListener('click', () => transposeSelected(-1));
+undoButton.addEventListener('click', () => stepHistory('undo'));
+redoButton.addEventListener('click', () => stepHistory('redo'));
+saveButton.addEventListener('click', saveMusicXml);
 fullButton.addEventListener('click', () => {
 	lastFullDrawMs = drawAll();
 	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
@@ -264,7 +370,7 @@ window.addEventListener('resize', () => {
 	window.clearTimeout(resizeTimer);
 	resizeTimer = window.setTimeout(() => {
 		layoutOptions = { ...layoutOptions, systemWidthPx: systemWidthForViewport() };
-		layout = layoutScore(score, layoutOptions);
+		layout = layoutScore(history.current, layoutOptions);
 		renderer.setLayout(layout);
 		sizeCanvas();
 		lastFullDrawMs = drawAll();
@@ -301,7 +407,7 @@ function setZoom(deltaStaffSpacePx: number): void {
 	if (next === layoutOptions.staffSpacePx) return;
 
 	layoutOptions = { ...layoutOptions, staffSpacePx: next };
-	layout = layoutScore(score, layoutOptions);
+	layout = layoutScore(history.current, layoutOptions);
 	renderer.setLayout(layout);
 	sizeCanvas();
 	lastFullDrawMs = drawAll();
@@ -326,7 +432,20 @@ zoomInButton.addEventListener('click', () => setZoom(ZOOM_STEP_STAFF_SPACE_PX));
 // reconstructed, which would silently discard wherever a prior pause left
 // off.
 let playbackEngine: PlaybackEngine | null = null;
+let audioContext: AudioContext | null = null;
 let totalPlaybackSeconds = 0;
+/**
+ * Set whenever `history.current` changes (an edit, undo or redo; see
+ * `markScoreChanged`), so the engine's precomputed timeline no longer matches
+ * the score on screen. `PlaybackEngine` takes its events once, at
+ * construction, so the fix is to rebuild it, which `ensurePlaybackEngine`
+ * does on the next Play click if the engine is not currently playing. An edit
+ * made mid-playback therefore takes effect from the next pause/resume or
+ * stop/play, not instantly. The `AudioContext` is reused across rebuilds
+ * (browsers cap how many a page may create), and a paused position is carried
+ * over via `seek`, so Play still resumes where Pause left off.
+ */
+let playbackTimelineStale = false;
 let positionLoopRunning = false;
 
 /**
@@ -388,15 +507,18 @@ function flushPendingOnsets(): void {
 }
 
 function ensurePlaybackEngine(): PlaybackEngine {
-	if (playbackEngine) return playbackEngine;
+	if (playbackEngine && (playbackEngine.isPlaying || !playbackTimelineStale)) return playbackEngine;
 
-	const events = computePlaybackTimeline(score);
+	const resumeFrom = playbackEngine?.positionSeconds ?? 0;
+	playbackEngine?.stop();
+	playbackTimelineStale = false;
+	const events = computePlaybackTimeline(history.current);
 	totalPlaybackSeconds = events.reduce(
 		(latest, event) => Math.max(latest, event.startSeconds + event.durationSeconds),
 		0
 	);
 
-	const audioContext = new AudioContext();
+	audioContext ??= new AudioContext();
 	playbackEngine = new PlaybackEngine({
 		events,
 		audioContext,
@@ -414,6 +536,7 @@ function ensurePlaybackEngine(): PlaybackEngine {
 			}
 		}
 	});
+	if (resumeFrom > 0) playbackEngine.seek(resumeFrom);
 	return playbackEngine;
 }
 
@@ -553,6 +676,7 @@ async function start(): Promise<void> {
 	sizeCanvas();
 	lastFullDrawMs = drawAll();
 	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
+	refreshHistoryControls();
 	status.textContent = 'Click a notehead or a rest to select it.';
 	timings.textContent = `initial whole-score draw           ${lastFullDrawMs.toFixed(2)} ms`;
 

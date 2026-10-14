@@ -802,7 +802,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       it succeeds with those dropped. Demo check: a real Audiveris MusicXML
       file checked into `src/test/fixtures/` loads and renders in `npm run
       dev` via an "Open MusicXML" control.
-- [ ] **Slice 3 — Undo/redo.** A `Score.clone()` (deep, id-preserving)
+- [x] **Slice 3 — Undo/redo.** A `Score.clone()` (deep, id-preserving)
       plus an `EditHistory` holding a bounded stack of clones (cap
       configurable, default ~100): `record(score)` pushes and clears the
       redo stack, `undo()`/`redo()` return the neighbouring snapshot, and a
@@ -2236,3 +2236,26 @@ divisi splits). Unscoped.
   omission). All 14 showcase/demo scores round-trip
   (`import(export(s))` musically equal to `s`), the sole exception being
   `createCrossStaffBeamShowcaseScore`'s cross-staff beam link.
+- 2026-10-14: M5 Slice 3 (undo/redo) done. `Score.clone()` (deep,
+  id-preserving, carries `#nextNoteId`, rebuilds the three private indexes
+  rather than copying them) and `EditHistory` in `src/model/` (bounded
+  snapshot stack, default cap 100; `record(edit)` keeps a pre-edit clone only
+  when the edit returns non-null; `dirty` compares against the `markSaved()`
+  baseline by musical content via `assertScoresEquivalent`, so undoing back to
+  the saved state clears it). The session that built these was interrupted
+  with 2 failing tests, fixed on resume: `transposeNote(id, 0)` now returns
+  `null` (nothing changed, so nothing to record or redraw), and the
+  "undo re-lays-out identically" test now compares against a `relayoutMeasure`
+  of the pre-edit state rather than `layoutScore`'s output, because the two
+  differ in the last float ulp of staff-line y (pre-existing drift, not an
+  undo bug; left unfixed). Demo wiring via subagent, reviewed in the main
+  session: Undo/Redo buttons, Cmd/Ctrl+Z, Cmd/Ctrl+Shift+Z and Ctrl+Y, a
+  Saved/Unsaved indicator, and a "Save (download MusicXML)" button that
+  exports and calls `markSaved()` (also closing Slice 1's outstanding demo
+  check). Undo/redo does a full re-layout rather than diffing snapshots;
+  playback rebuilds its engine from the current score on the next Play after
+  an edit (an edit during active playback lands on the next pause/stop).
+  378 tests pass; `check`/`build` green. Manual browser check of the demo
+  passed (user, 2026-10-14). Synth timbre (bare triangle oscillator, M3
+  Slice 4) noted as unpleasant during that check; user chose not to track
+  it.

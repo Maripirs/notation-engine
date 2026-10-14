@@ -880,7 +880,7 @@ export class Score {
 	 *
 	 * Returns the index of the measure that changed (within *its own staff*;
 	 * see `Measure.index`'s own comment), or `null` if nothing did (unknown id,
-	 * or the note is a rest). That return value is the contract the
+	 * the note is a rest, or `semitones` is 0). That return value is the contract the
 	 * incremental redraw hangs off: the caller re-lays-out and repaints exactly
 	 * the measures an edit reports, and no others.
 	 *
@@ -899,9 +899,107 @@ export class Score {
 	transposeNote(id: NoteId, semitones: number): number | null {
 		const measure = this.#measureOfNote.get(id);
 		const note = measure?.notes.find((candidate) => candidate.id === id);
-		if (!measure || !note || note.pitch === null) return null;
+		if (!measure || !note || note.pitch === null || semitones === 0) return null;
 		note.pitch = transpose(note.pitch, semitones);
 		return measure.index;
+	}
+
+	/**
+	 * A deep, **id-preserving** copy of this score.
+	 *
+	 * "Id-preserving": every cloned `Note` keeps its exact `id`, and the private
+	 * `#nextNoteId` counter is carried over verbatim, so the clone keeps minting
+	 * fresh, non-colliding ids from where the source left off. This is what lets
+	 * `EditHistory` compare a before/after snapshot note-for-note (via
+	 * `assertScoresEquivalent`, which still ignores id *values*) and lets a
+	 * restored snapshot be addressed by the same ids a caller already holds.
+	 *
+	 * "Deep": no mutable node is shared with the source. Every `Staff`,
+	 * `Measure`, `Note`, `Pitch`, `TupletRatio`, `Part`, `Slur` and
+	 * `CrossStaffBeam` is a fresh object, and every array is fresh, so mutating
+	 * anything in the clone (a note's pitch, a measure's barline, a staff's
+	 * clef, a part's staff list, a `tiedToId`) cannot reach back into the
+	 * source, or vice versa.
+	 *
+	 * The three private indexes (`#measureOfNote`, `#tieSourceOfTarget`,
+	 * `#crossStaffBeamOfNote`) are rebuilt against the freshly created objects
+	 * rather than copied, since they hold references into the node graph. Ties
+	 * are reproduced by assigning `Note.tiedToId` directly and rebuilding
+	 * `#tieSourceOfTarget` from those values: routing through `setTie` would
+	 * re-run `#linkTie`'s pitch-equality validation, which can spuriously reject
+	 * a tie chain while it is only half-rebuilt.
+	 */
+	clone(): Score {
+		const copy = new Score({
+			keyFifths: this.keyFifths,
+			time: { beats: this.time.beats, beatType: this.time.beatType },
+			tempoBpm: this.tempoBpm,
+			clef: this.staves[0]!.clef
+		});
+		// The constructor always seeds `staves[0]` and one default part. Empty
+		// both arrays and rebuild them from the source, so a cloned multi-staff
+		// (e.g. SATB) score does not keep that seed as a stray extra staff or a
+		// wrong `parts[0]`.
+		copy.staves.length = 0;
+		copy.parts.length = 0;
+
+		for (const staff of this.staves) {
+			const staffCopy = new Staff(staff.index, staff.clef);
+			for (const measure of staff.measures) {
+				const measureCopy = new Measure(measure.index, measure.staffIndex);
+				if (measure.keyFifths !== undefined) measureCopy.keyFifths = measure.keyFifths;
+				if (measure.time !== undefined) {
+					measureCopy.time = { beats: measure.time.beats, beatType: measure.time.beatType };
+				}
+				if (measure.endBarline !== undefined) measureCopy.endBarline = measure.endBarline;
+				if (measure.startBarline !== undefined) measureCopy.startBarline = measure.startBarline;
+				for (const note of measure.notes) {
+					const noteCopy = new Note(note.id, {
+						pitch: note.pitch === null ? null : { ...note.pitch },
+						value: note.value,
+						voice: note.voice,
+						dots: note.dots,
+						tuplet: note.tuplet === null ? undefined : { ...note.tuplet }
+					});
+					// Set directly, not through the spec's `tiedToId` (which would
+					// run `#linkTie`): see this method's own doc comment.
+					noteCopy.tiedToId = note.tiedToId;
+					measureCopy.notes.push(noteCopy);
+					copy.#measureOfNote.set(noteCopy.id, measureCopy);
+					if (noteCopy.tiedToId !== null) {
+						copy.#tieSourceOfTarget.set(noteCopy.tiedToId, noteCopy.id);
+					}
+				}
+				staffCopy.measures.push(measureCopy);
+			}
+			copy.staves.push(staffCopy);
+		}
+
+		for (const part of this.parts) {
+			copy.parts.push(
+				part.name === undefined
+					? { staffIndices: [...part.staffIndices] }
+					: { name: part.name, staffIndices: [...part.staffIndices] }
+			);
+		}
+
+		for (const slur of this.slurs) {
+			copy.slurs.push({ startNoteId: slur.startNoteId, endNoteId: slur.endNoteId });
+		}
+
+		for (const beam of this.crossStaffBeams) {
+			const beamCopy: CrossStaffBeam = {
+				noteIds: [...beam.noteIds],
+				staffIndices: [beam.staffIndices[0], beam.staffIndices[1]]
+			};
+			copy.crossStaffBeams.push(beamCopy);
+			for (const id of beamCopy.noteIds) copy.#crossStaffBeamOfNote.set(id, beamCopy);
+		}
+
+		// Carry the id counter over verbatim so the clone keeps minting ids that
+		// cannot collide with the ones just copied in.
+		copy.#nextNoteId = this.#nextNoteId;
+		return copy;
 	}
 }
 

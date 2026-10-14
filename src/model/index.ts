@@ -27,6 +27,8 @@ export type {
 	TupletRatio
 } from './score.js';
 export { assertScoresEquivalent } from './score-equivalence.js';
+export { EditHistory } from './edit-history.js';
+export type { EditHistoryOptions } from './edit-history.js';
 export {
 	buildScore,
 	Measure,

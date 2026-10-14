@@ -69,6 +69,14 @@
 				opacity: 0.45;
 				cursor: default;
 			}
+			/* Saved/unsaved indicator next to the edit controls; amber while dirty. */
+			#dirty {
+				font-size: 0.85rem;
+				color: #2f6b2f;
+			}
+			#dirty.dirty {
+				color: #b45309;
+			}
 			#status {
 				margin: 0;
 				font-size: 0.9rem;
@@ -109,7 +117,11 @@
 			on screen at once; during playback (below) the box auto-scrolls to keep the playback
 			cursor's current measure in view as it moves into later systems (M4 Slice 4), using
 			<code>regionForNote</code> for the target rectangle and a plain <code>scrollTo</code>
-			here in the demo for the actual scroll.
+			here in the demo for the actual scroll. Every transpose is recorded in an
+			<code>EditHistory</code>, so Undo / Redo (or <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>,
+			<kbd>Shift</kbd>+<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>) step back and forth through
+			it with a whole-score re-layout, and Save downloads the current score as MusicXML and
+			clears the unsaved-changes flag.
 		</p>
 		<div id="score-scroll">
 			<canvas id="score"></canvas>
@@ -121,6 +133,10 @@
 			<button id="flash">Flash redrawn region</button>
 			<button id="zoom-out">Zoom out</button>
 			<button id="zoom-in">Zoom in</button>
+			<button id="undo" disabled>Undo</button>
+			<button id="redo" disabled>Redo</button>
+			<button id="save">Save (download MusicXML)</button>
+			<span id="dirty">Saved</span>
 		</div>
 		<p id="status">Loading Bravura&hellip;</p>
 		<pre id="timings"></pre>
