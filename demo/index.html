@@ -127,7 +127,11 @@
 			clears the unsaved-changes flag. Show seam markers (M5 Slice 6) overlays red strips at a
 			few measure boundaries, one of them at a system break, the way an OMR host would mark
 			where stitched scan fragments meet; they are render-only, and survive a transpose's
-			scoped redraw of a neighbouring measure.
+			scoped redraw of a neighbouring measure. The score ends with M6 Slice 2's chord showcase
+			(triads, seconds on both sides of the stem, stacked accidentals, divisi thirds, beamed and
+			tied chords, two chordal voices); Open MusicXML replaces it with any MusicXML file, e.g.
+			an SFCC fixture from <code>src/test/fixtures/sfcc/</code> such as Les Djinns. Every
+			chord head is its own note: click one and transpose it alone.
 		</p>
 		<div id="score-scroll">
 			<canvas id="score"></canvas>
@@ -143,6 +147,7 @@
 			<button id="undo" disabled>Undo</button>
 			<button id="redo" disabled>Redo</button>
 			<button id="save">Save (download MusicXML)</button>
+			<label>Open MusicXML <input id="open" type="file" accept=".musicxml,.xml,application/vnd.recordare.musicxml+xml" /></label>
 			<span id="dirty">Saved</span>
 		</div>
 		<p id="status">Loading Bravura&hellip;</p>

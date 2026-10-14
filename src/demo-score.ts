@@ -785,6 +785,95 @@ export function createCrossStaffBeamShowcaseScore(): Score {
 	return score;
 }
 
+/**
+ * M6 Slice 2's chord showcase: nine measures in C major 4/4 walking through
+ * every chord engraving rule the slice adds, so a human can check each one
+ * by eye in `npm run dev`.
+ *
+ * 1. Triads, three up-stem and one high enough (E5-G5-C6) to flip down: one
+ *    stem per chord, spanning every head, direction from the outermost head.
+ * 2. Seconds: F4-G4 (up stem, the upper head crosses to the right of the
+ *    stem), C5-D5 (down stem, the lower head crosses to the left), and two
+ *    clusters (E4-F4-G4, B4-C5-D5-E5) whose heads alternate sides.
+ * 3. Accidental stacks: Eb-Gb-Bb and F#-A#-C#, three accidentals each, the
+ *    top and bottom nearest the heads and the middle one a column further
+ *    left.
+ * 4. A divisi passage in parallel thirds, the core choral case (two parts
+ *    sharing one staff and one stem).
+ * 5. Beamed eighth-note chords: each chord is one beam member, the beam and
+ *    stems attached to the chord's normal-side heads.
+ * 6-7. A tie between chords (each head tied to its own target, the upper
+ *    heads' ties curving up and the lower down), then a dotted chord with a
+ *    second (one dot per head, a line head's dot moved to the space above).
+ * 8. Two voices, each a chord, sharing the staff (voice 1 up, voice 2 down).
+ * 9. Ledger lines: A3-B3-D4 (the ledger under the displaced B3 widens to
+ *    cover both sides of the stem) and G5-A5-C6 above the staff.
+ */
+export function createChordShowcaseScore(): Score {
+	return buildScore(
+		[
+			{
+				// Stated explicitly (not just the score's initial key) so that,
+				// folded into `createFullDemoScore` after a showcase in another
+				// key, these measures still read in C major.
+				keyFifths: 0,
+				notes: [
+					[['C4', 'E4', 'G4'], 'quarter'],
+					[['F4', 'A4', 'C5'], 'quarter'],
+					[['G4', 'B4', 'D5'], 'quarter'],
+					[['E5', 'G5', 'C6'], 'quarter']
+				]
+			},
+			[
+				[['F4', 'G4'], 'quarter'],
+				[['C5', 'D5'], 'quarter'],
+				[['E4', 'F4', 'G4'], 'quarter'],
+				[['B4', 'C5', 'D5', 'E5'], 'quarter']
+			],
+			[
+				[['Eb4', 'Gb4', 'Bb4'], 'half'],
+				[['F#4', 'A#4', 'C#5'], 'half']
+			],
+			[
+				[['A4', 'C5'], 'quarter'],
+				[['G4', 'B4'], 'quarter'],
+				[['F4', 'A4'], 'quarter'],
+				[['E4', 'G4'], 'quarter']
+			],
+			[
+				[['C4', 'E4'], 'eighth'],
+				[['D4', 'F4'], 'eighth'],
+				[['E4', 'G4'], 'eighth'],
+				[['F4', 'A4'], 'eighth'],
+				[['G4', 'B4'], 'eighth'],
+				[['A4', 'C5'], 'eighth'],
+				[['B4', 'D5'], 'eighth'],
+				[['C5', 'E5'], 'eighth']
+			],
+			[
+				[['C4', 'E4', 'G4'], 'half'],
+				[['D4', 'F4', 'A4'], 'half', { tiedToNext: true }]
+			],
+			[
+				[['D4', 'F4', 'A4'], 'half'],
+				[['F4', 'G4', 'B4'], 'quarter', { dots: 1 }],
+				[['E4', 'G4', 'C5'], 'eighth']
+			],
+			[
+				[['E5', 'G5'], 'half', { voice: 1 }],
+				[['D5', 'F5'], 'half', { voice: 1 }],
+				[['C4', 'E4'], 'half', { voice: 2 }],
+				[['B3', 'D4'], 'half', { voice: 2 }]
+			],
+			[
+				[['A3', 'B3', 'D4'], 'half'],
+				[['G5', 'A5', 'C6'], 'half']
+			]
+		],
+		{ keyFifths: 0, time: { beats: 4, beatType: 4 } }
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
@@ -826,7 +915,8 @@ function appendMeasures(score: Score, source: Score): void {
 				dots: note.dots,
 				tuplet: note.tuplet ?? undefined,
 				voice: note.voice,
-				measureRestWholes: note.measureRestWholes
+				measureRestWholes: note.measureRestWholes,
+				chordWithPrevious: note.chordWithPrevious
 			});
 			copiedIdOf.set(note.id, copiedNote.id);
 		}
@@ -848,7 +938,9 @@ function appendMeasures(score: Score, source: Score): void {
  * Slice 6's slur showcase, Slice 7's key/time-change showcase, Slice 8's
  * barline showcase, M2 Slice 1's two-voice showcase and M2 Slice 2's voice-
  * collision showcase, so a human can see all eight render without disturbing
- * `createDemoScore`'s frozen shape (see the comment on it above).
+ * `createDemoScore`'s frozen shape (see the comment on it above). M6 Slice 2's
+ * chord showcase follows them, last so every earlier measure keeps the index
+ * it always had.
  */
 export function createFullDemoScore(): Score {
 	const score = createDemoScore();
@@ -860,5 +952,6 @@ export function createFullDemoScore(): Score {
 	appendMeasures(score, createBarlineShowcaseScore());
 	appendMeasures(score, createTwoVoiceShowcaseScore());
 	appendMeasures(score, createVoiceClashShowcaseScore());
+	appendMeasures(score, createChordShowcaseScore());
 	return score;
 }

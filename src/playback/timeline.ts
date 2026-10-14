@@ -1,4 +1,4 @@
-import { measureCapacityWholes, type NoteId, type Pitch, type Score, type Staff } from '../model/index.js';
+import { measureCapacityWholes, noteEvents, type NoteId, type Pitch, type Score, type Staff } from '../model/index.js';
 import { durationToSeconds } from './tempo.js';
 
 /**
@@ -54,8 +54,9 @@ function measureStartsWholes(score: Score): number[] {
 			const measure = staff.measures[index];
 			if (!measure) continue;
 			const perVoice = new Map<number, number>();
-			for (const note of measure.notes) {
-				perVoice.set(note.voice, (perVoice.get(note.voice) ?? 0) + note.durationWholes);
+			// Per event, not per note: a chord's heads share one duration.
+			for (const [anchor] of noteEvents(measure.notes)) {
+				perVoice.set(anchor!.voice, (perVoice.get(anchor!.voice) ?? 0) + anchor!.durationWholes);
 			}
 			longest = Math.max(longest, ...perVoice.values());
 		}
@@ -114,6 +115,12 @@ function voicesInStaff(staff: Staff): number[] {
  * note, if it continues the tie, extends it, otherwise it is already a
  * closed, complete event.
  *
+ * Chords (M6 Slice 2) are walked as events (`noteEvents`): every head of a
+ * chord gets its own `OnsetEvent` at the same `startSeconds`, all lasting the
+ * anchor's duration, and the cursor advances once per chord. A tied chord
+ * keeps one open event per head, each extended only by its own head's tie
+ * target.
+ *
  * The returned array's order falls out of construction (staves in
  * `score.staves` order, each staff's voices in first-seen order, each
  * voice's notes in measure-then-position order) rather than from an explicit
@@ -132,46 +139,55 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 	for (const staff of score.staves) {
 		for (const voice of voicesInStaff(staff)) {
 			let cursorWholes = 0;
-			// Index into `events` of the still-accumulating event a tie chain is
-			// extending, or `null` when nothing is currently open. At most one
-			// event is ever open at a time per `(staff, voice)` pass, since a tie's
-			// continuation is always the very next note in this same voice's walk.
-			let openIndex: number | null = null;
+			// The still-accumulating events tie chains are extending, keyed by
+			// the id of the note each one expects next (the tie's target), so a
+			// continuation finds exactly the event its own source opened. Keyed
+			// rather than a single "open" slot since M6 Slice 2: a tied chord
+			// keeps one tie chain open per head at once, and each head's
+			// continuation must extend its own head's event, not a neighbour's.
+			let openByTarget = new Map<NoteId, number>();
 
 			for (const measure of staff.measures) {
 				cursorWholes = measureStarts[measure.index]!;
-				for (const note of measure.notes) {
-					if (note.voice !== voice) continue;
+				// One step per event (M6 Slice 2), not per note: every head of a
+				// chord sounds at the same `cursorWholes`, and the cursor
+				// advances once by the anchor's duration after all of them.
+				for (const chord of noteEvents(measure.notes)) {
+					const anchor = chord[0]!;
+					if (anchor.voice !== voice) continue;
+					const stillOpen = new Map<NoteId, number>();
 
-					if (note.isRest) {
-						cursorWholes += note.durationWholes;
-						openIndex = null;
-						continue;
+					for (const note of chord) {
+						if (note.isRest) continue;
+						// A member's own `value` only picks its notehead; the
+						// chord's duration is the anchor's.
+						const noteDurationSeconds = durationToSeconds(anchor.durationWholes, bpm);
+						const openIndex = openByTarget.get(note.id);
+
+						let eventIndex: number;
+						if (openIndex !== undefined) {
+							const open = events[openIndex]!;
+							events[openIndex] = { ...open, durationSeconds: open.durationSeconds + noteDurationSeconds };
+							eventIndex = openIndex;
+						} else {
+							events.push({
+								noteId: note.id,
+								// Non-null: rests were skipped above.
+								pitch: note.pitch!,
+								startSeconds: durationToSeconds(cursorWholes, bpm),
+								durationSeconds: noteDurationSeconds
+							});
+							eventIndex = events.length - 1;
+						}
+						// Only a note that itself ties forward keeps its event open,
+						// and only for its own tie target; anything else closes it,
+						// so a later, unrelated note is never mistaken for a
+						// continuation.
+						if (note.tiedToId !== null) stillOpen.set(note.tiedToId, eventIndex);
 					}
 
-					const noteDurationSeconds = durationToSeconds(note.durationWholes, bpm);
-					const isTieContinuation = score.tiedFromNote(note.id) !== undefined;
-
-					if (isTieContinuation && openIndex !== null) {
-						const open = events[openIndex]!;
-						events[openIndex] = { ...open, durationSeconds: open.durationSeconds + noteDurationSeconds };
-					} else {
-						events.push({
-							noteId: note.id,
-							// Non-null: `note.isRest` (pitch === null) was already handled above.
-							pitch: note.pitch!,
-							startSeconds: durationToSeconds(cursorWholes, bpm),
-							durationSeconds: noteDurationSeconds
-						});
-						openIndex = events.length - 1;
-					}
-
-					cursorWholes += note.durationWholes;
-					// Only a note that itself ties forward keeps its event open for a
-					// following continuation to extend; anything else closes it, so a
-					// later, unrelated note is never mistaken for a continuation just
-					// because some earlier event happened to still be the "open" one.
-					if (!note.isTied) openIndex = null;
+					openByTarget = stillOpen;
+					cursorWholes += anchor.durationWholes;
 				}
 			}
 		}

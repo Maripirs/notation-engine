@@ -1,11 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import { formatPitch, parsePitch } from './pitch.js';
+import { assertScoresEquivalent } from './score-equivalence.js';
 import {
 	buildScore,
 	measureCapacityWholes,
 	measureDurationWholes,
 	Note,
 	NOTE_VALUE_WHOLES,
+	noteEvents,
 	Score,
 	TRIPLET,
 	validateMeasure,
@@ -870,5 +872,89 @@ describe('cross-staff beams', () => {
 	it('addCrossStaffBeam rejects fewer than 2 notes on one side', () => {
 		const { score, trebleIds, bassIds } = buildTwoStaffScore([['G4', 'eighth']]);
 		expect(() => score.addCrossStaffBeam([...trebleIds, ...bassIds])).toThrow(/needs at least 2 notes/);
+	});
+});
+
+describe('chords (M6 Slice 2)', () => {
+	it('buildScore turns a pitch array into an anchor plus chordWithPrevious members', () => {
+		const score = buildScore([[[['C4', 'E4', 'G4'], 'half'], ['A4', 'half']]]);
+		const notes = score.measures[0]!.notes;
+		expect(notes.map((note) => note.chordWithPrevious)).toEqual([false, true, true, false]);
+		expect(new Set(notes.map((note) => note.id)).size).toBe(4);
+	});
+
+	it('counts a chord once in measureDurationWholes and validateMeasure', () => {
+		const score = buildScore([[[['C4', 'E4', 'G4'], 'half'], [['D4', 'F4'], 'half']]]);
+		const measure = score.measures[0]!;
+		expect(measureDurationWholes(measure)).toBeCloseTo(1, 12);
+		const validation = validateMeasure(measure, score.time);
+		expect(validation.valid).toBe(true);
+		expect(validation.perVoice).toEqual([{ voice: 1, actualWholes: 1, valid: true }]);
+	});
+
+	it('groups notes into events per voice with noteEvents, interleaved voices included', () => {
+		const score = buildScore([
+			[
+				[['C5', 'E5'], 'half', { voice: 1 }],
+				[['C4', 'E4'], 'whole', { voice: 2 }],
+				['D5', 'half', { voice: 1 }]
+			]
+		]);
+		const events = noteEvents(score.measures[0]!.notes);
+		expect(events.map((event) => event.map((note) => formatPitch(note.pitch!)))).toEqual([
+			['C5', 'E5'],
+			['C4', 'E4'],
+			['D5']
+		]);
+	});
+
+	it('rejects a chord member with no pitched anchor in its voice', () => {
+		const score = new Score();
+		const measure = score.appendMeasure();
+		expect(() => score.appendNote(measure, { pitch: parsePitch('C4'), value: 'quarter', chordWithPrevious: true })).toThrow(
+			/chord member/
+		);
+		score.appendNote(measure, { pitch: null, value: 'quarter' });
+		expect(() => score.appendNote(measure, { pitch: parsePitch('C4'), value: 'quarter', chordWithPrevious: true })).toThrow(
+			/chord member/
+		);
+		score.appendNote(measure, { pitch: parsePitch('C4'), value: 'quarter', voice: 2 });
+		// Voice 1's latest note is the rest, so a voice-1 member still has no anchor.
+		expect(() => score.appendNote(measure, { pitch: parsePitch('E4'), value: 'quarter', chordWithPrevious: true })).toThrow();
+		expect(() =>
+			score.appendNote(measure, { pitch: parsePitch('E4'), value: 'quarter', voice: 2, chordWithPrevious: true })
+		).not.toThrow();
+		expect(() => score.appendNote(measure, { pitch: null, value: 'quarter', voice: 2, chordWithPrevious: true })).toThrow(
+			/rest/
+		);
+	});
+
+	it('ties each head of a tiedToNext chord to the same-pitch head of the next event', () => {
+		const score = buildScore([[[['C4', 'E4'], 'half', { tiedToNext: true }]], [[['E4', 'C4', 'G4'], 'half']]], {
+			time: { beats: 2, beatType: 4 }
+		});
+		const [c, e] = score.measures[0]!.notes;
+		const [e2, c2] = score.measures[1]!.notes;
+		expect(c!.tiedToId).toBe(c2!.id);
+		expect(e!.tiedToId).toBe(e2!.id);
+	});
+
+	it('keeps chord membership through clone and checks it in assertScoresEquivalent', () => {
+		const score = buildScore([[[['C4', 'E4'], 'whole']]]);
+		const copy = score.clone();
+		expect(copy.measures[0]!.notes.map((note) => note.chordWithPrevious)).toEqual([false, true]);
+		assertScoresEquivalent(copy, score);
+		// Same heads, not a chord: one more onset, so not the same music.
+		const split = buildScore([[['C4', 'whole'], ['E4', 'whole']]]);
+		expect(() => assertScoresEquivalent(split, score)).toThrow(/chordWithPrevious/);
+	});
+
+	it('transposes one chord member alone', () => {
+		const score = buildScore([[[['C4', 'E4', 'G4'], 'whole']]]);
+		const [c, e, g] = score.measures[0]!.notes;
+		expect(score.transposeNote(e!.id, 1)).toBe(0);
+		expect(formatPitch(e!.pitch!)).toBe('F4');
+		expect(formatPitch(c!.pitch!)).toBe('C4');
+		expect(formatPitch(g!.pitch!)).toBe('G4');
 	});
 });

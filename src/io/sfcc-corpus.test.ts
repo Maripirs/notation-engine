@@ -49,7 +49,9 @@ describe('SFCC corpus: import + layout', () => {
 			);
 
 			// Every source <note> is either in the model or tallied as a whole-
-			// note drop (`chord`/`grace`); each <forward> gap became one rest.
+			// note drop (`grace`, or `chord` for a `<chord/>` note with nothing
+			// to join, 0 across the corpus since M6 Slice 2 models chords);
+			// each <forward> gap became one rest.
 			// Holds for any file, so it is asserted, not just snapshotted.
 			expect(modelNotes).toBe(
 				sourceNotes - (dropped.chord ?? 0) - (dropped.grace ?? 0) + sourceForwards

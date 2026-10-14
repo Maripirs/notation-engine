@@ -170,3 +170,32 @@ describe('computePlaybackTimeline', () => {
 		}
 	});
 });
+
+describe('computePlaybackTimeline: chords (M6 Slice 2)', () => {
+	it('sounds every head at the chord onset and advances the cursor once per chord', () => {
+		const score = buildScore([[[['C4', 'E4', 'G4'], 'half'], ['A4', 'half']]]);
+		const events = computePlaybackTimeline(score);
+		expect(pitches(events)).toEqual(['C4', 'E4', 'G4', 'A4']);
+		// Half notes at 120bpm last 1s: the chord's three heads all start at 0
+		// for 1s, and A4 starts at 1s, not at 3s (once per head).
+		expect(events.map((event) => event.startSeconds)).toEqual([0, 0, 0, 1]);
+		for (const event of events) expect(event.durationSeconds).toBeCloseTo(1, 10);
+	});
+
+	it('extends each tied head into its own continuation', () => {
+		const score = buildScore([
+			[[['C4', 'E4'], 'half', { tiedToNext: true }], [['C4', 'E4'], 'quarter'], ['G4', 'quarter']]
+		]);
+		const events = computePlaybackTimeline(score);
+		expect(pitches(events)).toEqual(['C4', 'E4', 'G4']);
+		expect(events[0]!.durationSeconds).toBeCloseTo(1.5, 10);
+		expect(events[1]!.durationSeconds).toBeCloseTo(1.5, 10);
+		expect(events[2]!.startSeconds).toBeCloseTo(1.5, 10);
+	});
+
+	it('measures a measure of chords by its events when later measures start', () => {
+		const score = buildScore([[[['C4', 'E4', 'G4', 'C5'], 'whole']], [['D4', 'whole']]]);
+		const events = computePlaybackTimeline(score);
+		expect(events.at(-1)!.startSeconds).toBeCloseTo(2, 10);
+	});
+});

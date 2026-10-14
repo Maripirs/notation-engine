@@ -16,6 +16,7 @@ import {
 	exportMusicXml,
 	hitTest,
 	hitTestMeasure,
+	importMusicXml,
 	layoutScore,
 	loadSmuflFont,
 	PlaybackEngine,
@@ -66,6 +67,7 @@ const clefButtons = document.querySelectorAll<HTMLButtonElement>('button[data-cl
 const undoButton = document.querySelector<HTMLButtonElement>('#undo')!;
 const redoButton = document.querySelector<HTMLButtonElement>('#redo')!;
 const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
+const openInput = document.querySelector<HTMLInputElement>('#open')!;
 const dirtyIndicator = document.querySelector<HTMLElement>('#dirty')!;
 
 // These mirror index.html's own CSS (`body { max-width: 60rem; padding: 2rem
@@ -126,7 +128,9 @@ function formatPosition(seconds: number): string {
  * through `history.record`. The renderer itself never holds a `Score`, only
  * a `LaidOutScore`, so it needs no re-pointing beyond the usual `setLayout`.
  */
-const history = new EditHistory(createFullDemoScore());
+// `let`, not `const`, since M6 Slice 2's Open MusicXML control replaces the
+// whole history with a fresh one for the opened file (see `openMusicXml`).
+let history = new EditHistory(createFullDemoScore());
 let layoutOptions = { staffSpacePx: 11, systemWidthPx: systemWidthForViewport() };
 let layout: LaidOutScore = layoutScore(history.current, layoutOptions);
 let selected: NoteId | null = null;
@@ -140,7 +144,13 @@ const renderer = new CanvasRenderer(ctx, layout, { background: '#ffffff' });
  * is resampled from a 1x bitmap on a retina screen and the staff lines blur.
  */
 function sizeCanvas(): void {
-	const dpr = window.devicePixelRatio || 1;
+	// Browsers refuse to allocate a canvas taller than ~32k device pixels (it
+	// silently renders blank), and an opened real score (M6 Slice 2: Les Djinns
+	// is ~43k CSS pixels tall at the default zoom) passes that at any pixel
+	// ratio above 0.75. Lowering the backing-store density for such a score
+	// trades some crispness for a canvas that draws at all.
+	const MAX_CANVAS_DEVICE_PX = 32767;
+	const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DEVICE_PX / Math.max(layout.width, layout.height));
 	canvas.width = Math.ceil(layout.width * dpr);
 	canvas.height = Math.ceil(layout.height * dpr);
 	canvas.style.width = `${layout.width}px`;
@@ -163,6 +173,10 @@ function transposeSelected(semitones: number): void {
 	// `record` only keeps that snapshot when the edit reports a change, so a
 	// no-op on a rest leaves the undo stack (and the dirty flag) alone.
 	const noteId = selected;
+	// `transposeNote` reports a staff-local measure index; an opened
+	// multi-staff file (M6 Slice 2's Open MusicXML) can select a note on any
+	// staff, so the scoped relayout and redraw need the staff too.
+	const staffIndex = history.current.measureOfNote(noteId)?.staffIndex ?? 0;
 	const touched = history.record((score) => score.transposeNote(noteId, semitones));
 	if (touched === null) {
 		status.textContent = 'Rests have no pitch to transpose.';
@@ -173,12 +187,12 @@ function transposeSelected(semitones: number): void {
 	// Try the incremental path first. It declines when the edit would change the
 	// measure's width or overflow the canvas, which a transpose never does but a
 	// duration edit would, and then the only correct answer is a full pass.
-	const updated = relayoutMeasure(history.current, layout, touched, layoutOptions);
+	const updated = relayoutMeasure(history.current, layout, touched, layoutOptions, staffIndex);
 	let scoped = true;
 	if (updated) {
 		layout = updated;
 		renderer.setLayout(layout);
-		renderer.redrawMeasure(touched);
+		renderer.redrawMeasure(touched, staffIndex);
 	} else {
 		scoped = false;
 		layout = layoutScore(history.current, layoutOptions);
@@ -192,7 +206,7 @@ function transposeSelected(semitones: number): void {
 	status.textContent = scoped
 		? `Transposed note ${selected} in measure ${touched + 1}. Redrew measure ${touched + 1} only.`
 		: `Transposed note ${selected}: the edit changed the system's geometry, so the whole score was re-laid-out.`;
-	report(elapsed, touched);
+	report(elapsed, touched, staffIndex);
 }
 
 /**
@@ -279,8 +293,10 @@ function saveMusicXml(): void {
 let lastFullDrawMs = 0;
 let lastScopedMeasures: number[] = [];
 
-function report(scopedMs: number, measureIndex: number): void {
-	const region = layout.measures[measureIndex]!.region;
+function report(scopedMs: number, measureIndex: number, staffIndex = 0): void {
+	const measure = layout.measures.find((m) => m.index === measureIndex && m.staffIndex === staffIndex);
+	if (!measure) return;
+	const region = measure.region;
 	const areaRatio = (region.width * region.height) / (layout.width * layout.height);
 	timings.textContent = [
 		`edit -> measure ${measureIndex + 1} repainted   ${scopedMs.toFixed(2)} ms`,
@@ -361,6 +377,60 @@ redoButton.addEventListener('click', () => {
 	stepHistory('redo');
 });
 saveButton.addEventListener('click', saveMusicXml);
+
+/**
+ * Replace the main canvas's score with a MusicXML file the user picked (M6
+ * Slice 2's demo check: an SFCC fixture such as
+ * `src/test/fixtures/sfcc/Faure__-_Les_djinns__Op._12.musicxml`, chords and
+ * all). The opened score gets a fresh `EditHistory`, so Undo cannot step back
+ * into the demo score and the file opens as "Saved"; selection, seam markers
+ * and any running playback are cleared since they all named the old score's
+ * notes and measures.
+ */
+async function openMusicXml(file: File): Promise<void> {
+	const started = performance.now();
+	const score = importMusicXml(await file.text());
+	const imported = performance.now();
+	playbackEngine?.stop();
+	history = new EditHistory(score);
+	for (const { staffIndex, index } of renderer.setSelection(null)) renderer.redrawMeasure(index, staffIndex);
+	selected = null;
+	upButton.disabled = true;
+	downButton.disabled = true;
+	seamsOn = false;
+	renderer.setSeamMarkers([]);
+	seamsButton.textContent = 'Show seam markers';
+	markScoreChanged();
+	layout = layoutScore(history.current, layoutOptions);
+	const laidOut = performance.now();
+	renderer.setLayout(layout);
+	sizeCanvas();
+	lastFullDrawMs = drawAll();
+	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
+	scoreScroll.scrollTo({ top: 0 });
+	const noteCount = score.staves.reduce(
+		(sum, staff) => sum + staff.measures.reduce((n, measure) => n + measure.notes.length, 0),
+		0
+	);
+	status.textContent =
+		`Opened ${file.name}: ${score.staves.length} staves, ${score.staves[0]?.measures.length ?? 0} measures, ` +
+		`${noteCount} notes and rests, across ${layout.systems.length} system(s).`;
+	timings.textContent = [
+		`import                             ${(imported - started).toFixed(2)} ms`,
+		`layout                             ${(laidOut - imported).toFixed(2)} ms`,
+		`whole-score repaint                ${lastFullDrawMs.toFixed(2)} ms`
+	].join('\n');
+}
+
+openInput.addEventListener('change', () => {
+	const file = openInput.files?.[0];
+	if (!file) return;
+	openMusicXml(file).catch((error: unknown) => {
+		status.textContent = `Could not open ${file.name}: ${error instanceof Error ? error.message : String(error)}`;
+	});
+	// Clearing the value lets the same file be picked again after an edit.
+	openInput.value = '';
+});
 fullButton.addEventListener('click', () => {
 	lastFullDrawMs = drawAll();
 	lastScopedMeasures = [...renderer.lastRedrawnMeasures];

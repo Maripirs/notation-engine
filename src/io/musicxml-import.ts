@@ -32,7 +32,10 @@
 // `<forward>` that carries a duration but no note (a rest gap some encoders
 // write instead of an explicit `<note><rest/>`) is turned into a rest so the
 // voice's later notes still land at the right offset; a `<backup>` is pure
-// simultaneity bookkeeping and has nothing to contribute here.
+// simultaneity bookkeeping and has nothing to contribute here. The one
+// simultaneity the model does hold within a voice, a chord (M6 Slice 2), is
+// MusicXML's own shape too: a `<chord/>` note joins the `<note>` just before
+// it as a `chordWithPrevious` head and adds no time.
 
 import {
 	Measure,
@@ -59,8 +62,9 @@ import { child, childText, children, descendants, parseXml, type XmlElement } fr
  * ...) because `direction` alone would lump everything Slice 6 cares about
  * together; a `<notations>` is tallied by its children (`articulations`,
  * `fermata`, ...) because `tied`/`slur` inside it *are* read; and a whole
- * `<note>` dropped for being a chord member or a grace note is tallied once,
- * as `chord` or `grace`, not as its pitch, duration and so on.
+ * `<note>` dropped for being a grace note, or a `<chord/>` note with no
+ * pitched note to join (chords themselves are modelled since M6 Slice 2), is
+ * tallied once, as `grace` or `chord`, not as its pitch, duration and so on.
  *
  * Deliberately *not* tallied: elements the engine regenerates from the model
  * rather than reads (`<stem>`, `<beam>`, `<accidental>`, `<notations><tuplet>`,
@@ -291,11 +295,18 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 			}
 
 			// Notes and forward-gaps, in document order. `<backup>` is ignored.
+			// `chordState.last` is the last `<note>` built in this measure, which a
+			// following `<chord/>` note joins (M6 Slice 2); anything else
+			// between the two (a `<forward>`, a `<backup>`) breaks the chain.
+			const chordState: ChordState = { last: null };
 			for (const el of measureEl.children) {
 				if (el.name === 'note') {
-					buildNote(el, info, measureObjs, m, divisions, builtNotes, score, report);
+					buildNote(el, info, measureObjs, m, divisions, builtNotes, score, report, chordState);
 				} else if (el.name === 'forward') {
+					chordState.last = null;
 					synthesizeForwardRest(el, info, measureObjs, divisions, score, report);
+				} else if (el.name === 'backup') {
+					chordState.last = null;
 				} else if (el.name === 'direction') {
 					tallyDirection(el, tempo?.source, report);
 				} else if (el.name === 'sound' && el === tempo?.source) {
@@ -444,10 +455,11 @@ const READ_NOTE_CHILDREN: ReadonlySet<string> = new Set([
 	'time-modification',
 	'staff',
 	'notations',
-	// Never reach the per-child tally: a note carrying either is dropped
-	// whole (and tallied as `grace`/`chord`) before it gets that far.
-	'grace',
-	'chord'
+	// Read as chord membership (M6 Slice 2).
+	'chord',
+	// Never reaches the per-child tally: a grace note is dropped whole (and
+	// tallied as `grace`) before it gets that far.
+	'grace'
 ]);
 
 /** Re-derived by layout/export from pitch, key, beat position and pitch-vs-
@@ -473,6 +485,12 @@ const READ_OR_REGENERATED_NOTATIONS: ReadonlySet<string> = new Set(['tied', 'slu
 
 const NOTE_VALUES: readonly NoteValue[] = ['whole', 'half', 'quarter', 'eighth', '16th', '32nd', '64th'];
 
+/** The note a following `<chord/>` note joins: the last `<note>` built in
+ *  the current measure, with where it landed. */
+interface ChordState {
+	last: { readonly measure: Measure; readonly staffIndex: number; readonly voice: number; readonly pitched: boolean } | null;
+}
+
 function buildNote(
 	noteEl: XmlElement,
 	info: { baseStaffIndex: number; staffCount: number },
@@ -481,27 +499,42 @@ function buildNote(
 	divisions: number,
 	builtNotes: BuiltNoteRecord[],
 	score: Score,
-	report: ImportReporter
+	report: ImportReporter,
+	chordState: ChordState
 ): void {
-	// The model has neither grace notes nor chords, so a note carrying either
-	// marker is dropped whole. `<grace>` is a known, silent drop; `<chord>` is
-	// rarer here and worth a one-time note.
+	// The model has no grace notes (M6 Slice 8), so a grace note is dropped
+	// whole, silently but tallied. A grace chord's `<chord/>` members carry
+	// `<grace>` too, so they go the same way and never reach the chord logic.
 	if (child(noteEl, 'grace')) {
 		report.drop('grace');
+		chordState.last = null;
 		return;
 	}
-	if (child(noteEl, 'chord')) {
+
+	// `<chord/>` (M6 Slice 2): this note is another head of the previous
+	// `<note>`'s chord. It joins that note's measure and voice outright,
+	// rather than trusting its own `<staff>`/`<voice>`: MusicXML requires them
+	// to agree, and the model's chord membership is defined by voice, so a
+	// disagreeing encoder must not split one chord across two voices. With no
+	// pitched note to join (the first note of a measure, or after a rest or a
+	// dropped grace note), or with no pitch of its own (a rest or unpitched
+	// head), there is no chord to put it in; it is dropped and
+	// tallied as `chord`, the one remaining way that count can be nonzero.
+	const isChordMember = child(noteEl, 'chord') !== undefined;
+	const anchor = isChordMember ? chordState.last : null;
+	if (isChordMember && (!anchor || !anchor.pitched || !child(noteEl, 'pitch'))) {
 		report.drop('chord');
-		report.warnOnce('chord', 'importMusicXml: <chord> is not representable in this model; dropping the chord note');
+		report.warnOnce('chord', 'importMusicXml: <chord/> note with no pitched note to join; dropping it');
 		return;
 	}
 
 	const staffNumber = Math.max(1, intText(childText(noteEl, 'staff'), 1));
 	const k = Math.min(staffNumber - 1, measureObjs.length - 1);
-	const targetMeasure = measureObjs[k] ?? measureObjs[0];
+	const targetMeasure = anchor ? anchor.measure : measureObjs[k] ?? measureObjs[0];
 	if (!targetMeasure) return;
-	const globalStaffIndex = info.baseStaffIndex + k;
-	const voice = Math.max(1, intText(childText(noteEl, 'voice'), 1));
+	const globalStaffIndex = anchor ? anchor.staffIndex : info.baseStaffIndex + k;
+	const voice = anchor ? anchor.voice : Math.max(1, intText(childText(noteEl, 'voice'), 1));
+	const chordWithPrevious = anchor !== null;
 
 	let pitch: Pitch | null = null;
 	const restEl = child(noteEl, 'rest');
@@ -541,6 +574,7 @@ function buildNote(
 	if (restEl && restEl.attrs.measure === 'yes') {
 		const measureRestWholes = measureCapacityWholes(score.timeAt(measureIndex, globalStaffIndex));
 		const note = score.appendNote(targetMeasure, { pitch: null, value: 'whole', voice, measureRestWholes });
+		chordState.last = { measure: targetMeasure, staffIndex: globalStaffIndex, voice, pitched: false };
 		builtNotes.push({
 			id: note.id,
 			staffIndex: globalStaffIndex,
@@ -561,7 +595,10 @@ function buildNote(
 			? { value: typeText, dots: statedDots }
 			: deriveValueFromDuration(childText(noteEl, 'duration'), divisions, tuplet, statedDots, report, typeText);
 
-	const note = score.appendNote(targetMeasure, { pitch, value, voice, dots, tuplet });
+	const note = score.appendNote(targetMeasure, { pitch, value, voice, dots, tuplet, chordWithPrevious });
+	// A member keeps pointing a further `<chord/>` at the same chord: the
+	// measure, staff and voice are the anchor's either way.
+	chordState.last = { measure: targetMeasure, staffIndex: globalStaffIndex, voice, pitched: pitch !== null };
 
 	// Tie state: `<tie>` is authoritative; fall back to `<notations><tied>`
 	// only when there is no `<tie>` at all.

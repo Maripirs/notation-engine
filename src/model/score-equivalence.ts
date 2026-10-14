@@ -142,6 +142,9 @@ function assertNoteEquivalent(
 	// A whole-measure rest is its own thing, not "a whole rest that happens to
 	// fill a 4/4 bar": the flag and the duration it fills both have to survive.
 	assertEqual(`${where} measureRestWholes`, actualNote.measureRestWholes, expectedNote.measureRestWholes);
+	// Chord membership (M6 Slice 2): the same heads in the same order but
+	// regrouped into different chords would sound and draw differently.
+	assertEqual(`${where} chordWithPrevious`, actualNote.chordWithPrevious, expectedNote.chordWithPrevious);
 
 	// Tie linkage: both must either start no tie, or start one that lands on a
 	// note of the same pitch.

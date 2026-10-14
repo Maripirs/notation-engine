@@ -5,19 +5,18 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
   "dropped": {
     "arpeggiate": 10,
     "articulations": 872,
-    "chord": 1831,
-    "cue": 3,
+    "cue": 4,
     "dynamics": 153,
     "fermata": 11,
     "grace": 11,
     "identification": 1,
     "ornaments": 3,
-    "technical": 38,
+    "technical": 43,
     "wedge": 479,
   },
   "fallbacks": [],
   "measureRests": 392,
-  "modelNotes": 6574,
+  "modelNotes": 8405,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",
@@ -37,7 +36,6 @@ exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 
 {
   "dropped": {
     "articulations": 51,
-    "chord": 124,
     "cue": 2,
     "dynamics": 31,
     "identification": 1,
@@ -49,12 +47,13 @@ exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 
     "note-value P1 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
     "note-value P2 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
     "note-value P3 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
+    "note-value P3 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
     "note-value P4 m14: unsupported <type>breve</type>, duration 16 at divisions 2",
     "note-value P4 m29: unsupported <type>breve</type>, duration 16 at divisions 2",
     "note-value P4 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
   ],
   "measureRests": 1,
-  "modelNotes": 552,
+  "modelNotes": 676,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",
@@ -73,21 +72,20 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
 {
   "dropped": {
     "articulations": 305,
-    "chord": 868,
     "cue": 1,
     "dynamics": 119,
     "grace": 8,
     "identification": 1,
     "octave-shift": 7,
     "ornaments": 1,
-    "technical": 17,
+    "technical": 18,
     "wedge": 140,
   },
   "fallbacks": [
     "clef P4 m66: sign C line 3",
   ],
   "measureRests": 151,
-  "modelNotes": 3675,
+  "modelNotes": 4543,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",
@@ -108,7 +106,6 @@ exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
   "dropped": {
     "arpeggiate": 28,
     "articulations": 152,
-    "chord": 797,
     "dynamics": 55,
     "identification": 1,
     "staff-details": 8,
@@ -117,7 +114,7 @@ exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
   },
   "fallbacks": [],
   "measureRests": 201,
-  "modelNotes": 2719,
+  "modelNotes": 3516,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",
@@ -137,7 +134,6 @@ exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`]
 {
   "dropped": {
     "articulations": 622,
-    "chord": 1018,
     "dynamics": 38,
     "fermata": 6,
     "identification": 1,
@@ -149,7 +145,7 @@ exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`]
   },
   "fallbacks": [],
   "measureRests": 104,
-  "modelNotes": 2733,
+  "modelNotes": 3751,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",
@@ -169,7 +165,6 @@ exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
 {
   "dropped": {
     "articulations": 59,
-    "chord": 70,
     "dynamics": 4,
     "identification": 1,
     "technical": 6,
@@ -177,7 +172,7 @@ exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
   },
   "fallbacks": [],
   "measureRests": 4,
-  "modelNotes": 728,
+  "modelNotes": 798,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",
@@ -196,7 +191,6 @@ exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] =
 {
   "dropped": {
     "articulations": 5,
-    "chord": 226,
     "dynamics": 73,
     "fermata": 3,
     "identification": 1,
@@ -207,7 +201,7 @@ exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] =
   },
   "fallbacks": [],
   "measureRests": 318,
-  "modelNotes": 1358,
+  "modelNotes": 1584,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",

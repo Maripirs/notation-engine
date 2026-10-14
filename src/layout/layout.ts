@@ -19,6 +19,7 @@
 // longer comes from a naive fixed-plus-linear formula.
 
 import type { ClefType, CrossStaffBeam, Measure, Note, NoteId, NoteValue, Part, Score, Slur, TimeSignature } from '../model/score.js';
+import { noteEvents } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -95,6 +96,10 @@ const SPACING = {
 	noteSpaceReferenceWholes: 1 / 64,
 	/** Gap between an accidental and the notehead it belongs to. */
 	accidentalGap: 0.3,
+	/** Gap between two columns of a chord's stacked accidentals (M6 Slice 2;
+	 *  see `stackAccidentals`): tighter than `accidentalGap`, since the two
+	 *  glyphs belong together, but enough that their ink never touches. */
+	accidentalColumnGap: 0.15,
 	/**
 	 * Minimum blank required between the previous note's rightmost ink (its
 	 * stem, a ledger line, or just its notehead) and an accidental this note
@@ -256,21 +261,32 @@ function noteAdvanceSpaces(note: Note): number {
  * reproduces that voice's real time sequence with no extra sorting.
  */
 function noteOnsets(notes: readonly Note[]): Map<NoteId, number> {
-	const byVoice = new Map<number, Note[]>();
-	for (const note of notes) {
-		const list = byVoice.get(note.voice);
-		if (list) list.push(note);
-		else byVoice.set(note.voice, [note]);
-	}
 	const onsets = new Map<NoteId, number>();
-	for (const voiceNotes of byVoice.values()) {
+	// Walked per event (`noteEvents`, M6 Slice 2), not per note: every head of
+	// a chord gets the anchor's onset, and the voice's cursor advances once,
+	// by the anchor's duration, rather than once per head.
+	for (const voiceEvents of eventsByVoice(notes).values()) {
 		let position = 0;
-		for (const note of voiceNotes) {
-			onsets.set(note.id, position);
-			position += note.durationWholes;
+		for (const chord of voiceEvents) {
+			for (const note of chord) onsets.set(note.id, position);
+			position += chord[0]!.durationWholes;
 		}
 	}
 	return onsets;
+}
+
+/**
+ * Whether any two heads of a chord sit a second apart (adjacent diatonic
+ * positions), which forces one of them onto the "wrong" side of the stem
+ * (see `chordHeadOffsets`). Needed by `measureColumns`, before any stem
+ * direction is known: a displaced head costs one extra notehead width on
+ * whichever side it lands, so the column reserves that width either way.
+ */
+function chordHasSecond(chord: readonly Note[]): boolean {
+	if (chord.length < 2) return false;
+	const ds = chord.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : [])).sort((a, b) => a - b);
+	for (let i = 1; i < ds.length; i++) if (ds[i]! - ds[i - 1]! === 1) return true;
+	return false;
 }
 
 /**
@@ -326,10 +342,16 @@ function measureColumns(
 ): readonly { readonly onset: number; readonly width: number }[] {
 	const onsets = noteOnsets(notes);
 	const columns = new Map<number, { onset: number; width: number }>();
-	for (const note of notes) {
-		const onset = onsets.get(note.id)!;
+	// One candidate width per event (M6 Slice 2): a chord's anchor decides its
+	// advance, plus one notehead width when a second forces a head across the
+	// stem, so the displaced head never eats into the next column's room.
+	for (const chord of noteEvents(notes)) {
+		const anchor = chord[0]!;
+		const onset = onsets.get(anchor.id)!;
 		const key = onsetKey(onset);
-		const width = noteAdvanceSpaces(note);
+		const width =
+			noteAdvanceSpaces(anchor) +
+			(chordHasSecond(chord) ? GLYPH_METRICS[NOTEHEAD_GLYPHS[anchor.value]].advance : 0);
 		const existing = columns.get(key);
 		if (!existing || width > existing.width) columns.set(key, { onset, width });
 	}
@@ -352,6 +374,24 @@ function notesByVoice(notes: readonly Note[]): Map<number, Note[]> {
 		const list = byVoice.get(note.voice);
 		if (list) list.push(note);
 		else byVoice.set(note.voice, [note]);
+	}
+	return byVoice;
+}
+
+/**
+ * `notesByVoice`, one level up (M6 Slice 2): each voice's own *events*
+ * (`noteEvents`: a plain note or rest alone, or a chord's anchor plus its
+ * members), in time order. The column walk in `layoutMeasure` and the onset
+ * computation step through these rather than raw notes, so a chord occupies
+ * one onset and is laid out as one unit (shared stem, stacked accidentals).
+ */
+function eventsByVoice(notes: readonly Note[]): Map<number, Note[][]> {
+	const byVoice = new Map<number, Note[][]>();
+	for (const chord of noteEvents(notes)) {
+		const voice = chord[0]!.voice;
+		const list = byVoice.get(voice);
+		if (list) list.push(chord);
+		else byVoice.set(voice, [chord]);
 	}
 	return byVoice;
 }
@@ -1694,6 +1734,9 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// degenerate case, which is what keeps every code path below identical to
 	// before this slice whenever only voice 1 is present.
 	const notesByVoiceGroups = notesByVoice(measure.notes);
+	// The same grouping one level up (M6 Slice 2): each voice's events, so a
+	// chord is laid out as one unit at one onset (see `eventsByVoice`).
+	const eventsByVoiceGroups = eventsByVoice(measure.notes);
 	// Whether this measure genuinely holds more than one voice, gating the
 	// multi-voice stem-direction override and rest offset (see
 	// `voiceStemOverride`/`restVoiceOffsetSpaces`): a single-voice measure
@@ -1767,6 +1810,10 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		for (const note of group.notes) beamGroupOfNote.set(note.id, group);
 	}
 	const placements = new Map<NoteId, NotePlacement>();
+	// Each event's stem geometry, keyed by its anchor's id (M6 Slice 2): one
+	// stem per chord, so a beamed chord's stem is looked up by the anchor
+	// `BeamGroup.notes` lists, never by a member.
+	const stems = new Map<NoteId, ChordStem>();
 
 	// Onset-aligned columns (see `measureColumns`): every voice's notes land
 	// on a shared x wherever they share a beat. `columnOffsetPx` turns each
@@ -1824,8 +1871,8 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// yielding to voice 1; see that function's own comment on why the
 	// direction of yielding stays one-way even though the tracking itself is
 	// now N-way.
-	let atPrevColumnByVoice = new Map<number, { d: number; noteX: number }>();
-	let atThisColumnByVoice = new Map<number, { d: number; noteX: number }>();
+	let atPrevColumnByVoice = new Map<number, readonly { d: number; noteX: number }[]>();
+	let atThisColumnByVoice = new Map<number, readonly { d: number; noteX: number }[]>();
 	// Whole-measure rests are laid out in their column like any rest, then
 	// moved to the measure's centre once the barline's x is known; this
 	// remembers which ops and hit box each one produced.
@@ -1841,10 +1888,13 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		let columnInkRightSoFar: number | null = null;
 
 		for (const voice of voiceNumbers) {
-			const voiceNotes = notesByVoiceGroups.get(voice)!;
+			const voiceEvents = eventsByVoiceGroups.get(voice)!;
 			const index = voiceNoteIndex.get(voice)!;
-			const note = voiceNotes[index];
-			if (!note || onsetKey(onsets.get(note.id)!) !== key) continue;
+			// One event per voice per column (M6 Slice 2): a chord's members
+			// share its anchor's onset, so the whole chord is taken here at once.
+			const chord = voiceEvents[index];
+			const note = chord?.[0];
+			if (!chord || !note || onsetKey(onsets.get(note.id)!) !== key) continue;
 			voiceNoteIndex.set(voice, index + 1);
 
 			const shiftAccum = shiftAccumByVoice.get(voice)!;
@@ -1858,17 +1908,25 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			// accidental-collision check below already adjusts, rather than
 			// a new parameter threaded into `layoutNote`, so that function's
 			// signature and single-voice behaviour stay untouched.
-			const clashShift =
-				note.pitch !== null
-					? secondIntervalClashShift(
-							diatonicIndex(note.pitch),
-							NOTEHEAD_GLYPHS[note.value],
-							baseCellX,
-							[...atThisColumnByVoice.values()],
-							[...atPrevColumnByVoice.values()],
-							ss
-						)
-					: 0;
+			// Every head of a chord is checked (M6 Slice 2), against every head
+			// an earlier voice placed, taking the largest shift any pair needs.
+			const earlierThisColumn = [...atThisColumnByVoice.values()].flat();
+			const earlierPrevColumn = [...atPrevColumnByVoice.values()].flat();
+			let clashShift = 0;
+			for (const head of chord) {
+				if (head.pitch === null) continue;
+				clashShift = Math.max(
+					clashShift,
+					secondIntervalClashShift(
+						diatonicIndex(head.pitch),
+						NOTEHEAD_GLYPHS[note.value],
+						baseCellX,
+						earlierThisColumn,
+						earlierPrevColumn,
+						ss
+					)
+				);
+			}
 			const cellX = baseCellX + clashShift;
 
 			const beamDirection = beamGroupOfNote.get(note.id)?.direction ?? null;
@@ -1893,7 +1951,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 				ops,
 				notes,
 				cellX,
-				note,
+				chord,
 				keyFifths,
 				ctx,
 				beamDirection,
@@ -1907,17 +1965,21 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			previousInkRightByVoice.set(voice, laid.inkRight);
 			columnInkRightSoFar =
 				columnInkRightSoFar === null ? laid.inkRight : Math.max(columnInkRightSoFar, laid.inkRight);
-			if (laid.placement) {
-				placements.set(note.id, laid.placement);
-				atThisColumnByVoice.set(voice, { d: laid.placement.d, noteX: laid.placement.noteX });
+			if (laid.heads.length > 0) {
+				for (const [id, placement] of laid.heads) placements.set(id, placement);
+				atThisColumnByVoice.set(
+					voice,
+					laid.heads.map(([, placement]) => ({ d: placement.d, noteX: placement.noteX }))
+				);
 			}
+			if (laid.stem) stems.set(note.id, laid.stem);
 		}
 
 		atPrevColumnByVoice = atThisColumnByVoice;
 	}
 	const finalShiftByVoice = shiftAccumByVoice;
-	for (const group of beamGroups) layoutBeamGroup(ops, group, placements, ctx);
-	for (const { group, beamY } of crossStaffGroups) layoutBeamGroup(ops, group, placements, ctx, beamY);
+	for (const group of beamGroups) layoutBeamGroup(ops, group, stems, ctx);
+	for (const { group, beamY } of crossStaffGroups) layoutBeamGroup(ops, group, stems, ctx, beamY);
 	// The measure's note area ends at the shared columns' own total width,
 	// plus whichever voice's own collision-avoidance shift (above) reached
 	// furthest past it. A single voice's shift is the only one that can ever
@@ -2366,6 +2428,10 @@ interface NotePlacement {
 	 *  `BeamGroup.direction` instead); read by the tie pass to decide which
 	 *  side of the notehead a tie curve leans toward. */
 	readonly up: boolean | null;
+	/** Which side a tie from this head curves toward, when it is one head of a
+	 *  multi-head chord (M6 Slice 2; see `layoutNote`): `true` below, `false`
+	 *  above. `undefined` for a lone note, whose tie follows `up` as always. */
+	readonly tieBelow?: boolean;
 }
 
 /**
@@ -2489,23 +2555,58 @@ function centreMeasureRests(
 	}
 }
 
+/**
+ * One stem's geometry, decided once per event (a lone note or a whole chord)
+ * by `layoutNote` and drawn either there (unbeamed) or by `layoutBeamGroup`
+ * (beamed, once the group's beam height is known). `left` is the stem's
+ * outer-left x (see `stemXEdges`); `attachY` is where it meets the head
+ * farthest from its tip (for a chord, the outermost head on the non-stem
+ * side, so the one stem visibly joins every head); `nearY` is the head
+ * nearest its tip, from which the ordinary `STEM_LENGTH` is measured. For a
+ * single note `attachY` and `nearY` are the same head, which reproduces the
+ * pre-chord stem exactly.
+ */
+interface ChordStem {
+	readonly left: number;
+	readonly attachY: number;
+	readonly nearY: number;
+}
+
+/**
+ * Lay out one event in its column: a rest, a single note, or a chord (M6
+ * Slice 2; a single note is the one-head chord, and every rule below reduces
+ * to the pre-chord behaviour for it).
+ *
+ * `chord` is the event as `noteEvents` returns it, anchor first. Returns each
+ * head's `NotePlacement` (keyed by its own note id, since ties, slurs and
+ * hit-testing stay per head), the event's one stem (`null` for a rest, a whole
+ * note, or a stem `layoutBeamGroup` will draw from the returned geometry), the
+ * rightmost ink for the next note's accidental check, and how far this event
+ * pushed the rest of its voice right.
+ */
 function layoutNote(
 	ops: DrawOp[],
 	notes: LaidOutNote[],
 	cellX: number,
-	note: Note,
+	chord: readonly Note[],
 	keyFifths: number,
 	ctx: MeasureContext,
 	beamDirection: 'up' | 'down' | null,
 	lastStatedAlterForStep: Map<Step, number>,
 	previousInkRight: number | null,
 	multiVoice: boolean
-): { cursor: number; placement: NotePlacement | null; inkRight: number; collisionShift: number } {
+): {
+	heads: readonly (readonly [NoteId, NotePlacement])[];
+	stem: ChordStem | null;
+	inkRight: number;
+	collisionShift: number;
+} {
 	const { ss } = ctx;
+	const anchor = chord[0]!;
 	const beamed = beamDirection !== null;
-	const advance = noteAdvanceSpaces(note) * ss * (ctx.spacingScale ?? 1);
 
-	if (note.pitch === null) {
+	if (anchor.pitch === null) {
+		const note = anchor;
 		const glyph = REST_GLYPHS[note.value];
 		// Every rest hangs from, sits on, or centres about the middle of the
 		// staff; the glyph origins encode which, so one y works for all four.
@@ -2522,16 +2623,44 @@ function layoutNote(
 		layoutAugmentationDots(ops, cellX + GLYPH_METRICS[glyph].advance * ss, y, false, note.dots, ctx);
 		notes.push({ id: note.id, bounds: glyphBounds(glyph, cellX, y, ss, 0.25) });
 		return {
-			cursor: cellX + advance,
-			placement: null,
+			heads: [],
+			stem: null,
 			inkRight: cellX + GLYPH_METRICS[glyph].bBoxNE[0] * ss,
 			collisionShift: 0
 		};
 	}
 
-	const pitch = note.pitch;
-	const d = diatonicIndex(pitch);
-	const y = staffY(d, ctx);
+	// Every head, low to high. `appendNote` guarantees a chord member is
+	// pitched; the filter only narrows the type.
+	const heads = chord
+		.flatMap((note) => (note.pitch ? [{ note, pitch: note.pitch, d: diatonicIndex(note.pitch) }] : []))
+		.sort((a, b) => a.d - b.d);
+	const ds = heads.map((head) => head.d);
+	const lowest = heads[0]!;
+	const highest = heads[heads.length - 1]!;
+	// The chord's one notehead shape: its duration is the anchor's, so a
+	// member whose own `value` disagrees (only reachable from odd imports)
+	// still draws the chord's head, and every width below is that head's.
+	const headGlyph = NOTEHEAD_GLYPHS[anchor.value];
+	const headWidth = GLYPH_METRICS[headGlyph].advance * ss;
+	const hasStem = anchor.value !== 'whole';
+
+	// One direction for the whole chord: a beamed chord takes its group's, an
+	// unbeamed one the farthest-from-the-middle-line rule over *every* head
+	// (`stemDirectionForNotes` already decides a beam group the same way, so
+	// a chord is just a group whose members share an x). A whole-note chord
+	// has no stem, but its seconds still need a side to displace to, so it
+	// computes the same virtual direction.
+	const up = beamed
+		? beamDirection === 'up'
+		: stemDirectionForNotes(ds, ctx.lines.middleLine, voiceStemOverride(anchor.voice, multiVoice)) === 'up';
+
+	const displaced = chordHeadDisplacement(ds, up);
+	const anyDisplaced = displaced.some(Boolean);
+	// How far a displaced head sits from the normal column: one head width
+	// less one stem thickness, so the two heads straddle the stem and each
+	// touches it, the standard engraving for a second.
+	const displacement = headWidth - ED.stemThickness * ss;
 
 	// Draw an accidental when this note's alter disagrees with what is
 	// currently "in force" for its step: the key signature, unless some
@@ -2551,8 +2680,38 @@ function layoutNote(
 	// same-step interaction is left for whichever later slice first needs to
 	// tell two octaves of the same step apart; nothing in this slice's scope
 	// exercises it.
-	const impliedAlter = lastStatedAlterForStep.get(pitch.step) ?? keyAlterForStep(keyFifths, pitch.step);
-	const needsAccidental = pitch.alter !== impliedAlter;
+	//
+	// A chord's heads (M6 Slice 2) are all judged against the state *before*
+	// the chord, then the state is updated once for all of them: two heads of
+	// one step (F#4 and F#5) both show their sharp, rather than the second
+	// being suppressed by the first a moment earlier at the same onset. When
+	// two heads of one step disagree (F#4 with F5), the highest head's alter
+	// is what carries forward, an arbitrary but deterministic pick for a case
+	// the per-step model cannot express exactly anyway.
+	const accidentals: { readonly d: number; readonly glyph: GlyphName; readonly noteId: NoteId }[] = [];
+	for (const head of heads) {
+		const impliedAlter = lastStatedAlterForStep.get(head.pitch.step) ?? keyAlterForStep(keyFifths, head.pitch.step);
+		if (head.pitch.alter === impliedAlter) continue;
+		accidentals.push({
+			d: head.d,
+			glyph: ACCIDENTAL_GLYPHS[String(clampAlter(head.pitch.alter)) as keyof typeof ACCIDENTAL_GLYPHS],
+			noteId: head.note.id
+		});
+	}
+	for (const accidental of accidentals) {
+		const head = heads.find((candidate) => candidate.note.id === accidental.noteId)!;
+		lastStatedAlterForStep.set(head.pitch.step, head.pitch.alter);
+	}
+	const accidentalColumns = stackAccidentals(accidentals);
+	const columnWidths = accidentalColumns.map((column) =>
+		Math.max(...column.map((accidental) => GLYPH_METRICS[accidental.glyph].advance * ss))
+	);
+	const accidentalsWidth =
+		accidentalColumns.length === 0
+			? 0
+			: columnWidths.reduce((sum, width) => sum + width, 0) +
+				(accidentalColumns.length - 1) * SPACING.accidentalColumnGap * ss +
+				SPACING.accidentalGap * ss;
 
 	// A tight previous note can leave less than a clean gap before this
 	// accidental: push the whole note (accidental, head, stem, everything
@@ -2560,71 +2719,183 @@ function layoutNote(
 	// the accidental print on top of the previous note's stem or ledger line.
 	// Only an accidental triggers this, since it is the one thing drawn to the
 	// *left* of the note's own cell; the notehead itself already gets its own
-	// room from `noteAdvanceSpaces`. The shift has to widen
-	// this note's returned cursor too (below), or the next note's cell would
-	// start back where this one would have landed without it, undoing the
-	// very clearance just added.
+	// room from `noteAdvanceSpaces` (and a displaced head from the extra width
+	// `measureColumns` reserves for a chord with a second). The shift has to
+	// widen this voice's later notes too (`layoutMeasure` accumulates it), or
+	// the next note's cell would start back where this one would have landed
+	// without it, undoing the very clearance just added.
 	let collisionShift = 0;
-	if (needsAccidental && previousInkRight !== null) {
+	if (accidentals.length > 0 && previousInkRight !== null) {
 		const shortfall = SPACING.minAccidentalClearance * ss - (cellX - previousInkRight);
 		if (shortfall > 0) collisionShift = shortfall;
 	}
-	let noteX = cellX + collisionShift;
+	const accidentalsX = cellX + collisionShift;
+	// The leftmost head's x, then the normal (stem-side) column's: a down-stem
+	// chord's displaced heads sit *left* of the stem, so the normal column
+	// moves right by one displacement to make room for them.
+	const leftHeadX = accidentalsX + accidentalsWidth;
+	const noteX = leftHeadX + (anyDisplaced && !up ? displacement : 0);
+	const headX = (i: number): number => (displaced[i] ? (up ? noteX + displacement : noteX - displacement) : noteX);
 
-	if (needsAccidental) {
-		const glyph = ACCIDENTAL_GLYPHS[String(clampAlter(pitch.alter)) as keyof typeof ACCIDENTAL_GLYPHS];
-		ops.push({ kind: 'glyph', glyph, x: noteX, y, noteId: note.id });
-		noteX += (GLYPH_METRICS[glyph].advance + SPACING.accidentalGap) * ss;
-		lastStatedAlterForStep.set(pitch.step, pitch.alter);
-	}
+	// Accidental columns, nearest the heads first (column 0), each glyph
+	// right-aligned in its column so differently wide glyphs still line up
+	// against the heads. A single accidental is column 0 alone, at exactly the
+	// x the pre-chord layout gave it (`cellX`, head after it plus the gap).
+	let columnRight = leftHeadX - SPACING.accidentalGap * ss;
+	accidentalColumns.forEach((column, c) => {
+		for (const accidental of column) {
+			const x = columnRight - GLYPH_METRICS[accidental.glyph].advance * ss;
+			ops.push({ kind: 'glyph', glyph: accidental.glyph, x, y: staffY(accidental.d, ctx), noteId: accidental.noteId });
+		}
+		columnRight -= columnWidths[c]! + SPACING.accidentalColumnGap * ss;
+	});
+	// Accidental columns beyond the first are wider than anything the column
+	// spacing budgeted (a lone accidental has always eaten into its own
+	// note's advance instead), so they push the rest of this voice right.
+	const extraAccidentalWidth = accidentalColumns.length > 1 ? accidentalsWidth - columnWidths[0]! - SPACING.accidentalGap * ss : 0;
 
-	const headGlyph = NOTEHEAD_GLYPHS[note.value];
-	ops.push({ kind: 'glyph', glyph: headGlyph, x: noteX, y, noteId: note.id });
-	layoutLedgerLines(ops, noteX, headGlyph, d, note.id, ctx);
-
-	// Ledger lines only land on line positions (see `layoutLedgerLines`), so
-	// the same parity check says whether this note itself sits on a line.
-	const onLine = (d - ctx.lines.bottomLine) % 2 === 0;
-	layoutAugmentationDots(
+	heads.forEach((head, i) => {
+		ops.push({ kind: 'glyph', glyph: headGlyph, x: headX(i), y: staffY(head.d, ctx), noteId: head.note.id });
+	});
+	layoutChordLedgerLines(
 		ops,
-		noteX + GLYPH_METRICS[headGlyph].advance * ss,
-		y,
-		onLine,
-		note.dots,
+		heads.map((head, i) => ({ d: head.d, x: headX(i), noteId: head.note.id })),
+		headWidth,
 		ctx
 	);
 
-	// A beamed note's stem is drawn later, by `layoutBeamGroup`, once every
-	// member of its group has a recorded position: its length and direction
-	// depend on the whole group, not on this note alone. An unbeamed note
-	// (whole, or eighth-and-shorter with no beamable neighbour) keeps the
-	// simple single-note path it always had. Either way the direction itself
-	// is decided once, here, rather than separately by whichever of the two
-	// paths ends up drawing the stem: a beamed note takes its already-decided
-	// group direction, an unbeamed one the ordinary single-note rule.
-	let up: boolean | null = null;
-	if (note.value !== 'whole') {
-		up = beamed
-			? beamDirection === 'up'
-			: stemDirectionForNotes([d], ctx.lines.middleLine, voiceStemOverride(note.voice, multiVoice)) === 'up';
-		if (!beamed) {
-			layoutStemAndFlag(ops, noteX, y, headGlyph, note.value, note.id, ctx, up);
+	// Dots line up in one column right of the chord's rightmost head.
+	const headsRight = Math.max(...heads.map((_, i) => headX(i))) + headWidth;
+	layoutChordDots(ops, headsRight, ds, anchor.dots, ctx);
+
+	// A beamed chord's stem is drawn later, by `layoutBeamGroup`, once every
+	// member of its group has a recorded position: its length depends on the
+	// whole group, not on this chord alone. An unbeamed chord (whole, or
+	// eighth-and-shorter with no beamable neighbour) draws its own here.
+	// Either way the geometry is decided once, here: the stem stands on the
+	// normal column, joins the far head (lowest for an up stem, highest for a
+	// down one) and is measured from the near head, so it spans the chord.
+	let stem: ChordStem | null = null;
+	if (hasStem) {
+		const anchors = glyphMetrics(headGlyph).anchors;
+		const stemAnchor = up ? anchors.stemUpSE : anchors.stemDownNW;
+		const edges = stemXEdges(headGlyph, noteX, up, ss);
+		if (stemAnchor && edges) {
+			const far = up ? lowest : highest;
+			const near = up ? highest : lowest;
+			stem = {
+				left: edges.left,
+				attachY: staffY(far.d, ctx) - stemAnchor[1] * ss,
+				nearY: staffY(near.d, ctx)
+			};
+			if (!beamed) layoutStemAndFlag(ops, stem, anchor.value, anchor.id, ctx, up);
 		}
 	}
-	// Every pitched note's final position is recorded here, not just a beamed
-	// member's: `layoutBeamGroup` only ever reads the entries for its own
-	// group (unaffected by the wider population), and the tie pass in
-	// `layoutMeasure` needs an unbeamed or whole note's position too, to draw
-	// a same-measure tie's one curve or either half of one crossing a barline.
-	const placement: NotePlacement = { noteX, y, headGlyph, d, up };
 
-	notes.push({ id: note.id, bounds: glyphBounds(headGlyph, noteX, y, ss, 0.3) });
+	// Every head's final position is recorded, not just a beamed anchor's:
+	// the tie pass in `layoutMeasure` needs each tied head's own position,
+	// and `layoutBeamGroup` reads `stem` instead. A chord's ties split by
+	// side (standard engraving): heads in the upper half curve up, the lower
+	// half down, and a middle head of an odd count away from the stem. A lone
+	// note keeps the plain away-from-the-stem rule (`tieBelow` left unset).
+	const placementUp = hasStem ? up : null;
+	const placed = heads.map((head, i): readonly [NoteId, NotePlacement] => {
+		let tieBelow: boolean | undefined;
+		if (heads.length > 1) {
+			const middle = (heads.length - 1) / 2;
+			tieBelow = i < middle ? true : i > middle ? false : up;
+		}
+		return [
+			head.note.id,
+			{ noteX: headX(i), y: staffY(head.d, ctx), headGlyph, d: head.d, up: placementUp, tieBelow }
+		];
+	});
+
+	// Hit boxes in the chord's model order, one per head, so a click resolves
+	// to the head under the pointer.
+	for (const note of chord) {
+		const placement = placed.find(([id]) => id === note.id)?.[1];
+		if (placement) notes.push({ id: note.id, bounds: glyphBounds(headGlyph, placement.noteX, placement.y, ss, 0.3) });
+	}
+
+	// The rightmost ink: the rightmost head, a ledger line's extension past
+	// it (ledger lines only extend past a head outside the staff's own
+	// top/bottom lines; this mirrors `layoutChordLedgerLines`' own bounds),
+	// and the stem's outer edge, whichever reaches furthest.
+	let inkRight = Math.max(...heads.map((_, i) => headX(i) + GLYPH_METRICS[headGlyph].bBoxNE[0] * ss));
+	if (highest.d >= ctx.lines.topLine + 2 || lowest.d <= ctx.lines.bottomLine - 2) {
+		inkRight = Math.max(inkRight, headsRight + ED.legerLineExtension * ss);
+	}
+	if (stem) inkRight = Math.max(inkRight, stem.left + ED.stemThickness * ss);
+
 	return {
-		cursor: cellX + advance + collisionShift,
-		placement,
-		inkRight: noteInkRight(noteX, headGlyph, d, up, ss, ctx.lines),
-		collisionShift
+		heads: placed,
+		stem,
+		inkRight,
+		collisionShift: collisionShift + extraAccidentalWidth
 	};
+}
+
+/**
+ * Which heads of a chord go on the "wrong" side of the stem, given their
+ * diatonic positions sorted low to high (M6 Slice 2). Two heads a second
+ * apart cannot share a column, so one crosses the stem: for an up stem the
+ * walk goes bottom-up and the upper head of each second moves right of the
+ * stem; for a down stem it goes top-down and the lower head moves left. A
+ * head is only displaced when the head it seconds is *not* already
+ * displaced, which is what makes a cluster (C-D-E) alternate sides rather
+ * than all landing on one: the standard rule (Gould, "Behind Bars").
+ *
+ * Unisons (two heads at one position, e.g. F and F#) are not handled: they
+ * overlap, as in many simple engravers; this slice's corpus has none.
+ */
+function chordHeadDisplacement(ds: readonly number[], up: boolean): boolean[] {
+	const displaced = ds.map(() => false);
+	if (up) {
+		for (let i = 1; i < ds.length; i++) {
+			if (ds[i]! - ds[i - 1]! === 1 && !displaced[i - 1]) displaced[i] = true;
+		}
+	} else {
+		for (let i = ds.length - 2; i >= 0; i--) {
+			if (ds[i + 1]! - ds[i]! === 1 && !displaced[i + 1]) displaced[i] = true;
+		}
+	}
+	return displaced;
+}
+
+/**
+ * Minimum diatonic distance between two accidentals sharing a column: a
+ * sharp or natural is about three staff spaces tall (six diatonic steps), so
+ * two closer than a seventh would overlap vertically.
+ */
+const ACCIDENTAL_COLUMN_MIN_STEPS = 6;
+
+/**
+ * Assign a chord's accidentals to columns left of the heads (M6 Slice 2),
+ * column 0 nearest. The standard order (Gould; Ross, "The Art of Music
+ * Engraving"): the topmost accidental first, then the bottommost, then the
+ * second from the top, second from the bottom and so on inward, each taking
+ * the nearest column where it clears every accidental already there by at
+ * least `ACCIDENTAL_COLUMN_MIN_STEPS`. Outer accidentals therefore hug the
+ * heads, and an inner one, which would collide with both, moves out a column.
+ * A lone accidental is one column of one, i.e. the pre-chord layout exactly.
+ */
+function stackAccidentals<A extends { readonly d: number }>(accidentals: readonly A[]): A[][] {
+	const byHeight = [...accidentals].sort((a, b) => b.d - a.d);
+	const order: A[] = [];
+	for (let top = 0, bottom = byHeight.length - 1; top <= bottom; top++, bottom--) {
+		order.push(byHeight[top]!);
+		if (bottom !== top) order.push(byHeight[bottom]!);
+	}
+	const columns: A[][] = [];
+	for (const accidental of order) {
+		const column = columns.find((candidate) =>
+			candidate.every((other) => Math.abs(other.d - accidental.d) >= ACCIDENTAL_COLUMN_MIN_STEPS)
+		);
+		if (column) column.push(accidental);
+		else columns.push([accidental]);
+	}
+	return columns;
 }
 
 /**
@@ -2686,35 +2957,6 @@ function secondIntervalClashShift(
 }
 
 /**
- * The rightmost x a note's own ink reaches: past the notehead itself when a
- * ledger line's extension or a stem's outer edge sticks out further, which
- * they routinely do. The only consumer is the accidental collision check
- * above; nothing else in this file needs a note's horizontal ink extent
- * collapsed to one number.
- */
-function noteInkRight(
-	noteX: number,
-	headGlyph: GlyphName,
-	d: number,
-	up: boolean | null,
-	ss: number,
-	lines: ClefLines
-): number {
-	let right = noteX + GLYPH_METRICS[headGlyph].bBoxNE[0] * ss;
-	// Ledger lines only ever land on line positions and only extend past a
-	// note outside the staff's own top/bottom lines; this mirrors
-	// `layoutLedgerLines`'s own loop bounds.
-	if (d >= lines.topLine + 2 || d <= lines.bottomLine - 2) {
-		right = Math.max(right, noteX + GLYPH_METRICS[headGlyph].advance * ss + ED.legerLineExtension * ss);
-	}
-	if (up !== null) {
-		const stem = stemXEdges(headGlyph, noteX, up, ss);
-		if (stem) right = Math.max(right, stem.right);
-	}
-	return right;
-}
-
-/**
  * Draw a note's augmentation dots, right of the notehead (or rest) per SMuFL
  * convention.
  *
@@ -2742,65 +2984,102 @@ function layoutAugmentationDots(
 	}
 }
 
-function layoutLedgerLines(
+/**
+ * Augmentation dots for every head of a chord (M6 Slice 2), in one column
+ * starting just right of `headsRight` (the chord's rightmost head edge, so a
+ * displaced head never collides with a dot). Each head's dot sits in that
+ * head's own space, or, for a head on a line, the space above it, the
+ * standard rule `layoutAugmentationDots` already applies to a single note.
+ * Two heads a second apart can want the same space (a line head's space
+ * above is the next head's own space); the later one then takes the space
+ * below its line instead, so no dot is drawn twice or lost.
+ */
+function layoutChordDots(ops: DrawOp[], headsRight: number, ds: readonly number[], dots: number, ctx: MeasureContext): void {
+	if (dots === 0) return;
+	// Positions are claimed top-down so the highest head always keeps its
+	// natural space and any conflict pushes a lower dot further down.
+	const claimed = new Set<number>();
+	for (const d of [...ds].sort((a, b) => b - a)) {
+		const onLine = (d - ctx.lines.bottomLine) % 2 === 0;
+		let position = onLine ? d + 1 : d;
+		if (claimed.has(position) && onLine) position = d - 1;
+		if (claimed.has(position)) continue;
+		claimed.add(position);
+		// `layoutAugmentationDots`' own `onLine` nudge is half a space up,
+		// which is exactly `position = d + 1`; passing the resolved space's y
+		// with `onLine: false` draws the same dot for that case and lets the
+		// space-below case reuse it too.
+		layoutAugmentationDots(ops, headsRight, staffY(position, ctx), false, dots, ctx);
+	}
+}
+
+/**
+ * Ledger lines for every head of a chord (M6 Slice 2), a single note being
+ * the one-head case. Each ledger position beyond the staff is drawn once,
+ * spanning every head that needs it: a head needs the ledger at `position`
+ * when it sits on it or further out (a head in the space just past a ledger
+ * still needs that ledger to be read). The span covers each such head's own
+ * x, so a displaced head on a ledger widens that line across both sides of
+ * the stem, while a ledger only the normal column needs stays head-width.
+ * Ledger lines only ever land on line positions, the diatonic indices with
+ * the same parity as the staff lines themselves. Tagged with the outermost
+ * head's id, the one whose own ledger it most directly is.
+ */
+function layoutChordLedgerLines(
 	ops: DrawOp[],
-	noteX: number,
-	headGlyph: GlyphName,
-	d: number,
-	noteId: string,
+	heads: readonly { readonly d: number; readonly x: number; readonly noteId: NoteId }[],
+	headWidth: number,
 	ctx: MeasureContext
 ): void {
 	const { ss } = ctx;
-	const headWidth = GLYPH_METRICS[headGlyph].advance * ss;
 	const extension = ED.legerLineExtension * ss;
 	const thickness = ED.legerLineThickness * ss;
-	const push = (position: number) => {
+	const push = (position: number, needing: readonly { readonly x: number }[], noteId: NoteId) => {
+		const left = Math.min(...needing.map((head) => head.x));
+		const right = Math.max(...needing.map((head) => head.x)) + headWidth;
 		ops.push({
 			kind: 'rect',
-			x: noteX - extension,
+			x: left - extension,
 			y: staffY(position, ctx) - thickness / 2,
-			width: headWidth + extension * 2,
+			width: right - left + extension * 2,
 			height: thickness,
 			noteId
 		});
 	};
-	// Ledger lines only ever land on line positions, which are the diatonic
-	// indices with the same parity as the staff lines themselves.
-	for (let position = ctx.lines.topLine + 2; position <= d; position += 2) push(position);
-	for (let position = ctx.lines.bottomLine - 2; position >= d; position -= 2) push(position);
+	const top = heads.reduce((a, b) => (b.d > a.d ? b : a));
+	const bottom = heads.reduce((a, b) => (b.d < a.d ? b : a));
+	for (let position = ctx.lines.topLine + 2; position <= top.d; position += 2) {
+		push(position, heads.filter((head) => head.d >= position), top.noteId);
+	}
+	for (let position = ctx.lines.bottomLine - 2; position >= bottom.d; position -= 2) {
+		push(position, heads.filter((head) => head.d <= position), bottom.noteId);
+	}
 }
 
 function layoutStemAndFlag(
 	ops: DrawOp[],
-	noteX: number,
-	noteY: number,
-	headGlyph: GlyphName,
+	stem: ChordStem,
 	value: NoteValue,
 	noteId: string,
 	ctx: MeasureContext,
 	up: boolean
 ): void {
 	const { ss } = ctx;
-	// Direction is decided once, by the caller (`layoutNote`), via
-	// `stemDirectionForNotes`; a single note is just the one-element case of
-	// the same function `layoutBeamGroup` uses for a whole group, and passing
-	// the answer in rather than recomputing it here is what lets a note's ink
-	// extent (`noteInkRight`, computed before this function runs) and its
-	// actual stem agree on which way it points.
-	const anchors = glyphMetrics(headGlyph).anchors;
-	const anchor = up ? anchors.stemUpSE : anchors.stemDownNW;
-	if (!anchor) return;
-	const stem = stemXEdges(headGlyph, noteX, up, ss);
-	if (!stem) return;
+	// Direction and geometry are decided once, by the caller (`layoutNote`),
+	// via `stemDirectionForNotes` over every head; a single note is just the
+	// one-head case of the same rule `layoutBeamGroup` uses for a whole group,
+	// and passing the answer in rather than recomputing it here is what lets
+	// a note's ink extent and its actual stem agree on which way it points.
+	// The stem runs from the far head's attachment to `STEM_LENGTH` beyond
+	// the near head, so a chord's stem spans every head plus the usual length.
 	const thickness = ED.stemThickness * ss;
-	const attachY = noteY - anchor[1] * ss;
-	const tipY = noteY + (up ? -STEM_LENGTH * ss : STEM_LENGTH * ss);
+	const tipY = stem.nearY + (up ? -STEM_LENGTH * ss : STEM_LENGTH * ss);
 	ops.push({
 		kind: 'rect',
 		x: stem.left,
-		y: Math.min(attachY, tipY),
+		y: Math.min(stem.attachY, tipY),
 		width: thickness,
-		height: Math.abs(tipY - attachY),
+		height: Math.abs(tipY - stem.attachY),
 		noteId
 	});
 
@@ -2825,10 +3104,10 @@ function layoutStemAndFlag(
 /**
  * The x a note's stem occupies (its left/outer edge, and the right edge one
  * stem thickness in), given the notehead's own stem anchor. Shared by
- * `layoutStemAndFlag`, `beamStemX` (a beamed note's stem, decided once its
- * group's direction is known) and `noteInkRight`'s accidental-collision
- * check, all three of which need the same two numbers and none of which
- * should compute them differently. `null` when the notehead publishes no
+ * `layoutNote`'s stem geometry (`ChordStem.left`, which both an unbeamed
+ * stem and `layoutBeamGroup` then draw at) and its ink-extent calculation for
+ * the accidental-collision check, which need the same two numbers and should
+ * never compute them differently. `null` when the notehead publishes no
  * stem anchor at all (Phase 0/1 only lacks one for `noteheadWhole`, which
  * never reaches here since whole notes never carry a stem).
  */
@@ -2849,7 +3128,11 @@ function stemXEdges(
 
 /** A run of consecutive beamable notes sharing one beam. Always two or more
  *  members: `computeBeamGroups` never reports a group of one, since a lone
- *  eligible note is indistinguishable from an ordinary unbeamed one. */
+ *  eligible note is indistinguishable from an ordinary unbeamed one.
+ *
+ *  `notes` holds one note per beam member: for a chord (M6 Slice 2) that is
+ *  its anchor only, the note its stem, flag and duration belong to; the
+ *  chord's other heads are not listed (they share the anchor's stem). */
 export interface BeamGroup {
 	readonly notes: readonly Note[];
 	/**
@@ -2900,6 +3183,10 @@ function beatDurationWholes(time: TimeSignature): number {
  * beat math as a plain one without this function needing to know tuplets
  * exist.
  *
+ * Chords (M6 Slice 2) are walked as events (`noteEvents`): a chord is one
+ * beam member, eligible by its anchor's value, advancing the beat cursor
+ * once, and every one of its heads votes in the group's stem direction.
+ *
  * `notes` is expected to already be one voice's own notes (M2 Slice 1's
  * `layoutMeasure` calls this once per voice via `notesByVoice`, never on a
  * measure's raw flat array): the beat-position cursor above is a single
@@ -2933,8 +3220,10 @@ export function computeBeamGroups(
 	// that could be musically real.
 	const EPS = 1e-9;
 
-	const groups: Note[][] = [];
-	let current: Note[] = [];
+	// Runs of *events* (M6 Slice 2): a chord is one beam member, so a run
+	// holds chords (anchor first) and the beat cursor advances once per chord.
+	const groups: Note[][][] = [];
+	let current: Note[][] = [];
 	// The beat the notes in `current` fall in, so a new note can be compared
 	// against it without recomputing anything about the notes already grouped.
 	let currentBeat = -1;
@@ -2945,7 +3234,8 @@ export function computeBeamGroups(
 		current = [];
 	};
 
-	for (const note of notes) {
+	for (const chord of noteEvents(notes)) {
+		const note = chord[0]!;
 		const eligible =
 			note.pitch !== null && note.value in FLAG_GLYPHS && !(excludeIds?.has(note.id) ?? false);
 		if (!eligible) {
@@ -2955,16 +3245,18 @@ export function computeBeamGroups(
 		}
 		const beat = Math.floor((position + EPS) / beatWholes);
 		if (current.length > 0 && beat !== currentBeat) flush();
-		current.push(note);
+		current.push(chord);
 		currentBeat = beat;
 		position += note.durationWholes;
 	}
 	flush();
 
+	// Direction from every head of every chord in the run, so a chord's
+	// outermost head counts toward the farthest-from-the-middle-line rule.
 	return groups.map((group) => ({
-		notes: group,
+		notes: group.map((chord) => chord[0]!),
 		direction: stemDirectionForNotes(
-			group.flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : [])),
+			group.flat().flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch)] : [])),
 			middleLine,
 			voiceOverride
 		)
@@ -3039,15 +3331,6 @@ export function stemDirectionForNotes(
 	return 'down';
 }
 
-/** The x a beamed note's stem occupies, matching `layoutStemAndFlag`'s own
- *  placement so a beam group's stems line up with what an unbeamed note next
- *  to them would have drawn. `null` when the notehead publishes no stem
- *  anchor (Phase 0/1 only lacks one for `noteheadWhole`, which never reaches
- *  here since whole notes are never beam-eligible). */
-function beamStemX(placement: NotePlacement, up: boolean, ss: number): number | null {
-	return stemXEdges(placement.headGlyph, placement.noteX, up, ss)?.left ?? null;
-}
-
 /**
  * Draw one beam group: every member's stem, then the primary beam (spanning
  * the whole group) and any secondary/tertiary beams (spanning only the
@@ -3074,14 +3357,18 @@ function beamStemX(placement: NotePlacement, up: boolean, ss: number): number | 
 function layoutBeamGroup(
 	ops: DrawOp[],
 	group: BeamGroup,
-	placements: ReadonlyMap<NoteId, NotePlacement>,
+	stems: ReadonlyMap<NoteId, ChordStem>,
 	ctx: MeasureContext,
 	fixedBeamY?: number
 ): void {
 	const { ss } = ctx;
+	// Each member's stem geometry as `layoutNote` decided it, keyed by the
+	// member (a chord's anchor; see `BeamGroup.notes`): the stem stands on the
+	// chord's normal column, so the beam attaches there too, and it reaches
+	// from the far head, so the beam's height is measured from the near one.
 	const members = group.notes.flatMap((note) => {
-		const placement = placements.get(note.id);
-		return placement ? [{ note, placement }] : [];
+		const stem = stems.get(note.id);
+		return stem ? [{ note, stem }] : [];
 	});
 	if (members.length < 2) return;
 
@@ -3089,21 +3376,17 @@ function layoutBeamGroup(
 	const beamY =
 		fixedBeamY ??
 		(up
-			? Math.min(...members.map((m) => m.placement.y - STEM_LENGTH * ss))
-			: Math.max(...members.map((m) => m.placement.y + STEM_LENGTH * ss)));
+			? Math.min(...members.map((m) => m.stem.nearY - STEM_LENGTH * ss))
+			: Math.max(...members.map((m) => m.stem.nearY + STEM_LENGTH * ss)));
 
 	const stemThickness = ED.stemThickness * ss;
-	for (const { note, placement } of members) {
-		const stemX = beamStemX(placement, up, ss);
-		if (stemX === null) continue;
-		const anchor = glyphMetrics(placement.headGlyph).anchors[up ? 'stemUpSE' : 'stemDownNW']!;
-		const attachY = placement.y - anchor[1] * ss;
+	for (const { note, stem } of members) {
 		ops.push({
 			kind: 'rect',
-			x: stemX,
-			y: Math.min(attachY, beamY),
+			x: stem.left,
+			y: Math.min(stem.attachY, beamY),
 			width: stemThickness,
-			height: Math.abs(beamY - attachY),
+			height: Math.abs(beamY - stem.attachY),
 			noteId: note.id
 		});
 	}
@@ -3152,7 +3435,7 @@ function layoutBeamGroup(
  */
 function pushBeamSegment(
 	ops: DrawOp[],
-	members: readonly { readonly note: Note; readonly placement: NotePlacement }[],
+	members: readonly { readonly note: Note; readonly stem: ChordStem }[],
 	startIndex: number,
 	endIndex: number,
 	barY: number,
@@ -3161,7 +3444,7 @@ function pushBeamSegment(
 	up: boolean,
 	ss: number
 ): void {
-	const stemXOf = (i: number) => beamStemX(members[i]!.placement, up, ss) ?? members[i]!.placement.noteX;
+	const stemXOf = (i: number) => members[i]!.stem.left;
 
 	if (startIndex === endIndex) {
 		const stubWidth = 0.9 * ss;
@@ -3188,7 +3471,7 @@ function pushBeamSegment(
  * index, the same single-note rule a stem would have used.
  */
 function tieCurvesBelow(point: NotePlacement, middleLine: number): boolean {
-	return point.up ?? stemDirectionForNotes([point.d], middleLine) === 'up';
+	return point.tieBelow ?? point.up ?? stemDirectionForNotes([point.d], middleLine) === 'up';
 }
 
 /**

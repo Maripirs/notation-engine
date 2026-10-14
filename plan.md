@@ -970,7 +970,7 @@ element by Slice 3 and stays there.
       tests for the part-count case, measure rests in 3/4, 2/2 and 6/8, and
       the duration-derived fallback; no "using quarter" warnings left on
       the corpus except genuinely unmappable durations, each listed.
-- [ ] **Slice 2: Chords.** Model per the chord decision above; layout
+- [x] **Slice 2: Chords.** Model per the chord decision above; layout
       stacks noteheads on one stem (seconds displaced to the opposite side
       of the stem, the standard rule), stem length spanning the chord,
       stem direction from the chord's extremes (reusing
@@ -2590,3 +2590,94 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   `print-object="no"`, which layout will draw as labels since
   `print-object` is not read; the plan's "306 dynamics" for Brahms is 153
   `<dynamics>` elements (306 was likely open+close tags).
+- 2026-10-14: M6 Slice 2 (chords) done, via subagent. Chord model as
+  decided, no blocker found: each head stays its own `Note`, and
+  `NoteSpec`/`Note.chordWithPrevious` joins it to the most recent earlier
+  note *of the same voice* in its measure (the anchor; the MusicXML shape,
+  made voice-scoped so interleaved two-voice literals and imports work).
+  `Score.appendNote` throws for a member with no pitched same-voice anchor
+  or on a rest. One grouping helper, `noteEvents(notes)` (model, exported):
+  events in anchor order, anchor first; every duration walk now steps
+  events and advances by the anchor's `durationWholes`. A member's own
+  `value`/`dots` are ignored for timing and drawing (the anchor's head
+  glyph, stem, flag, dots and beam membership are the chord's).
+  `buildScore` takes a pitch array (`[['C4','E4','G4'], 'quarter']`);
+  `tiedToNext` on a chord ties each head to the same-pitch head of the
+  voice's next event.
+  Duration-walking sites changed: `measureDurationWholes`,
+  `validateMeasure`, layout `noteOnsets`/`measureColumns` (via new
+  `eventsByVoice`), the `layoutMeasure` column walk (one event per voice per
+  column), `computeBeamGroups` (a chord is one member, all heads vote on
+  direction; `BeamGroup.notes` lists anchors), playback
+  `measureStartsWholes` and `computePlaybackTimeline` (every head sounds at
+  the onset; open tie events are keyed by tie target so each head of a tied
+  chord extends its own event), export (`writeMeasureNotes` walks events;
+  `<chord/>` on members, every head states the anchor's `<duration>`,
+  `<beam>` and tuplet edges on the anchor only, `<stem>` from all heads;
+  `<backup>` is unchanged since it already rewinds a full measure), import
+  (`<chord/>` joins the previous `<note>` of the measure, taking its
+  measure/staff/voice; a `<chord/>` with no pitched note to join is still
+  dropped and tallied `chord`), `Score.clone`, `score-equivalence.ts`
+  (compares `chordWithPrevious`), demo `appendMeasures`. Unchanged and
+  correct per head: hit-test, `regionForNote`, renderer selection/cursor,
+  slurs (`notesInOrder` includes heads, roof covers them), `transposeNote`.
+  Layout (`layoutNote` now takes an event; a single note is the one-head
+  case and every pre-existing layout/renderer test passed unchanged, i.e.
+  single notes are op-for-op identical): one stem on the normal column from
+  the far head (`ChordStem { left, attachY, nearY }`, also what
+  `layoutBeamGroup` draws from), direction by `stemDirectionForNotes` over
+  all heads; seconds displaced by `chordHeadDisplacement` (up stem
+  bottom-up, upper head right; down stem top-down, lower head left;
+  clusters alternate); `measureColumns` reserves one head width for a chord
+  with a second; accidentals judged against the state before the chord
+  (F#4+F#5 both show), placed by `stackAccidentals` (top, bottom,
+  alternating inward, nearest column clearing by 6 steps), extra columns
+  push the voice right like the existing collision shift; ledger lines
+  once per position spanning every head at or beyond it
+  (`layoutChordLedgerLines`, widened under a displaced head); dots in one
+  column right of the rightmost head, line heads up a space, a clash
+  pushed to the space below (`layoutChordDots`); ties split by side
+  (upper half up, lower half down, odd middle away from the stem) via
+  `NotePlacement.tieBelow`; cross-voice second clash checks every head
+  pair. Stem/flag ops carry the anchor's id (selecting the anchor tints the
+  stem).
+  Corpus after (source `<note>` -> model notes, `chord` drops 0 in all 7):
+  Brahms 8416 -> 8405 (11 grace), Coleridge-Taylor 676 -> 676, Faure 4551
+  -> 4543 (8 grace), Gardiner 3516 -> 3516, Frost Myth 1584 -> 1584, Elgar
+  3751 -> 3751, Fay's Song 798 -> 798. Expected side effects in the
+  snapshot: notation children of formerly dropped chord notes are now
+  tallied on their own (Brahms `cue` 3 -> 4, `technical` 38 -> 43; Faure
+  `technical` 17 -> 18), and Coleridge-Taylor gains one breve fallback (P3
+  m30, a chord member's `<type>breve</type>`). Corpus test runs in ~1.6s,
+  Brahms ~0.8s, about as before.
+  Demo: `createChordShowcaseScore` (9 measures: triads, seconds up/down,
+  clusters, two 3-accidental stacks, divisi thirds, beamed eighth chords,
+  tied chords, dotted chord, two chordal voices, ledger chords) appended
+  to `createFullDemoScore` and exported from `src/index.ts`. There was no
+  "Open MusicXML" control in the demo despite M5's plan text, so one was
+  added (file input, fresh `EditHistory`, clears selection/seams/playback);
+  transpose in the demo now passes the note's staff to
+  `relayoutMeasure`/`redrawMeasure` so edits work on opened multi-staff
+  files; `sizeCanvas` caps the backing-store density so a ~43k-px-tall
+  score (Les Djinns) still allocates a canvas (it silently drew blank at
+  dpr 2). Verified headlessly in system Chrome: showcase renders as
+  intended, Les Djinns opens (6 staves, 124 measures, 4543 notes; import
+  ~126ms, layout ~134ms) with its chords drawn.
+  Tests: 446 -> 479 (19 in new `src/layout/chord-layout.test.ts`, 7 model,
+  3 timeline, 4 import/round-trip; existing drop-tally test adjusted);
+  `check`/`build` green. Bench (same machine, before -> after, scoped
+  edit): 0.344/0.284/0.283/0.322 ms -> 0.359/0.292/0.280/0.331 ms for
+  4/16/64/124 measures, i.e. noise; full redraw 27.5 -> 29.6 ms at 124
+  (also within run-to-run noise). This machine's baseline today was
+  already ~0.28-0.34 ms, not the logged 0.11-0.18.
+  Noticed, not fixed: unisons in a chord (F and F# on one position) overlap;
+  the cross-voice clash shift uses one x for all heads of a chord, so two
+  voices' clustered chords (Les Djinns' piano bass, last bars) can still
+  crowd; the extra-accidental-column shift is per voice, so in two-voice
+  measures later shared columns can drift apart (pre-existing behaviour of
+  the accidental collision shift); a member whose `value` differs from its
+  anchor's is drawn with the anchor's head; cross-staff beams with chord
+  anchors draw the anchor's stem only (untested); the demo's full score
+  inherits D major from an earlier showcase, so the chord showcase states
+  `keyFifths: 0` explicitly; `layout.systems.length` reports 372 for Les
+  Djinns' 62 multi-staff systems (counts per staff, probably), worth a look.

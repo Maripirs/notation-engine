@@ -136,6 +136,27 @@ export interface NoteSpec {
 	 * ignores `value`/`dots`/`tuplet` when this is set.
 	 */
 	readonly measureRestWholes?: number | null;
+	/**
+	 * Marks this note as a further head of a chord (M6 Slice 2): it sounds at
+	 * the same onset as the most recent earlier note *of the same voice* in its
+	 * measure (the chord's "anchor", which itself has this `false`), and is
+	 * drawn on that anchor's stem. The MusicXML shape exactly: a chord is
+	 * consecutive `<note>`s where every one after the first carries `<chord/>`.
+	 *
+	 * Why a marker on separate `Note`s rather than one `Note` holding
+	 * `pitches[]`: every head keeps its own id, so hit-testing, selection,
+	 * `transposeNote`, ties (each head ties to its own target) and the playback
+	 * cursor keep working per head with no change (plan.md's M6 "Chord model"
+	 * decision). The price is that anything walking a voice's timeline must
+	 * count a chord once, not once per head: `noteEvents` does the grouping in
+	 * one place, and `measureDurationWholes`/`validateMeasure` skip members.
+	 *
+	 * A member's own `value`/`dots`/`tuplet` only choose its notehead glyph;
+	 * the chord's duration, stem, flag and beaming all come from the anchor.
+	 * Only valid on a pitched note whose measure already holds an earlier
+	 * pitched note in the same voice (`Score.appendNote` throws otherwise).
+	 */
+	readonly chordWithPrevious?: boolean;
 }
 
 export class Note {
@@ -152,6 +173,9 @@ export class Note {
 	tiedToId: NoteId | null;
 	/** See `NoteSpec.measureRestWholes`. `null` for every ordinary note or rest. */
 	readonly measureRestWholes: number | null;
+	/** See `NoteSpec.chordWithPrevious`. `false` for a chord's anchor and for
+	 *  every ordinary note or rest. */
+	readonly chordWithPrevious: boolean;
 
 	constructor(id: NoteId, spec: NoteSpec) {
 		this.id = id;
@@ -162,8 +186,12 @@ export class Note {
 		this.tuplet = spec.tuplet ?? null;
 		this.tiedToId = spec.tiedToId ?? null;
 		this.measureRestWholes = spec.measureRestWholes ?? null;
+		this.chordWithPrevious = spec.chordWithPrevious ?? false;
 		if (this.measureRestWholes !== null && this.pitch !== null) {
 			throw new Error(`Note ${id}: measureRestWholes is only valid on a rest (pitch: null)`);
+		}
+		if (this.chordWithPrevious && this.pitch === null) {
+			throw new Error(`Note ${id}: chordWithPrevious is only valid on a pitched note, not a rest`);
 		}
 	}
 
@@ -353,7 +381,44 @@ export interface TimeSignature {
  * validate as full, which is exactly the bug this function exists to catch.
  */
 export function measureDurationWholes(measure: Measure): number {
-	return measure.notes.reduce((sum, note) => sum + note.durationWholes, 0);
+	// A chord member (`Note.chordWithPrevious`) shares its anchor's onset and
+	// takes no time of its own, so only anchors and plain notes count.
+	return measure.notes.reduce((sum, note) => (note.chordWithPrevious ? sum : sum + note.durationWholes), 0);
+}
+
+/**
+ * A measure's notes grouped into *events* (M6 Slice 2): one entry per onset
+ * in one voice, i.e. a plain note or rest alone, or a chord's anchor followed
+ * by its members (`Note.chordWithPrevious`) in their `measure.notes` order.
+ * Events come out in their anchors' order of appearance, so one voice's
+ * events are in time order and two interleaved voices stay interleaved
+ * exactly as `notes` had them; a caller wanting one voice filters by
+ * `event[0].voice`.
+ *
+ * The single place chord membership is resolved, so every duration walk
+ * (layout's onsets and beaming, playback's timeline, export) counts a chord
+ * once by walking events and advancing by `event[0].durationWholes`, rather
+ * than each re-implementing "skip members, but remember which anchor they
+ * belong to". A member joins the most recent earlier event *of its own
+ * voice*, which is what lets a literal or an import interleave two voices'
+ * notes freely; one with no such event (only reachable by bypassing
+ * `Score.appendNote`'s check) starts an event of its own rather than being
+ * lost.
+ */
+export function noteEvents(notes: readonly Note[]): Note[][] {
+	const events: Note[][] = [];
+	const lastEventOfVoice = new Map<number, Note[]>();
+	for (const note of notes) {
+		const open = note.chordWithPrevious ? lastEventOfVoice.get(note.voice) : undefined;
+		if (open) {
+			open.push(note);
+			continue;
+		}
+		const event = [note];
+		events.push(event);
+		lastEventOfVoice.set(note.voice, event);
+	}
+	return events;
 }
 
 /** How much duration a time signature's measure holds, as a fraction of a whole note. */
@@ -429,6 +494,8 @@ export function validateMeasure(measure: Measure, time: TimeSignature): MeasureV
 	// by both the model's own validation and layout's rendering).
 	const wholesByVoice = new Map<number, number>();
 	for (const note of measure.notes) {
+		// A chord counts once: its members ride on the anchor's duration.
+		if (note.chordWithPrevious) continue;
 		wholesByVoice.set(note.voice, (wholesByVoice.get(note.voice) ?? 0) + note.durationWholes);
 	}
 	// Tuplets land on repeating fractions like 1/3, which do not terminate in
@@ -721,6 +788,21 @@ export class Score {
 
 	/** Append a note (or rest) to a measure, returning it so callers can keep its id. */
 	appendNote(measure: Measure, spec: NoteSpec): Note {
+		if (spec.chordWithPrevious) {
+			// A chord member needs a pitched anchor in its own voice to stand on:
+			// `noteEvents` joins it to the most recent earlier event of that
+			// voice, and a rest has no notehead column or stem to share.
+			const voice = spec.voice ?? 1;
+			let anchorCandidate: Note | undefined;
+			for (let i = measure.notes.length - 1; i >= 0 && !anchorCandidate; i--) {
+				if (measure.notes[i]!.voice === voice) anchorCandidate = measure.notes[i];
+			}
+			if (!anchorCandidate || anchorCandidate.pitch === null) {
+				throw new Error(
+					`appendNote: a chord member (chordWithPrevious) needs an earlier pitched note in voice ${voice} of the same measure`
+				);
+			}
+		}
 		const note = new Note(`n${this.#nextNoteId++}`, spec);
 		measure.notes.push(note);
 		this.#measureOfNote.set(note.id, measure);
@@ -1079,7 +1161,8 @@ export class Score {
 						voice: note.voice,
 						dots: note.dots,
 						tuplet: note.tuplet === null ? undefined : { ...note.tuplet },
-						measureRestWholes: note.measureRestWholes
+						measureRestWholes: note.measureRestWholes,
+						chordWithPrevious: note.chordWithPrevious
 					});
 					// Set directly, not through the spec's `tiedToId` (which would
 					// run `#linkTie`): see this method's own doc comment.
@@ -1134,9 +1217,17 @@ export class Score {
  *  (M2 Slice 1) sets it explicitly on the notes that share the measure with
  *  another voice's notes, in whatever order the literal happens to write
  *  them in (layout groups by voice itself; a compact literal never needs to
- *  interleave two voices' notes token-for-token to read naturally). */
+ *  interleave two voices' notes token-for-token to read naturally).
+ *
+ *  A chord (M6 Slice 2) is written as an array of pitch names in the pitch
+ *  slot, e.g. `[['C4', 'E4', 'G4'], 'quarter']`: it becomes one `Note` per
+ *  name, the first the anchor and the rest `chordWithPrevious` members, all
+ *  sharing `value` and `extra`. `tiedToNext` on a chord ties *each* head to
+ *  the head of the same pitch in the voice's next event (see `buildScore`).
+ *  Every head is its own entry in `measure.notes`, so a `SlurSpec`'s note
+ *  index counts heads, not events. */
 export type MeasureSpec = readonly (readonly [
-	pitch: string | null,
+	pitch: string | readonly string[] | null,
 	value: NoteValue,
 	extra?: { dots?: 0 | 1 | 2; tuplet?: TupletRatio; tiedToNext?: boolean; voice?: number }
 ])[];
@@ -1232,28 +1323,44 @@ export function buildScore(
 		}
 		const notes = isMeasureBuildSpec(spec) ? spec.notes : spec;
 		for (const [pitch, value, extra] of notes) {
-			const note = score.appendNote(measure, {
-				pitch: pitch === null ? null : parsePitch(pitch),
-				value,
-				dots: extra?.dots,
-				tuplet: extra?.tuplet,
-				voice: extra?.voice
+			const pitches = pitch === null ? [null] : typeof pitch === 'string' ? [pitch] : pitch;
+			pitches.forEach((name, i) => {
+				const note = score.appendNote(measure, {
+					pitch: name === null ? null : parsePitch(name),
+					value,
+					dots: extra?.dots,
+					tuplet: extra?.tuplet,
+					voice: extra?.voice,
+					chordWithPrevious: i > 0
+				});
+				builtNotes.push(note);
+				if (extra?.tiedToNext) tieRequests.push(note);
 			});
-			builtNotes.push(note);
-			if (extra?.tiedToNext) tieRequests.push(note);
 		}
 	}
 	for (const source of tieRequests) {
-		// The next note in score order sharing this note's voice: score order
-		// already matches playback order within a voice, since Phase 0/1 only
-		// ever lays a score out left to right, top to bottom.
+		// The voice's next *event* in score order (score order already matches
+		// playback order within a voice, since Phase 0/1 only ever lays a
+		// score out left to right, top to bottom): its first note after
+		// skipping this note's own chord-mates, i.e. the next same-voice note
+		// that is not a `chordWithPrevious` member. Within that event, the head
+		// of the same pitch is the target, so a tied chord ties head to head;
+		// with no same-pitch head the event's anchor is named anyway and
+		// `setTie` reports the pitch mismatch, as it always has.
 		const startAt = builtNotes.indexOf(source) + 1;
-		const target = builtNotes.slice(startAt).find((candidate) => candidate.voice === source.voice);
-		if (!target) {
+		const rest = builtNotes.slice(startAt).filter((candidate) => candidate.voice === source.voice);
+		const anchorAt = rest.findIndex((candidate) => !candidate.chordWithPrevious);
+		if (anchorAt === -1) {
 			throw new Error(
 				`tiedToNext on a note with no following note in voice ${source.voice} to tie to`
 			);
 		}
+		const nextEvent = [rest[anchorAt]!];
+		for (let i = anchorAt + 1; i < rest.length && rest[i]!.chordWithPrevious; i++) nextEvent.push(rest[i]!);
+		const target =
+			nextEvent.find(
+				(candidate) => source.pitch !== null && candidate.pitch !== null && pitchesEqual(candidate.pitch, source.pitch)
+			) ?? nextEvent[0]!;
 		score.setTie(source.id, target.id);
 	}
 	for (const spec of slurs) {

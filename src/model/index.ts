@@ -36,6 +36,7 @@ export {
 	measureDurationWholes,
 	Note,
 	NOTE_VALUE_WHOLES,
+	noteEvents,
 	Score,
 	Staff,
 	validateMeasure

@@ -31,6 +31,7 @@
 import {
 	diatonicIndex,
 	measureCapacityWholes,
+	noteEvents,
 	type ClefType,
 	type Note,
 	type NoteId,
@@ -394,14 +395,26 @@ function writeMeasureNotes(
 			firstStream = false;
 
 			const beamPlan = buildBeamPlan(voiceNotes, time, middleLine);
-			for (let ni = 0; ni < voiceNotes.length; ni++) {
-				writeNote(xml, score, voiceNotes, ni, {
-					divisions,
-					multiStaff,
-					staffNumber: k + 1,
-					middleLine,
-					beamPlan
-				});
+			// One event per onset (M6 Slice 2): a chord's heads are written
+			// back to back, every one after the anchor carrying `<chord/>`, so a
+			// reader advances its time cursor once per chord. That is also why
+			// no `<backup>` above ever needs to know about chords: it rewinds a
+			// full measure, and the chord's members never moved the cursor.
+			const events = noteEvents(voiceNotes);
+			for (let ei = 0; ei < events.length; ei++) {
+				const chord = events[ei]!;
+				for (const note of chord) {
+					writeNote(xml, score, note, {
+						divisions,
+						multiStaff,
+						staffNumber: k + 1,
+						middleLine,
+						beamPlan,
+						chord,
+						previousAnchor: events[ei - 1]?.[0],
+						nextAnchor: events[ei + 1]?.[0]
+					});
+				}
 			}
 		}
 	}
@@ -459,6 +472,12 @@ interface NoteContext {
 	readonly staffNumber: number;
 	readonly middleLine: number;
 	readonly beamPlan: Map<NoteId, BeamMembership>;
+	/** The event this note belongs to (`noteEvents`): just `[note]` for a
+	 *  plain note or rest, the anchor then its members for a chord. */
+	readonly chord: readonly Note[];
+	/** Anchors of the voice's neighbouring events, for tuplet run edges. */
+	readonly previousAnchor: Note | undefined;
+	readonly nextAnchor: Note | undefined;
 }
 
 /**
@@ -468,18 +487,14 @@ interface NoteContext {
  * time-modification, stem, staff, beam, then `<notations>` (the visual
  * elements, `<tied>`/`<tuplet>`/`<slur>`). Anything absent is simply skipped.
  */
-function writeNote(
-	xml: XmlBuilder,
-	score: Score,
-	voiceNotes: readonly Note[],
-	ni: number,
-	ctx: NoteContext
-): void {
-	const note = voiceNotes[ni]!;
-	const previous = ni > 0 ? voiceNotes[ni - 1] : undefined;
-	const next = ni < voiceNotes.length - 1 ? voiceNotes[ni + 1] : undefined;
+function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext): void {
+	const anchor = ctx.chord[0]!;
+	const isAnchor = note === anchor;
 
 	xml.open('note');
+
+	// `<chord/>` precedes `<pitch>` in MusicXML's fixed child order.
+	if (note.chordWithPrevious) xml.selfClose('chord');
 
 	if (note.pitch === null) {
 		// A whole-measure rest (M6 Slice 1) says so, so a reader fills the bar
@@ -493,7 +508,9 @@ function writeNote(
 		xml.close('pitch');
 	}
 
-	const quarters = noteDurationQuarters(note);
+	// Every head of a chord states the chord's (the anchor's) duration, as
+	// MusicXML expects; `<chord/>` is what keeps a reader from adding it twice.
+	const quarters = noteDurationQuarters(anchor);
 	xml.leaf('duration', String((quarters.num * ctx.divisions) / quarters.den));
 
 	const tiedInto = score.tiedFromNote(note.id) !== undefined;
@@ -519,25 +536,35 @@ function writeNote(
 	}
 
 	// No stem on a rest or a whole note; a beamed note takes its group's shared
-	// direction, everything else the ordinary pitch-vs-middle-line rule.
-	if (note.pitch !== null && note.value !== 'whole') {
-		const membership = ctx.beamPlan.get(note.id);
+	// direction, everything else the ordinary farthest-from-the-middle-line
+	// rule over every head of its chord (one stem, so one direction, written
+	// on each head the way MuseScore does). The anchor decides both, since
+	// beam membership and stem presence are the chord's, not one head's.
+	const membership = ctx.beamPlan.get(anchor.id);
+	if (note.pitch !== null && anchor.value !== 'whole') {
 		const direction = membership
 			? membership.direction
-			: stemDirectionForNotes([diatonicIndex(note.pitch)], ctx.middleLine);
+			: stemDirectionForNotes(
+					ctx.chord.flatMap((head) => (head.pitch ? [diatonicIndex(head.pitch)] : [])),
+					ctx.middleLine
+				);
 		xml.leaf('stem', direction);
 	}
 
 	if (ctx.multiStaff) xml.leaf('staff', String(ctx.staffNumber));
 
-	const membership = ctx.beamPlan.get(note.id);
-	if (membership) xml.leaf('beam', membership.position, { number: '1' });
+	// `<beam>` only on the anchor: a chord is one beam member, and readers
+	// (MuseScore among them) take the first note of a chord as its beam carrier.
+	if (membership && isAnchor) xml.leaf('beam', membership.position, { number: '1' });
 
-	// A tuplet "run" is consecutive same-voice, same-measure notes each with a
-	// `tuplet` set; the run's first note starts it and its last stops it. A
-	// lone tupleted note is a run of one and carries both.
-	const tupletRunStart = note.tuplet !== null && (previous === undefined || previous.tuplet === null);
-	const tupletRunStop = note.tuplet !== null && (next === undefined || next.tuplet === null);
+	// A tuplet "run" is consecutive same-voice, same-measure events whose
+	// anchor has a `tuplet` set; the run's first event starts it and its last
+	// stops it, both marked on that event's anchor only. A lone tupleted
+	// event is a run of one and carries both.
+	const previous = ctx.previousAnchor;
+	const next = ctx.nextAnchor;
+	const tupletRunStart = isAnchor && note.tuplet !== null && (previous === undefined || previous.tuplet === null);
+	const tupletRunStop = isAnchor && note.tuplet !== null && (next === undefined || next.tuplet === null);
 
 	const slurStops: number[] = [];
 	const slurStarts: number[] = [];

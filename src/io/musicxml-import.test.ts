@@ -3,6 +3,7 @@ import { layoutScore } from '../layout/index.js';
 import {
 	createAccidentalShowcaseScore,
 	createBarlineShowcaseScore,
+	createChordShowcaseScore,
 	createClefShowcaseScore,
 	createCrossStaffBeamShowcaseScore,
 	createDemoScore,
@@ -18,7 +19,7 @@ import {
 } from '../demo-score.js';
 import { exportMusicXml } from './musicxml-export.js';
 import { createImportDiagnostics, importMusicXml } from './musicxml-import.js';
-import { assertScoresEquivalent, validateMeasure } from '../model/index.js';
+import { assertScoresEquivalent, buildScore, validateMeasure } from '../model/index.js';
 
 // A `score-partwise` shell so the fixtures below only have to spell out the
 // part they care about. `parts` is the raw inner XML for `<part-list>` +
@@ -531,8 +532,8 @@ describe('importMusicXml: drop diagnostics (M6 Slice 1)', () => {
 			{ diagnostics }
 		);
 		expect(Object.fromEntries([...diagnostics.dropped].sort(([a], [b]) => a.localeCompare(b)))).toEqual({
+			// The `<chord/>` note is kept since M6 Slice 2, so no `chord` here.
 			articulations: 1,
-			chord: 1,
 			dynamics: 1,
 			ending: 1,
 			fermata: 1,
@@ -548,5 +549,76 @@ describe('importMusicXml: drop diagnostics (M6 Slice 1)', () => {
 		});
 		expect(warn).not.toHaveBeenCalled();
 		warn.mockRestore();
+	});
+});
+
+describe('importMusicXml: chords (M6 Slice 2)', () => {
+	const oneMeasure = (notes: string) =>
+		doc(`
+      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
+      <part id="P1">
+        <measure number="1">
+          <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
+          ${notes}
+        </measure>
+      </part>`);
+
+	it('reads <chord/> notes as chord members of the previous note', () => {
+		const score = importMusicXml(
+			oneMeasure(`
+          <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
+          <note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
+          <note><chord/><pitch><step>G</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
+          <note><pitch><step>A</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>`)
+		);
+		const measure = score.staves[0]!.measures[0]!;
+		expect(measure.notes.map((note) => note.chordWithPrevious)).toEqual([false, true, true, false]);
+		expect(validateMeasure(measure, score.timeAt(0)).valid).toBe(true);
+	});
+
+	it('drops and tallies a <chord/> note with no pitched note to join', () => {
+		const diagnostics = createImportDiagnostics();
+		const score = importMusicXml(
+			oneMeasure(`
+          <note><rest/><duration>4</duration><type>whole</type></note>
+          <note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note>`),
+			{ diagnostics }
+		);
+		expect(score.staves[0]!.measures[0]!.notes).toHaveLength(1);
+		expect(diagnostics.dropped.get('chord')).toBe(1);
+	});
+
+	it('round-trips chords in two voices, with ties and beams, through export', () => {
+		const original = buildScore(
+			[
+				[
+					[['E5', 'G5'], 'eighth', { voice: 1 }],
+					[['D5', 'F5'], 'eighth', { voice: 1 }],
+					[['C5', 'E5'], 'quarter', { voice: 1 }],
+					[['B4', 'D5'], 'half', { voice: 1, tiedToNext: true }],
+					[['C4', 'E4', 'G4'], 'whole', { voice: 2 }]
+				],
+				[
+					[['B4', 'D5'], 'whole', { voice: 1 }],
+					[['C4', 'E4', 'G4'], 'whole', { voice: 2 }]
+				]
+			],
+			{ keyFifths: 0 }
+		);
+		const xml = exportMusicXml(original);
+		// Exactly one <chord/> per member, and a single full-measure <backup>
+		// per measure: the members never moved the cursor.
+		expect(xml.match(/<chord\/>/g)).toHaveLength(4 + 2 + 1 + 2);
+		expect(xml.match(/<backup>\s*<duration>(\d+)<\/duration>/g)).toHaveLength(2);
+		const reimported = importMusicXml(xml);
+		assertScoresEquivalent(reimported, original);
+		for (const measure of reimported.staves[0]!.measures) {
+			expect(validateMeasure(measure, reimported.timeAt(measure.index)).valid).toBe(true);
+		}
+	});
+
+	it('round-trips the chord showcase', () => {
+		const original = createChordShowcaseScore();
+		assertScoresEquivalent(importMusicXml(exportMusicXml(original)), original);
 	});
 });
