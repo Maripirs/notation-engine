@@ -259,6 +259,91 @@ describe('importMusicXml: mid-score clef changes (M5 Slice 5)', () => {
 	});
 });
 
+describe('importMusicXml: C clefs and clef changes inside a measure (M6 Slice 4)', () => {
+	const note = (step: string, octave: number, staff = 1) =>
+		`<note><pitch><step>${step}</step><octave>${octave}</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type>${staff > 1 ? `<staff>${staff}</staff>` : ''}</note>`;
+	const clef = (sign: string, line: number, number = 1) =>
+		`<attributes><clef number="${number}"><sign>${sign}</sign><line>${line}</line></clef></attributes>`;
+	const part = (measures: string, staves = 1) =>
+		doc(`
+      <part-list><score-part id="P1"><part-name>Tenor</part-name></score-part></part-list>
+      <part id="P1">
+        <measure number="1">
+          <attributes>
+            <divisions>1</divisions>
+            <key><fifths>0</fifths></key>
+            <time><beats>4</beats><beat-type>4</beat-type></time>
+            ${staves > 1 ? `<staves>${staves}</staves>` : ''}
+            <clef number="1"><sign>F</sign><line>4</line></clef>
+            ${staves > 1 ? '<clef number="2"><sign>F</sign><line>4</line></clef>' : ''}
+          </attributes>
+          ${measures}`);
+
+	it('maps <sign>C</sign> line 3 to alto and line 4 to tenor, and still falls back for C1/C2/C5', () => {
+		const diagnostics = createImportDiagnostics();
+		const xml = part(`
+          ${note('C', 4).repeat(4)}
+        </measure>
+        <measure number="2">${clef('C', 4)}${note('C', 4).repeat(4)}</measure>
+        <measure number="3">${clef('C', 3)}${note('C', 4).repeat(4)}</measure>
+        <measure number="4">${clef('C', 1)}${note('C', 4).repeat(4)}</measure>
+      </part>`);
+		const score = importMusicXml(xml, { diagnostics });
+		expect([0, 1, 2, 3].map((m) => score.clefAt(m))).toEqual(['bass', 'tenor', 'alto', 'treble']);
+		expect(diagnostics.fallbacks.map((f) => `${f.kind} m${f.measureNumber}: ${f.detail}`)).toEqual([
+			'clef m4: sign C line 1'
+		]);
+	});
+
+	it('reads a clef between a measure\'s notes as a change at that onset, and one at the end as a change before the barline', () => {
+		const diagnostics = createImportDiagnostics();
+		const xml = part(`
+          ${note('C', 4).repeat(2)}${clef('C', 4)}${note('C', 4).repeat(2)}${clef('F', 4)}
+        </measure>
+        <measure number="2">${note('C', 4).repeat(4)}</measure>
+      </part>`);
+		const score = importMusicXml(xml, { diagnostics });
+		expect(score.measures[0]!.clef).toBeUndefined();
+		expect(score.measures[0]!.clefChanges).toEqual([
+			{ onset: 0.5, clef: 'tenor' },
+			{ onset: 1, clef: 'bass' }
+		]);
+		expect(score.clefAt(1)).toBe('bass');
+		expect(diagnostics.dropped.size).toBe(0);
+		assertScoresEquivalent(importMusicXml(exportMusicXml(score)), score);
+	});
+
+	it('places a second staff\'s clef by the cursor after a <backup>, and round-trips it', () => {
+		const xml = part(
+			`
+          ${note('C', 4).repeat(4)}
+          <backup><duration>4</duration></backup>
+          ${note('C', 3, 2).repeat(3)}${clef('C', 4, 2)}${note('C', 4, 2)}
+        </measure>
+        <measure number="2">${note('C', 4).repeat(4)}<backup><duration>4</duration></backup>${note('C', 4, 2).repeat(4)}</measure>
+      </part>`,
+			2
+		);
+		const score = importMusicXml(xml);
+		expect(score.staves[0]!.measures[0]!.clefChanges).toEqual([]);
+		expect(score.staves[1]!.measures[0]!.clefChanges).toEqual([{ onset: 0.75, clef: 'tenor' }]);
+		expect(score.clefAt(1, 1)).toBe('tenor');
+		expect(score.clefAt(1, 0)).toBe('bass');
+		assertScoresEquivalent(importMusicXml(exportMusicXml(score)), score);
+	});
+
+	it('keeps only the later of two clefs at one onset, tallying the earlier as dropped', () => {
+		const diagnostics = createImportDiagnostics();
+		const xml = part(`
+          ${note('C', 4).repeat(2)}${clef('C', 4)}${clef('C', 3)}${note('C', 4).repeat(2)}
+        </measure>
+      </part>`);
+		const score = importMusicXml(xml, { diagnostics });
+		expect(score.measures[0]!.clefChanges).toEqual([{ onset: 0.5, clef: 'alto' }]);
+		expect(diagnostics.dropped.get('clef')).toBe(1);
+	});
+});
+
 describe('importMusicXml — tolerance for unsupported content', () => {
 	afterEach(() => vi.restoreAllMocks());
 

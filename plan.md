@@ -999,7 +999,7 @@ element by Slice 3 and stays there.
       names as the source (modulo a documented normalization list, e.g.
       `<divisions>` rescaling and whitespace), and the same after a
       transpose + undo; unit tests for each anchor kind.
-- [ ] **Slice 4: C clefs.** `ClefType` gains `alto` (C3) and `tenor` (C4)
+- [x] **Slice 4: C clefs** (extended to mid-measure clef changes, see log). `ClefType` gains `alto` (C3) and `tenor` (C4)
       with their position tables and Bravura glyphs; import/export map
       them; `setClefRange` (M5 Slice 5) accepts them so the board's
       bass <-> tenor alternation is fixable with the existing tool.
@@ -2760,3 +2760,65 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   run they change; the breve fallback in Coleridge-Taylor still loses a
   breve's length (now a passthrough-free fallback, listed under fallbacks);
   layout ignores all passthrough (nothing is drawn yet, by design).
+- 2026-10-14: M6 Slice 4 (C clefs + mid-measure clef changes) done, via
+  subagent. `ClefType` gains `alto` (C3) and `tenor` (C4): `CLEF_LINES`
+  (alto F3/C4/G4, tenor D3/A3/E4), `KEY_SIGNATURE_OCTAVES`, and the Bravura
+  `cClef` glyph (added to `scripts/extract-glyph-metrics.mjs` and regenerated,
+  additions only), drawn centred on middle C's line. Key-signature positions
+  were checked against MuseScore's `clefTable` (`src/engraving/dom/clef.cpp`,
+  per-clef half-space offsets for sharps/flats), consistent with Gould,
+  *Behind Bars*: alto keeps the usual zigzag; tenor sharps start low (F3 C4
+  G3 D4 A3 E4 B3). The same check found a pre-existing bug, fixed: bass-clef
+  flats were B3 E3 A3 ... (Bb above the staff, Ab on the top line); now B2
+  E3 A2 D3 G2 C3 F2. The old flats test had encoded the wrong Bb3 and was
+  corrected. Import maps `<sign>C</sign>` lines 3/4 both ways; C1/C2/C5
+  still fall back to treble with a fallback event. Demo: Alto/Tenor clef
+  buttons on the grand-staff canvas.
+  Added to the slice (human request): mid-measure clef changes.
+  `Measure.clefChanges: readonly ClefChange[]` (`{ onset (wholes, > 0),
+  clef }`, sorted, immutable entries, frozen `NO_CLEF_CHANGES` default), kept
+  apart from `Measure.clef` so every downbeat reader keeps its shape.
+  `Score.clefAt` now carries an earlier measure's last change forward;
+  `clefAtOnset(m, onset, s)` and `clefAtEnd(m, s)` are new. `setClefRange`
+  clears changes inside the range (so a range holding one is never a no-op)
+  and restores via `clefAt`, which already reflects a change the range ended
+  in. Clone, `buildScore` (`clefChanges` on `MeasureBuildSpec`) and
+  `assertScoresEquivalent` (compared as written) cover it. Layout: every
+  note is laid out against a per-clef `MeasureContext`, so heads, ledgers,
+  accidentals, dots and stems follow the new clef; the change draws a
+  `CHANGE_CLEF_SCALE` clef before the first column at or after its onset
+  (fixed, unjustified width, `MID_MEASURE_CLEF_GAP` each side), or after the
+  last column before the barline for a change at the measure end (OMR's
+  usual spelling of a next-downbeat change, and the commonest corpus case);
+  the clef's ink becomes every voice's previous ink so a following
+  accidental clears it. `computeBeamGroups` accepts a per-note middle line
+  (layout and export use it only when a measure has changes). The barline
+  courtesy clef compares against `clefAtEnd(m - 1)`. Import reads clefs in
+  document order at the onset `MeasureAnchors.position()` gives (the same
+  rule positional passthrough uses); onset 0 is `Measure.clef`, later is a
+  change; two clefs at one onset keep the later and tally `clef` dropped.
+  Export rides the passthrough anchor writer: each change is a synthetic
+  `<attributes><clef>` anchor in the staff's first stream (before the event
+  at its onset, at the stream end, or via `<backup>` inside a longer event),
+  with change onsets folded into `<divisions>`. This also fixes the old
+  behaviour where a clef at a measure's end recoloured that whole measure.
+  Corpus: `dropped` is `{}` for all 7 files (Brahms 4, Faure 5, Gardiner 2
+  clefs gone), and Les Djinns' C3 fallback is gone (P4 m66 imports as an
+  alto change at beat 2.75); round-trip tests unchanged and green. Snapshot
+  updated deliberately (only those lines).
+  Verified headlessly (system Chrome): bass measures 2-3 of the grand staff
+  switched to tenor (C clef on line 4, tenor Eb-major flats, small bass clef
+  restoring at m4) and Undo restored them; Les Djinns P4 m66, P5 m53-56 (LH
+  alternating G/F clefs mid-measure and at measure ends) and Brahms P5
+  m47-48 rendered offline at 3x via node-canvas, since the demo canvas's
+  capped density is too blurry for a 43k-px score.
+  Tests: 503 -> 522 (model 5, layout 9, import 4, export 1); `check`/`build`
+  green. Bench scoped edit 0.353/0.295/0.287/0.344 ms at 4/16/64/124
+  measures, within this machine's usual range.
+  Noticed, not fixed: `slurRoofY` and a slur's direction still use the
+  measure's downbeat clef for every spanned note (and other measures'
+  notes), so a slur across a clef change can arch oddly (visible at Les
+  Djinns P5 m55-56); no edit op inserts or removes a mid-measure change
+  (only import and `buildScore` create one; `setClefRange` clears them); a
+  redundant change to the clef already in force is kept in the model but
+  not drawn; multiple changes at one column draw only the last.

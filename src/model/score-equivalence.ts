@@ -15,6 +15,8 @@
 //     `timeAt` / `clefAt` / `endBarlineAt` is
 //     compared instead, so "last measure, endBarline unset -> resolves to
 //     final" and "last measure, endBarline explicitly final" count as equal.
+//     `Measure.clefChanges` (M6 Slice 4, a clef change inside a measure) is
+//     compared as written, since only it says where in the measure it falls.
 //   - Beaming and stem directions (recomputed by layout, never stored).
 //   - `crossStaffBeams`. `exportMusicXml` has no MusicXML element to carry a
 //     cross-staff beam's note linkage (there is no clean representation), so a
@@ -45,7 +47,7 @@
 // `pitch.js` / `score.js`).
 import { opaqueElementKey, type MeasurePassthrough, type OpaqueElement } from './passthrough.js';
 import { formatPitch, type Pitch } from './pitch.js';
-import type { Measure, Note, Part, Score } from './score.js';
+import type { ClefChange, Measure, Note, Part, Score } from './score.js';
 
 /**
  * Throw unless `actual` and `expected` represent the same music. See this
@@ -88,6 +90,15 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 
 			assertEqual(`${where} keyFifthsAt`, actual.keyFifthsAt(m, s), expected.keyFifthsAt(m, s));
 			assertEqual(`${where} clefAt`, actual.clefAt(m, s), expected.clefAt(m, s));
+			// Mid-measure clef changes (M6 Slice 4) are compared as written,
+			// onsets rounded the way layout buckets them: a change is music
+			// (it moves every later notehead) and a round trip must keep it at
+			// its onset, not fold it into the downbeat.
+			assertEqual(
+				`${where} clefChanges`,
+				clefChangesKey(actualStaff.measures[m]!.clefChanges),
+				clefChangesKey(expectedStaff.measures[m]!.clefChanges)
+			);
 			assertEqual(`${where} timeAt`, formatTime(actual.timeAt(m, s)), formatTime(expected.timeAt(m, s)));
 			assertEqual(`${where} endBarlineAt`, actual.endBarlineAt(m, s), expected.endBarlineAt(m, s));
 			assertEqual(
@@ -103,6 +114,10 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 
 	assertSlursEquivalent(actual, expected);
 	assertPartsEquivalent(actual, expected);
+}
+
+function clefChangesKey(changes: readonly ClefChange[]): string {
+	return changes.map((change) => `${Math.round(change.onset * 1e9) / 1e9}:${change.clef}`).join(',');
 }
 
 // --- Notes, bucketed by voice ---------------------------------------------

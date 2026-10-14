@@ -74,9 +74,10 @@ function tally(root: XmlElement): Map<string, number> {
  * Besides `NORMALIZED`, four adjustments are exact, not waived: `<alter>0`
  * is omitted (only nonzero alters must match); `<duration>` must match once
  * `<backup>` durations are set aside; a source with no tempo gets exactly one
- * synthesized tempo direction; and each mid-measure clef change the model
- * cannot place (`droppedClefs`, the importer's own `dropped.clef`) costs
- * exactly one `<clef>`/`<sign>`/`<line>`.
+ * synthesized tempo direction; and each `<clef>` overridden by another at the
+ * same onset (`droppedClefs`, the importer's own `dropped.clef`) costs
+ * exactly one `<clef>`/`<sign>`/`<line>`. Since M6 Slice 4 models clef changes
+ * inside a measure, no corpus file has one, so this is 0 throughout.
  */
 function unexplainedDifferences(source: XmlElement, exported: XmlElement, droppedClefs: number): Record<string, number> {
 	const before = tally(source);

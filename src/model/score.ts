@@ -75,8 +75,33 @@ export type BarlineType = 'normal' | 'double' | 'final' | 'repeatStart' | 'repea
  * job), so nothing here ever needs to shift a `treble8` note's pitch down an
  * octave; `treble8` and `treble` share every position table in `layout.ts`
  * and differ only in which clef glyph gets drawn.
+ *
+ * `alto` and `tenor` (M6 Slice 4) are the two C clefs choral and orchestral
+ * music still uses: the same `cClef` glyph, centred on the line it names as
+ * middle C, the third line for alto (viola) and the fourth for tenor (the
+ * SFCC tenor parts alternate bass and tenor clef). The other C-clef lines
+ * (soprano C1, mezzo-soprano C2, baritone C5) are obsolete in this repertoire
+ * and stay unmodelled; the importer reads them as treble with a fallback.
  */
-export type ClefType = 'treble' | 'bass' | 'treble8';
+export type ClefType = 'treble' | 'bass' | 'treble8' | 'alto' | 'tenor';
+
+/**
+ * A clef change *inside* a measure (M6 Slice 4): from `onset` (wholes from the
+ * measure's start, always > 0; a change at the downbeat is `Measure.clef`)
+ * the staff reads in `clef`, until the next change. Engraving draws it as a
+ * smaller clef right before the note at that onset, or before the barline
+ * when it sits at the measure's very end (the usual spelling of a change
+ * that takes effect at the next downbeat). Immutable, so a clone may share
+ * one; an edit replaces `Measure.clefChanges` wholesale.
+ */
+export interface ClefChange {
+	readonly onset: number;
+	readonly clef: ClefType;
+}
+
+/** The empty `Measure.clefChanges`, shared (and frozen) so the common case
+ *  costs no allocation per measure. */
+export const NO_CLEF_CHANGES: readonly ClefChange[] = Object.freeze([]);
 
 export interface NoteSpec {
 	/** `null` means a rest. Rests are notes with no pitch rather than a separate type,
@@ -284,6 +309,17 @@ export class Measure {
 	 * walk-back that answers that lives in one place.
 	 */
 	clef?: ClefType;
+	/**
+	 * Clef changes inside this measure (M6 Slice 4; see `ClefChange`), sorted
+	 * by onset, each onset > 0. Per staff like `clef`, and kept separate from
+	 * it rather than folding `clef` in as an onset-0 entry, so every existing
+	 * reader of the downbeat clef (`clefAt`, `setClefRange`, the system
+	 * header) keeps its one-field shape. The last change's clef carries into
+	 * the following measures through `Score.clefAt`'s walk-back, exactly as a
+	 * `clef` set here would. Read through `Score.clefAtOnset`, never directly,
+	 * for "which clef is this note in". Replaced wholesale, never mutated.
+	 */
+	clefChanges: readonly ClefChange[] = NO_CLEF_CHANGES;
 	/**
 	 * The barline at the boundary *after* this measure: `'normal'`, `'double'`,
 	 * `'final'` or `'repeatEnd'`. `'repeatStart'` is deliberately not a valid
@@ -806,10 +842,41 @@ export class Score {
 		const staff = this.staves[staffIndex];
 		const measures = staff?.measures ?? [];
 		for (let i = measureIndex; i >= 0; i--) {
-			const explicit = measures[i]?.clef;
+			const measure = measures[i];
+			// An earlier measure's mid-measure changes (M6 Slice 4) come after
+			// its downbeat clef in time, so its last change wins over its
+			// `clef`; this measure's own changes are later than its downbeat
+			// and so are not "in force at" it.
+			if (measure && i < measureIndex && measure.clefChanges.length > 0) {
+				return measure.clefChanges[measure.clefChanges.length - 1]!.clef;
+			}
+			const explicit = measure?.clef;
 			if (explicit !== undefined) return explicit;
 		}
 		return staff?.clef ?? 'treble';
+	}
+
+	/**
+	 * The clef in force at `onsetWholes` (wholes from the start) inside
+	 * `measureIndex` (M6 Slice 4): the last `Measure.clefChanges` entry at or
+	 * before that onset, else the downbeat clef `clefAt` resolves. A change is
+	 * in force *at* its own onset, so the note it sits before reads it. Onsets
+	 * are compared with a tolerance far below any real duration, for the same
+	 * float-summation reason layout buckets its column onsets.
+	 */
+	clefAtOnset(measureIndex: number, onsetWholes: number, staffIndex = 0): ClefType {
+		const changes = this.staves[staffIndex]?.measures[measureIndex]?.clefChanges ?? NO_CLEF_CHANGES;
+		for (let i = changes.length - 1; i >= 0; i--) {
+			if (changes[i]!.onset <= onsetWholes + 1e-9) return changes[i]!.clef;
+		}
+		return this.clefAt(measureIndex, staffIndex);
+	}
+
+	/** The clef in force at the end of `measureIndex` (M6 Slice 4): its last
+	 *  mid-measure change, else its downbeat clef. What the next measure
+	 *  inherits when it states no clef of its own. */
+	clefAtEnd(measureIndex: number, staffIndex = 0): ClefType {
+		return this.clefAtOnset(measureIndex, Number.POSITIVE_INFINITY, staffIndex);
 	}
 
 	/**
@@ -1136,6 +1203,12 @@ export class Score {
 	 * just the returned measures: a clef change moves every notehead in the
 	 * range and changes widths (a courtesy clef glyph at the change), so the
 	 * caller should re-run a full `layoutScore`.
+	 *
+	 * Mid-measure clef changes (M6 Slice 4) inside the range are cleared too
+	 * (the range is made uniform), so a range holding one is never a no-op.
+	 * The restore at `to + 1` reads `clefAt`, which already accounts for a
+	 * change the range's last measure ended in, so the music after the range
+	 * keeps the clef it had.
 	 */
 	setClefRange(staffIndex: number, from: number, to: number, clef: ClefType): { from: number; to: number } | null {
 		const measures = this.staves[staffIndex]?.measures;
@@ -1146,7 +1219,7 @@ export class Score {
 
 		let unchanged = true;
 		for (let i = lo; i <= hi; i++) {
-			if (this.clefAt(i, staffIndex) !== clef) {
+			if (this.clefAt(i, staffIndex) !== clef || measures[i]!.clefChanges.length > 0) {
 				unchanged = false;
 				break;
 			}
@@ -1157,6 +1230,7 @@ export class Score {
 		const prior = following ? this.clefAt(hi + 1, staffIndex) : undefined;
 		measures[lo]!.clef = clef;
 		for (let i = lo + 1; i <= hi; i++) delete measures[i]!.clef;
+		for (let i = lo; i <= hi; i++) measures[i]!.clefChanges = NO_CLEF_CHANGES;
 		if (following && prior !== undefined) following.clef = prior;
 		return { from: lo, to: hi };
 	}
@@ -1208,6 +1282,8 @@ export class Score {
 				const measureCopy = new Measure(measure.index, measure.staffIndex);
 				if (measure.keyFifths !== undefined) measureCopy.keyFifths = measure.keyFifths;
 				if (measure.clef !== undefined) measureCopy.clef = measure.clef;
+				// Each `ClefChange` is immutable, so only the array is fresh.
+				if (measure.clefChanges.length > 0) measureCopy.clefChanges = [...measure.clefChanges];
 				if (measure.time !== undefined) {
 					measureCopy.time = { beats: measure.time.beats, beatType: measure.time.beatType };
 				}
@@ -1319,6 +1395,8 @@ export interface MeasureBuildSpec {
 	readonly time?: TimeSignature;
 	/** See `Measure.clef` (M5 Slice 5). Omit to keep whatever clef was in force before this measure. */
 	readonly clef?: ClefType;
+	/** See `Measure.clefChanges` (M6 Slice 4): clef changes inside the measure, by onset in wholes. */
+	readonly clefChanges?: readonly ClefChange[];
 	/** See `Measure.endBarline`. Omit for the default (`'normal'`, or `'final'` at the score's last measure). */
 	readonly endBarline?: BarlineType;
 	/** See `Measure.startBarline`. Omit for no repeat-start mark at this measure's own start. */
@@ -1385,6 +1463,9 @@ export function buildScore(
 			measure.keyFifths = spec.keyFifths;
 			measure.time = spec.time;
 			measure.clef = spec.clef;
+			if (spec.clefChanges) {
+				measure.clefChanges = [...spec.clefChanges].sort((a, b) => a.onset - b.onset);
+			}
 			measure.endBarline = spec.endBarline;
 			measure.startBarline = spec.startBarline;
 		}

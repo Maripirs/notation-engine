@@ -45,6 +45,10 @@ const GLYPHS = [
 	'gClef',
 	'fClef',
 	'gClef8vb',
+	// The C clef (M6 Slice 4), one glyph for both `alto` and `tenor`: SMuFL
+	// draws it centred on its own origin, and layout simply places that origin
+	// on the third line (alto) or the fourth (tenor).
+	'cClef',
 	// Rests, one per supported duration.
 	'restWhole',
 	'restHalf',

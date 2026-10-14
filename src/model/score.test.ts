@@ -404,6 +404,89 @@ describe('clef changes (M5 Slice 5)', () => {
 	});
 });
 
+describe('C clefs and clef changes inside a measure (M6 Slice 4)', () => {
+	const quarters = (pitch: string) => [
+		[pitch, 'quarter'],
+		[pitch, 'quarter'],
+		[pitch, 'quarter'],
+		[pitch, 'quarter']
+	] as const;
+
+	it('clefAtOnset reads a change from its own onset on, and clefAt carries the last one into later measures', () => {
+		const score = buildScore(
+			[
+				{ notes: quarters('C4'), clefChanges: [{ onset: 0.5, clef: 'tenor' }] },
+				quarters('C4'),
+				{ notes: quarters('C4'), clefChanges: [{ onset: 0.75, clef: 'bass' }, { onset: 0.25, clef: 'alto' }] },
+				quarters('C4')
+			],
+			{ clef: 'bass' }
+		);
+		// buildScore sorts the changes by onset.
+		expect(score.measures[2]!.clefChanges.map((c) => c.clef)).toEqual(['alto', 'bass']);
+		expect([0, 0.25, 0.5, 0.75].map((t) => score.clefAtOnset(0, t))).toEqual(['bass', 'bass', 'tenor', 'tenor']);
+		expect(score.clefAt(0)).toBe('bass');
+		expect(score.clefAtEnd(0)).toBe('tenor');
+		expect(score.clefAt(1)).toBe('tenor');
+		expect([0, 0.25, 0.5, 0.75].map((t) => score.clefAtOnset(2, t))).toEqual(['tenor', 'alto', 'alto', 'bass']);
+		expect(score.clefAt(3)).toBe('bass');
+	});
+
+	it('an explicit downbeat clef still wins over a change the previous measure ended in', () => {
+		const score = buildScore([
+			{ notes: quarters('C4'), clefChanges: [{ onset: 1, clef: 'tenor' }] },
+			{ notes: quarters('C4'), clef: 'alto' }
+		]);
+		expect(score.clefAtEnd(0)).toBe('tenor');
+		expect(score.clefAt(1)).toBe('alto');
+	});
+
+	it('setClefRange takes a mid-staff bass -> tenor -> bass range, and its undo restores it in one step', async () => {
+		const { EditHistory } = await import('./edit-history.js');
+		const score = buildScore([quarters('C4'), quarters('C4'), quarters('C4'), quarters('C4'), quarters('C4')], {
+			clef: 'bass'
+		});
+		const history = new EditHistory(score);
+		const clefs = (s: Score) => s.measures.map((_m, i) => s.clefAt(i));
+		expect(history.record((s) => s.setClefRange(0, 1, 3, 'tenor'))).toEqual({ from: 1, to: 3 });
+		expect(clefs(history.current)).toEqual(['bass', 'tenor', 'tenor', 'tenor', 'bass']);
+		history.undo();
+		expect(clefs(history.current)).toEqual(['bass', 'bass', 'bass', 'bass', 'bass']);
+		expect(history.current.measures.every((m) => m.clef === undefined)).toBe(true);
+		history.redo();
+		expect(clefs(history.current)).toEqual(['bass', 'tenor', 'tenor', 'tenor', 'bass']);
+		// And the reverse direction, alto as well.
+		expect(history.record((s) => s.setClefRange(0, 2, 2, 'alto'))).toEqual({ from: 2, to: 2 });
+		expect(clefs(history.current)).toEqual(['bass', 'tenor', 'alto', 'tenor', 'bass']);
+	});
+
+	it('setClefRange clears the range\'s mid-measure changes and keeps the clef the range used to end in after it', () => {
+		const score = buildScore([
+			quarters('C4'),
+			{ notes: quarters('C4'), clefChanges: [{ onset: 0.5, clef: 'bass' }] },
+			quarters('C4')
+		]);
+		expect(score.clefAt(2)).toBe('bass');
+		// Already treble at the downbeat, but the change inside makes it no no-op.
+		expect(score.setClefRange(0, 1, 1, 'treble')).toEqual({ from: 1, to: 1 });
+		expect(score.measures[1]!.clefChanges).toEqual([]);
+		expect(score.clefAtEnd(1)).toBe('treble');
+		// Measure 2 had inherited bass from that change, and keeps it.
+		expect(score.clefAt(2)).toBe('bass');
+	});
+
+	it('clone copies clef changes without aliasing the array', () => {
+		const source = buildScore([{ notes: quarters('C4'), clefChanges: [{ onset: 0.5, clef: 'tenor' }] }]);
+		const clone = source.clone();
+		expect(clone.measures[0]!.clefChanges).toEqual(source.measures[0]!.clefChanges);
+		expect(clone.measures[0]!.clefChanges).not.toBe(source.measures[0]!.clefChanges);
+		assertScoresEquivalent(clone, source);
+		clone.measures[0]!.clefChanges = [{ onset: 0.25, clef: 'alto' }];
+		expect(source.clefAtOnset(0, 0.25)).toBe('treble');
+		expect(() => assertScoresEquivalent(clone, source)).toThrow(/clefChanges/);
+	});
+});
+
 describe('barlines', () => {
 	it('defaults to normal everywhere except a final barline at the score\'s true last measure', () => {
 		const score = buildScore([[['G4', 'quarter']], [['G4', 'quarter']], [['G4', 'quarter']]]);

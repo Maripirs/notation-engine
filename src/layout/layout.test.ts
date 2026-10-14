@@ -2082,7 +2082,9 @@ describe('clefs (M2 Slice 3)', () => {
 		// (see `soloNoteheadY`'s own comment on why that would not be valid).
 		const cases: readonly (readonly [ClefType, string])[] = [
 			['treble', 'F#5'],
-			['bass', 'F#3']
+			['bass', 'F#3'],
+			['alto', 'F#4'],
+			['tenor', 'F#3']
 		];
 		for (const [clef, fSharpPitch] of cases) {
 			const layout = layoutScore(buildScore([[[fSharpPitch, 'quarter']]], { clef, keyFifths: 1 }), options);
@@ -2100,7 +2102,9 @@ describe('clefs (M2 Slice 3)', () => {
 		// accidental of its own.
 		const cases: readonly (readonly [ClefType, string])[] = [
 			['treble', 'Bb4'],
-			['bass', 'Bb3']
+			['bass', 'Bb2'],
+			['alto', 'Bb3'],
+			['tenor', 'Bb3']
 		];
 		for (const [clef, bFlatPitch] of cases) {
 			const layout = layoutScore(buildScore([[[bFlatPitch, 'quarter']]], { clef, keyFifths: -1 }), options);
@@ -2251,6 +2255,194 @@ describe('clef changes (M5 Slice 5)', () => {
 		const updated = relayoutMeasure(score, layout, 1, options);
 		expect(updated).not.toBeNull();
 		expect(clefOpsOf(updated!.measures[1]!.ops).map((op) => op.glyph)).toEqual(['fClef']);
+	});
+});
+
+describe('C clefs and clef changes inside a measure (M6 Slice 4)', () => {
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+	const CLEF_GLYPHS: ReadonlySet<GlyphName> = new Set<GlyphName>(['gClef', 'fClef', 'gClef8vb', 'cClef']);
+	const clefOpsOf = (ops: readonly DrawOp[]) =>
+		ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && CLEF_GLYPHS.has(op.glyph)
+		);
+	const noteheadsOf = (ops: readonly DrawOp[]) =>
+		ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'noteheadBlack'
+		);
+	const glyphYs = (ops: readonly DrawOp[], glyph: GlyphName) =>
+		ops.flatMap((op) => (op.kind === 'glyph' && op.glyph === glyph ? [op.y] : []));
+	const fourQuarters = (pitch: string) => [
+		[pitch, 'quarter'],
+		[pitch, 'quarter'],
+		[pitch, 'quarter'],
+		[pitch, 'quarter']
+	] as const;
+
+	it('puts middle C where each clef says: below treble/treble8, above bass, middle line for alto, 4th line for tenor', () => {
+		// In staff spaces down from the top line: treble's C4 is a ledger line
+		// below the bottom line, bass's a ledger line above the top line, alto's
+		// on the middle line, tenor's on the second line from the top.
+		const cases: readonly (readonly [ClefType, number])[] = [
+			['treble', 5],
+			['treble8', 5],
+			['bass', -1],
+			['alto', 2],
+			['tenor', 1]
+		];
+		for (const [clef, spacesBelowTop] of cases) {
+			const layout = layoutScore(buildScore([[['C4', 'quarter']]], { clef }), options);
+			const [head] = noteheadsOf(layout.measures[0]!.ops);
+			expect(head!.y - layout.staffTopY, clef).toBeCloseTo(spacesBelowTop * ss, 6);
+		}
+	});
+
+	it('draws the C clef glyph centred on middle C\'s line, with no ledger line for an on-staff middle C', () => {
+		for (const [clef, spacesBelowTop] of [
+			['alto', 2],
+			['tenor', 1]
+		] as const) {
+			const layout = layoutScore(buildScore([[['C4', 'quarter']]], { clef }), options);
+			const ops = layout.measures[0]!.ops;
+			const clefs = clefOpsOf(ops);
+			expect(clefs.map((op) => op.glyph)).toEqual(['cClef']);
+			expect(clefs[0]!.y - layout.staffTopY).toBeCloseTo(spacesBelowTop * ss, 6);
+			const ledgers = ops.filter(
+				(op) => op.kind === 'rect' && Math.abs(op.height - ED.legerLineThickness * ss) < 0.001
+			);
+			expect(ledgers).toHaveLength(0);
+		}
+	});
+
+	it('places alto and tenor key signatures per the standard engraving positions, sharps and flats', () => {
+		// Half staff spaces down from the top line, per accidental in written
+		// order, transcribed from MuseScore's `clefTable` (clef.cpp) rather than
+		// from this engine's own octave table, so a wrong octave fails here.
+		// Tenor's sharps are the exception to the usual zigzag: they start on
+		// the low F (second line) instead of above the staff.
+		const cases: readonly (readonly [ClefType, number, GlyphName, readonly number[]])[] = [
+			['alto', 7, 'accidentalSharp', [1, 4, 0, 3, 6, 2, 5]],
+			['alto', -7, 'accidentalFlat', [5, 2, 6, 3, 7, 4, 8]],
+			['tenor', 7, 'accidentalSharp', [6, 2, 5, 1, 4, 0, 3]],
+			['tenor', -7, 'accidentalFlat', [3, 0, 4, 1, 5, 2, 6]],
+			// The existing clefs, through the same table, as a cross-check.
+			['treble', 7, 'accidentalSharp', [0, 3, -1, 2, 5, 1, 4]],
+			['bass', -7, 'accidentalFlat', [6, 3, 7, 4, 8, 5, 9]]
+		];
+		for (const [clef, keyFifths, glyph, halfSpaces] of cases) {
+			const layout = layoutScore(buildScore([[[null, 'quarter']]], { clef, keyFifths }), options);
+			const ys = glyphYs(layout.measures[0]!.ops, glyph).map((y) => (y - layout.staffTopY) / (ss / 2));
+			expect(ys.map((y) => Math.round(y * 1e6) / 1e6), `${clef} ${keyFifths}`).toEqual(halfSpaces);
+		}
+	});
+
+	it('lays out a clef change inside a measure: smaller clef before the note at its onset, positions after it in the new clef', () => {
+		const score = buildScore(
+			[{ notes: fourQuarters('C4'), clefChanges: [{ onset: 0.5, clef: 'tenor' }] }, [['C4', 'whole']]],
+			{ clef: 'bass' }
+		);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+		const heads = noteheadsOf(ops);
+		expect(heads.map((h) => (h.y - layout.staffTopY) / ss)).toEqual([-1, -1, 1, 1].map((v) => expect.closeTo(v, 6)));
+
+		const clefs = clefOpsOf(ops);
+		expect(clefs.map((op) => op.glyph)).toEqual(['fClef', 'cClef']);
+		const change = clefs[1]!;
+		expect(change.fontSizePx).toBeDefined();
+		expect(change.fontSizePx!).toBeLessThan(layout.fontSizePx);
+		// Between the second and third notes, clear of both.
+		expect(change.x).toBeGreaterThan(heads[1]!.x + GLYPH_METRICS.noteheadBlack.advance * ss);
+		const clefRight = change.x + GLYPH_METRICS.cClef.advance * ss * (change.fontSizePx! / layout.fontSizePx);
+		expect(heads[2]!.x).toBeGreaterThan(clefRight);
+		// The clef widens the gap it sits in, nothing else.
+		expect(heads[2]!.x - heads[1]!.x).toBeGreaterThan(heads[1]!.x - heads[0]!.x + 2 * ss);
+		expect(heads[3]!.x - heads[2]!.x).toBeCloseTo(heads[1]!.x - heads[0]!.x, 6);
+
+		// Measure 1 inherits tenor: no clef glyph of its own, C4 on the 4th line.
+		expect(clefOpsOf(layout.measures[1]!.ops)).toEqual([]);
+		const [whole] = glyphYs(layout.measures[1]!.ops, 'noteheadWhole');
+		expect(whole! - layout.staffTopY).toBeCloseTo(1 * ss, 6);
+	});
+
+	it('draws a change at the measure\'s very end before the barline, and the next measure reads the new clef', () => {
+		const score = buildScore(
+			[{ notes: fourQuarters('C4'), clefChanges: [{ onset: 1, clef: 'alto' }] }, [['C4', 'whole']]],
+			{ clef: 'bass' }
+		);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+		const heads = noteheadsOf(ops);
+		expect(heads.every((h) => Math.abs(h.y - (layout.staffTopY - ss)) < 1e-6)).toBe(true);
+		const change = clefOpsOf(ops)[1]!;
+		expect(change.glyph).toBe('cClef');
+		expect(change.x).toBeGreaterThan(heads[3]!.x);
+		const region = layout.measures[0]!.region;
+		expect(change.x).toBeLessThan(region.x + region.width);
+		expect(clefOpsOf(layout.measures[1]!.ops)).toEqual([]);
+		const [whole] = glyphYs(layout.measures[1]!.ops, 'noteheadWhole');
+		expect(whole! - layout.staffTopY).toBeCloseTo(2 * ss, 6);
+	});
+
+	it('shows the carried clef full size in the header of a later system', () => {
+		const score = buildScore(
+			[{ notes: fourQuarters('C4'), clefChanges: [{ onset: 0.5, clef: 'tenor' }] }, [['C4', 'whole']]],
+			{ clef: 'bass' }
+		);
+		const layout = layoutScore(score, { staffSpacePx: ss, systemWidthPx: 1 });
+		expect(layout.systems[1]!.measureIndices).toEqual([1]);
+		const clefs = clefOpsOf(layout.measures[1]!.ops);
+		expect(clefs.map((op) => op.glyph)).toEqual(['cClef']);
+		expect(clefs[0]!.fontSizePx).toBeUndefined();
+	});
+
+	it('pushes an accidental right after a change clef clear of it', () => {
+		const score = buildScore(
+			[{ notes: [['C4', 'half'], ['C#4', 'half']], clefChanges: [{ onset: 0.5, clef: 'tenor' }] }],
+			{ clef: 'bass' }
+		);
+		const layout = layoutScore(score, options);
+		const ops = layout.measures[0]!.ops;
+		const change = clefOpsOf(ops)[1]!;
+		const clefRight = change.x + GLYPH_METRICS.cClef.advance * ss * (change.fontSizePx! / layout.fontSizePx);
+		const sharp = ops.find((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')!;
+		expect(sharp.kind === 'glyph' && sharp.x).toBeGreaterThanOrEqual(clefRight - 1e-6);
+		// And the sharp sits on tenor's C line, like its note.
+		expect(sharp.kind === 'glyph' && sharp.y).toBeCloseTo(layout.staffTopY + ss, 6);
+	});
+
+	it('decides stem direction per note\'s own clef across a change', () => {
+		// B3 is above bass's middle line (stem down) but below alto's (stem up).
+		const score = buildScore(
+			[{ notes: [['B3', 'half'], ['B3', 'half']], clefChanges: [{ onset: 0.5, clef: 'alto' }] }],
+			{ clef: 'bass' }
+		);
+		const layout = layoutScore(score, options);
+		const halfHeads = layout.measures[0]!.ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'noteheadHalf'
+		);
+		const stems = layout.measures[0]!.ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'rect' }> =>
+				op.kind === 'rect' && Math.abs(op.width - ED.stemThickness * ss) < 0.001
+		);
+		expect(stems).toHaveLength(2);
+		// Down stem hangs below its head, up stem rises above it.
+		expect(stems[0]!.y + stems[0]!.height).toBeGreaterThan(halfHeads[0]!.y + ss);
+		expect(stems[1]!.y).toBeLessThan(halfHeads[1]!.y - ss);
+	});
+
+	it('keeps a measure with a change self-contained for scoped redraw', () => {
+		const score = buildScore(
+			[{ notes: fourQuarters('C4'), clefChanges: [{ onset: 0.5, clef: 'tenor' }] }, [['C4', 'whole']]],
+			{ clef: 'bass' }
+		);
+		const layout = layoutScore(score, options);
+		score.transposeNote(score.measures[0]!.notes[3]!.id, 2);
+		const updated = relayoutMeasure(score, layout, 0, options);
+		expect(updated).not.toBeNull();
+		expect(clefOpsOf(updated!.measures[0]!.ops).map((op) => op.glyph)).toEqual(['fClef', 'cClef']);
+		// D4 in tenor: the space above the C line.
+		expect(noteheadsOf(updated!.measures[0]!.ops)[3]!.y - layout.staffTopY).toBeCloseTo(0.5 * ss, 6);
 	});
 });
 

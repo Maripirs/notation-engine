@@ -52,6 +52,8 @@ import {
 	compare,
 	lcm,
 	noteDurationQuarters,
+	quartersFromWholes,
+	quartersToWholes,
 	sub,
 	wholesToQuarters,
 	ZERO,
@@ -318,13 +320,17 @@ function writePart(
 	// positional passthrough; see `divisionsForPart`).
 	const everyNote: Note[] = [];
 	const everyAnchor: MeasurePassthrough[] = [];
+	// A mid-measure clef change's onset (M6 Slice 4) may need a `<backup>` to
+	// reach it, so it must land on whole divisions too.
+	const clefChangeOnsets: number[] = [];
 	for (const staffIndex of partStaves) {
 		for (const measure of score.staves[staffIndex]!.measures) {
 			everyNote.push(...measure.notes);
 			everyAnchor.push(...measure.passthrough);
+			for (const change of measure.clefChanges) clefChangeOnsets.push(change.onset);
 		}
 	}
-	const divisions = divisionsForPart(everyNote, everyAnchor);
+	const divisions = divisionsForPart(everyNote, everyAnchor, clefChangeOnsets);
 	const measureCount = score.staves[firstStaffIndex]!.measures.length;
 
 	xml.open('part', { id: part.id });
@@ -477,7 +483,9 @@ const CLEF_MARKUP: Readonly<
 > = {
 	treble: { sign: 'G', line: 2 },
 	bass: { sign: 'F', line: 4 },
-	treble8: { sign: 'G', line: 2, octaveChange: -1 }
+	treble8: { sign: 'G', line: 2, octaveChange: -1 },
+	alto: { sign: 'C', line: 3 },
+	tenor: { sign: 'C', line: 4 }
 };
 
 function writeClef(xml: XmlBuilder, clef: ClefType, number: number): void {
@@ -528,6 +536,7 @@ function writeMeasureNotes(
 
 		const streams = [...groupNotesByVoice(measure.notes)];
 		const anchorsByVoice = anchorsByStream(measure, streams.map(([voice]) => voice));
+		addClefChangeAnchors(anchorsByVoice, measure, streams[0]?.[0], k + 1);
 		if (streams.length === 0 && anchorsByVoice.size > 0) streams.push([[...anchorsByVoice.keys()][0]!, []]);
 
 		for (const [voice, voiceNotes] of streams) {
@@ -538,7 +547,11 @@ function writeMeasureNotes(
 			}
 			firstStream = false;
 
-			const beamPlan = buildBeamPlan(voiceNotes, time, middleLine);
+			// Stem and beam directions follow each note's own clef when the
+			// measure changes clef partway (M6 Slice 4), as layout's do.
+			const middleLineOf =
+				measure.clefChanges.length === 0 ? middleLine : streamMiddleLines(score, m, staffIndex, voiceNotes);
+			const beamPlan = buildBeamPlan(voiceNotes, time, middleLineOf);
 			const anchors = anchorsByVoice.get(voice) ?? [];
 			const writeAnchor = (anchor: MeasurePassthrough): void => {
 				xml.element(rescaleDivisionValues(anchor.element, divisions / anchor.divisions));
@@ -562,7 +575,7 @@ function writeMeasureNotes(
 						divisions,
 						multiStaff,
 						staffNumber: k + 1,
-						middleLine,
+						middleLine: typeof middleLineOf === 'number' ? middleLineOf : middleLineOf(chord[0]!),
 						beamPlan,
 						chord,
 						previousAnchor: events[ei - 1]?.[0],
@@ -660,6 +673,66 @@ function anchorsByStream(measure: Measure, voices: readonly number[]): Map<numbe
 	return byVoice;
 }
 
+/**
+ * Mid-measure clef changes (M6 Slice 4) ride the positional-anchor machinery
+ * above: each becomes a synthetic `<attributes><clef>` anchor in the staff's
+ * first stream, so it is written before the event at its onset, after the
+ * stream's last event when it sits at the measure's end, or via a `<backup>`
+ * when it falls inside a longer event. Those are exactly the placements the
+ * importer reads back at the same onset (it gives an owned `<attributes>` the
+ * onset a passthrough element at that point would get). Merged into the
+ * stream's list stably after any passthrough at the same onset.
+ */
+function addClefChangeAnchors(
+	anchorsByVoice: Map<number, MeasurePassthrough[]>,
+	measure: Measure,
+	firstVoice: number | undefined,
+	staffNumber: number
+): void {
+	if (measure.clefChanges.length === 0) return;
+	const voice = firstVoice ?? [...anchorsByVoice.keys()][0] ?? 1;
+	const list = anchorsByVoice.get(voice) ?? [];
+	for (const change of measure.clefChanges) {
+		list.push({
+			element: clefChangeElement(change.clef, staffNumber),
+			onset: quartersToWholes(quartersFromWholes(change.onset)),
+			voice,
+			lead: false,
+			divisions: 1
+		});
+	}
+	list.sort((a, b) => compare(anchorOnset(a), anchorOnset(b)));
+	anchorsByVoice.set(voice, list);
+}
+
+/** `<attributes><clef number>...</clef></attributes>` as an opaque element,
+ *  the shape `writeClef` writes, for `addClefChangeAnchors`. */
+function clefChangeElement(clef: ClefType, number: number): OpaqueElement {
+	const markup = CLEF_MARKUP[clef];
+	const leaf = (name: string, text: string): OpaqueElement => ({ name, attrs: {}, children: [], text });
+	const clefChildren = [leaf('sign', markup.sign), leaf('line', String(markup.line))];
+	if (markup.octaveChange !== undefined) clefChildren.push(leaf('clef-octave-change', String(markup.octaveChange)));
+	return {
+		name: 'attributes',
+		attrs: {},
+		children: [{ name: 'clef', attrs: { number: String(number) }, children: clefChildren, text: '' }],
+		text: ''
+	};
+}
+
+/** Each note's own clef's middle line in one voice stream of a measure that
+ *  changes clef partway (M6 Slice 4), from the onset of its event. */
+function streamMiddleLines(score: Score, m: number, staffIndex: number, voiceNotes: readonly Note[]): (note: Note) => number {
+	const byId = new Map<NoteId, number>();
+	let onset = 0;
+	for (const event of noteEvents(voiceNotes)) {
+		const middleLine = middleLineForClef(score.clefAtOnset(m, onset, staffIndex));
+		for (const note of event) byId.set(note.id, middleLine);
+		onset += event[0]!.durationWholes;
+	}
+	return (note) => byId.get(note.id) ?? middleLineForClef(score.clefAt(m, staffIndex));
+}
+
 /** Group a measure's notes by `note.voice`, first-seen order preserved, each
  *  voice's own notes kept in their original relative order. Mirrors
  *  `notesByVoice` in `layout.ts`; not imported from there because that one is a
@@ -693,7 +766,7 @@ interface BeamMembership {
 function buildBeamPlan(
 	voiceNotes: readonly Note[],
 	time: TimeSignature,
-	middleLine: number
+	middleLine: number | ((note: Note) => number)
 ): Map<NoteId, BeamMembership> {
 	const plan = new Map<NoteId, BeamMembership>();
 	const groups: readonly BeamGroup[] = computeBeamGroups(voiceNotes, time, middleLine);
@@ -1107,13 +1180,18 @@ function rescaleDivisionValues(el: OpaqueElement, factor: number): OpaqueElement
  * out a multiple of it (an edit introduced a finer subdivision),
  * `rescaleDivisionValues` scales those values instead.
  */
-function divisionsForPart(notes: readonly Note[], anchors: readonly MeasurePassthrough[]): number {
+function divisionsForPart(
+	notes: readonly Note[],
+	anchors: readonly MeasurePassthrough[],
+	clefChangeOnsets: readonly number[]
+): number {
 	let divisions = 1;
 	for (const note of notes) divisions = lcm(divisions, noteDurationQuarters(note).den);
 	for (const anchor of anchors) {
 		divisions = lcm(divisions, wholesToQuarters(anchor.onset).den);
 		divisions = lcm(divisions, anchor.divisions);
 	}
+	for (const onset of clefChangeOnsets) divisions = lcm(divisions, quartersFromWholes(onset).den);
 	return divisions;
 }
 

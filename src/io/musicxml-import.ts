@@ -88,9 +88,8 @@ import { child, childText, children, descendants, parseXml, type XmlElement } fr
  * that is only: a `<chord/>` note with no pitched note to join (`chord`), the
  * `<unpitched>` of a percussion note (kept as a rest), sub-elements of the
  * modelled `<key>`/`<time>`/`<clef>` the model has no field for (`mode`,
- * `cancel`, `interchangeable`, ...), a mid-measure clef change overridden by
- * a later `<clef>` for the same staff in the same measure (`clef`: the model
- * holds one clef per measure, so the earlier one is lost), and a
+ * `cancel`, `interchangeable`, ...), a `<clef>` overridden by a later one for
+ * the same staff at the same onset (`clef`: never in force), and a
  * `<part-group>` spanning fewer than two staves (the model records a group as
  * a multi-staff `Part`).
  *
@@ -347,7 +346,7 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 				if (!attrs.children.some((c) => ATTRIBUTES_OWNED.has(c.name))) continue;
 				const restated = childText(attrs, 'divisions');
 				if (restated !== undefined) divisions = Math.max(1, intText(restated, divisions));
-				applyAttributeChanges(attrs, measureObjs, m, score, report);
+				applyAttributeChanges(attrs, measureObjs, m, score);
 				for (const c of attrs.children) {
 					if (ATTRIBUTES_OWNED.has(c.name)) tallyOwnedAttributeChildren(c, report);
 					else {
@@ -375,6 +374,9 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 			// between the two (a `<forward>`, a `<backup>`) breaks the chain.
 			const chordState: ChordState = { last: null };
 			const anchors = new MeasureAnchors(info, measureObjs, divisions);
+			// Measure 0's first `<clef>` per staff is that staff's initial clef,
+			// already read by the staves pass; `applyClefs` skips it.
+			const initialClefPending = new Set<number>(m === 0 ? measureObjs.map((_, k) => k) : []);
 			for (const el of measureEl.children) {
 				if (el.name === 'note') {
 					if (child(el, 'grace')) {
@@ -400,6 +402,7 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 					anchors.moved(el, divisions, -1);
 				} else if (el.name === 'attributes') {
 					if (el.children.some((c) => ATTRIBUTES_OWNED.has(c.name))) {
+						applyClefs(el, measureObjs, anchors.position(), initialClefPending, report);
 						anchors.endLead();
 					} else {
 						anchors.item(el);
@@ -528,6 +531,15 @@ class MeasureAnchors {
 		private readonly divisions: number
 	) {}
 
+	/** The onset (quarters) an element read right now is anchored at, the same
+	 *  rule `item` applies: the previous note's stream clock when nothing has
+	 *  moved the cursor since, else the source cursor. An owned
+	 *  `<attributes>`'s clefs are placed by it (M6 Slice 4). */
+	position(): Rational {
+		if (this.#previous && !this.#movedSincePrevious) return this.#clock(this.#previous.k, this.#previous.voice);
+		return this.#sourceCursor;
+	}
+
 	/** Nothing read so far makes a later element "lead" any more. */
 	endLead(): void {
 		this.#lead = false;
@@ -655,6 +667,47 @@ class MeasureAnchors {
 // --- Attributes: mid-score and per-part key/time changes ---------------------
 
 /**
+ * Apply an `<attributes>`'s `<clef>`s at `onsetQuarters`, the onset a
+ * positional element at the same point would be anchored at
+ * (`MeasureAnchors.position`), which is also where export writes a change
+ * back (M6 Slice 4).
+ *
+ * A `<clef>` is per staff, addressed by its `number` attribute (1-based within
+ * the part, default 1). At onset 0 it is the measure's downbeat clef,
+ * `Measure.clef` (M5 Slice 5); later it is a `Measure.clefChanges` entry, so
+ * the notes before it keep the clef they were written in. A clef at the
+ * measure's very end, OMR's usual spelling of a change for the next downbeat,
+ * is such an entry too: layout draws it before the barline, and the next
+ * measure inherits it through `Score.clefAt`. Two clefs for one staff at one
+ * onset leave the later one; the earlier, never in force, is tallied dropped.
+ */
+function applyClefs(
+	attrs: XmlElement,
+	measureObjs: readonly Measure[],
+	onsetQuarters: Rational,
+	initialClefPending: Set<number>,
+	report: ImportReporter
+): void {
+	const onsetRational = quartersToWholes(onsetQuarters);
+	const onset = onsetRational.num / onsetRational.den;
+	for (const clefEl of children(attrs, 'clef')) {
+		const k = Math.max(1, intText(clefEl.attrs.number, 1)) - 1;
+		const measure = measureObjs[k];
+		if (!measure) continue;
+		if (initialClefPending.delete(k)) continue;
+		const clef = mapClef(clefEl, report);
+		if (onset === 0) {
+			if (measure.clef !== undefined) report.drop('clef');
+			measure.clef = clef;
+			continue;
+		}
+		const kept = measure.clefChanges.filter((change) => Math.abs(change.onset - onset) > 1e-9);
+		if (kept.length < measure.clefChanges.length) report.drop('clef');
+		measure.clefChanges = [...kept, { onset, clef }].sort((a, b) => a.onset - b.onset);
+	}
+}
+
+/**
  * Apply a measure's `<attributes>` key/time/clef to the model.
  *
  * At measure 0 an `<attributes>` only records a *change* when its value differs
@@ -663,31 +716,16 @@ class MeasureAnchors {
  * measure, a `<key>`/`<time>` present at all is a change, recorded verbatim on
  * every staff of the part.
  *
- * A `<clef>` (M5 Slice 5) is per staff, addressed by its `number` attribute
- * (1-based within the part, default 1), and lands on just that staff's
- * `Measure.clef`. Measure 0's clefs are skipped here: the staves pass above
- * already set them as each `Staff.clef`, the staff's initial clef. The model
- * has no mid-measure clef position, so a `<clef>` between a measure's notes
- * applies to that whole measure, a documented simplification.
+ * A `<clef>` is not read here: since M6 Slice 4 it can sit anywhere in the
+ * measure, so `applyClefs` reads it in document order, where its onset is
+ * known.
  */
 function applyAttributeChanges(
 	attrs: XmlElement,
 	measureObjs: readonly Measure[],
 	measureIndex: number,
-	score: Score,
-	report: ImportReporter
+	score: Score
 ): void {
-	if (measureIndex !== 0) {
-		for (const clefEl of children(attrs, 'clef')) {
-			const k = Math.max(1, intText(clefEl.attrs.number, 1)) - 1;
-			const measure = measureObjs[k];
-			if (!measure) continue;
-			// A second clef for this staff in this measure: a mid-measure
-			// change the model cannot place, so the earlier one is lost.
-			if (measure.clef !== undefined) report.drop('clef');
-			measure.clef = mapClef(clefEl, report);
-		}
-	}
 	const keyEl = child(attrs, 'key');
 	if (keyEl) {
 		const fifthsText = childText(keyEl, 'fifths');
@@ -1247,7 +1285,11 @@ const CLEF_SIGNATURES: ReadonlyArray<{
 }> = [
 	{ sign: 'G', line: '2', clef: 'treble' },
 	{ sign: 'G', line: '2', octaveChange: '-1', clef: 'treble8' },
-	{ sign: 'F', line: '4', clef: 'bass' }
+	{ sign: 'F', line: '4', clef: 'bass' },
+	// The two C clefs the model draws (M6 Slice 4). Soprano (C1), mezzo (C2)
+	// and baritone (C5) still fall back to treble, reported.
+	{ sign: 'C', line: '3', clef: 'alto' },
+	{ sign: 'C', line: '4', clef: 'tenor' }
 ];
 
 function mapClef(clefEl: XmlElement, report: ImportReporter): ClefType {

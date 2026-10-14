@@ -12,6 +12,7 @@ export {
 
 export type {
 	BarlineType,
+	ClefChange,
 	ClefType,
 	CrossStaffBeam,
 	MeasureSpec,
@@ -38,6 +39,7 @@ export {
 	measureDurationWholes,
 	Note,
 	NOTE_VALUE_WHOLES,
+	NO_CLEF_CHANGES,
 	noteEvents,
 	Score,
 	Staff,

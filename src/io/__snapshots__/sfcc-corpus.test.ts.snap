@@ -2,9 +2,7 @@
 
 exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
 {
-  "dropped": {
-    "clef": 4,
-  },
+  "dropped": {},
   "fallbacks": [],
   "measureRests": 392,
   "modelNotes": 8405,
@@ -79,12 +77,8 @@ exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 
 
 exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`] = `
 {
-  "dropped": {
-    "clef": 5,
-  },
-  "fallbacks": [
-    "clef P4 m66: sign C line 3",
-  ],
+  "dropped": {},
+  "fallbacks": [],
   "measureRests": 151,
   "modelNotes": 4543,
   "parts": [
@@ -120,9 +114,7 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
 
 exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
 {
-  "dropped": {
-    "clef": 2,
-  },
+  "dropped": {},
   "fallbacks": [],
   "measureRests": 201,
   "modelNotes": 3516,

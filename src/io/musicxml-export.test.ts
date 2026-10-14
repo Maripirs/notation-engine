@@ -345,6 +345,41 @@ describe('exportMusicXml', () => {
 		expect([0, 1, 2, 3].map((m) => reimported.clefAt(m, 0))).toEqual(['treble', 'treble', 'treble', 'treble']);
 	});
 
+	it('writes alto and tenor as C clefs on lines 3 and 4, and a clef change inside a measure at its onset (M6 Slice 4)', () => {
+		const score = buildScore(
+			[
+				{
+					notes: [
+						['C4', 'quarter'],
+						['C4', 'quarter'],
+						['C4', 'half']
+					],
+					// One change before the third note, one inside the half note.
+					clefChanges: [
+						{ onset: 0.5, clef: 'tenor' },
+						{ onset: 0.75, clef: 'bass' }
+					]
+				},
+				{ notes: [['C4', 'whole']], clef: 'alto' }
+			],
+			{ clef: 'bass' }
+		);
+		const xml = exportMusicXml(score);
+		assertWellFormed(xml);
+		const measures = xml.split('<measure ').slice(1);
+		const first = measures[0]!;
+		// Tenor before the third <note>; bass reached by backing up a quarter
+		// from the half note's end.
+		const notesBeforeTenor = first.slice(0, first.indexOf('<sign>C</sign>')).split('<note>').length - 1;
+		expect(notesBeforeTenor).toBe(2);
+		expect(first).toMatch(/<sign>C<\/sign>\s*<line>4<\/line>/);
+		expect(first.slice(first.lastIndexOf('<backup>'))).toMatch(/<duration>1<\/duration>[\s\S]*<sign>F<\/sign>/);
+		expect(measures[1]!).toMatch(/<sign>C<\/sign>\s*<line>3<\/line>/);
+		const reimported = importMusicXml(xml);
+		assertScoresEquivalent(reimported, score);
+		expect(reimported.measures[0]!.clefChanges).toEqual(score.measures[0]!.clefChanges);
+	});
+
 	it('emits a multi-staff part as one <part> with <staves>, per-staff <clef> and <staff>', () => {
 		const score = new Score({ keyFifths: 0, time: { beats: 4, beatType: 4 } });
 		score.appendStaff('bass');

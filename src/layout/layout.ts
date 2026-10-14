@@ -469,6 +469,20 @@ const CLEF_LINES: Readonly<Record<ClefType, ClefLines>> = {
 		bottomLine: diatonicIndex({ step: 'G', alter: 0, octave: 2 }),
 		middleLine: diatonicIndex({ step: 'D', alter: 0, octave: 3 }),
 		topLine: diatonicIndex({ step: 'A', alter: 0, octave: 3 })
+	},
+	// The C clefs (M6 Slice 4) name middle C by the line the glyph centres
+	// on: the middle (third) line for alto, the fourth line for tenor. So a
+	// tenor staff reads a third lower than an alto one: its lines are D3 F3
+	// A3 C4 E4 against alto's F3 A3 C4 E4 G4.
+	alto: {
+		bottomLine: diatonicIndex({ step: 'F', alter: 0, octave: 3 }),
+		middleLine: diatonicIndex({ step: 'C', alter: 0, octave: 4 }),
+		topLine: diatonicIndex({ step: 'G', alter: 0, octave: 4 })
+	},
+	tenor: {
+		bottomLine: diatonicIndex({ step: 'D', alter: 0, octave: 3 }),
+		middleLine: diatonicIndex({ step: 'A', alter: 0, octave: 3 }),
+		topLine: diatonicIndex({ step: 'E', alter: 0, octave: 4 })
 	}
 };
 
@@ -496,6 +510,15 @@ const KEY_SIGNATURE_POSITIONS: Readonly<Record<'sharp' | 'flat', readonly Step[]
  * engraving convention. `treble8` shares `treble`'s own table for the same
  * reason `CLEF_LINES` does: identical notated positions, only the clef glyph
  * differs.
+ *
+ * The C clefs (M6 Slice 4) are checked against MuseScore's `clefTable`
+ * (`src/engraving/dom/clef.cpp`, the per-clef "lines for sharps / lines for
+ * flats" columns, in half-spaces down from the top line), which matches the
+ * patterns in Gould, *Behind Bars*, "Key signatures". Alto keeps the same
+ * zigzag treble and bass use (the first sharp on the F nearest the top of the
+ * staff, its top space). Tenor is the one exception: its first sharp, F, would sit in the space above the top line,
+ * so the whole sharp pattern starts low instead (F3 on the second line, then
+ * up to C4, down to G3, and so on), giving the same octave list as its flats.
  */
 const KEY_SIGNATURE_OCTAVES: Readonly<Record<ClefType, Record<'sharp' | 'flat', readonly number[]>>> = {
 	treble: {
@@ -511,8 +534,21 @@ const KEY_SIGNATURE_OCTAVES: Readonly<Record<ClefType, Record<'sharp' | 'flat', 
 	bass: {
 		// F3 C3 G3 D3 A2 E3 B2
 		sharp: [3, 3, 3, 3, 2, 3, 2],
-		// B3 E3 A3 D3 G2 C3 F2
-		flat: [3, 3, 3, 3, 2, 3, 2]
+		// B2 E3 A2 D3 G2 C3 F2 (M6 Slice 4 fix: this read B3 E3 A3 ..., which
+		// put the first flat above the staff and the third on the top line)
+		flat: [2, 3, 2, 3, 2, 3, 2]
+	},
+	alto: {
+		// F4 C4 G4 D4 A3 E4 B3
+		sharp: [4, 4, 4, 4, 3, 4, 3],
+		// B3 E4 A3 D4 G3 C4 F3
+		flat: [3, 4, 3, 4, 3, 4, 3]
+	},
+	tenor: {
+		// F3 C4 G3 D4 A3 E4 B3: the low-starting tenor sharp pattern
+		sharp: [3, 4, 3, 4, 3, 4, 3],
+		// B3 E4 A3 D4 G3 C4 F3
+		flat: [3, 4, 3, 4, 3, 4, 3]
 	}
 };
 
@@ -1644,8 +1680,10 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		measure.index > 0 && !timeSignaturesEqual(time, score.timeAt(measure.index - 1, ctx.staffIndex));
 	// Same idea for a clef change (M5 Slice 5). `ctx.clef` is already this
 	// measure's own resolved clef (`Score.clefAt`), so only the comparison
-	// against the previous measure is new here.
-	const clefChangedHere = measure.index > 0 && ctx.clef !== score.clefAt(measure.index - 1, ctx.staffIndex);
+	// against the previous measure is new here. Against the clef the previous
+	// measure *ended* in (M6 Slice 4): a change inside it, typically one right
+	// before its barline, already announced this clef there.
+	const clefChangedHere = measure.index > 0 && ctx.clef !== score.clefAtEnd(measure.index - 1, ctx.staffIndex);
 
 	// The clef, key signature and (for the score's true first measure, or any
 	// later measure whose time signature just changed) time signature belong
@@ -1744,6 +1782,35 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// conventions only engage once a second voice actually shares the staff.
 	const multiVoice = notesByVoiceGroups.size > 1;
 
+	// Mid-measure clef changes (M6 Slice 4). Every clef-dependent position
+	// below reads a `MeasureContext`'s `clef`/`lines`, so a note after a change
+	// is simply laid out against a context carrying the new clef (one context
+	// per clef, built once); the measure's own `ctx` stays the downbeat clef,
+	// which is what the header, key signature and barline-side marks need.
+	// `middleLineOf` gives each note its own clef's middle line for the stem,
+	// beam and tie directions, which are decided by distance from it.
+	const onsets = noteOnsets(measure.notes);
+	const clefChanges = measure.clefChanges;
+	const ctxByClef = new Map<ClefType, MeasureContext>([[ctx.clef, ctx]]);
+	const ctxForClef = (clef: ClefType): MeasureContext => {
+		let found = ctxByClef.get(clef);
+		if (!found) {
+			found = { ...ctx, clef, lines: CLEF_LINES[clef] };
+			ctxByClef.set(clef, found);
+		}
+		return found;
+	};
+	const clefAtOnset = (onset: number): ClefType => {
+		for (let i = clefChanges.length - 1; i >= 0; i--) {
+			if (onsetKey(clefChanges[i]!.onset) <= onsetKey(onset)) return clefChanges[i]!.clef;
+		}
+		return ctx.clef;
+	};
+	const middleLineOf = (note: Note): number =>
+		clefChanges.length === 0
+			? ctx.lines.middleLine
+			: CLEF_LINES[clefAtOnset(onsets.get(note.id) ?? 0)].middleLine;
+
 	// Cross-staff beams (M2 Slice 6): notes in *this* measure that are part of
 	// an explicit Score.CrossStaffBeam, grouped by which beam they belong to.
 	// Excluded from this measure's own automatic per-voice grouping below
@@ -1778,7 +1845,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			...computeBeamGroups(
 				voiceNotes,
 				time,
-				ctx.lines.middleLine,
+				clefChanges.length === 0 ? ctx.lines.middleLine : middleLineOf,
 				voiceStemOverride(voice, multiVoice),
 				crossStaffNoteIds
 			)
@@ -1829,7 +1896,6 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		columnOffsetPx.set(onsetKey(column.onset), columnsWidthPx);
 		columnsWidthPx += column.width * ss * scale;
 	}
-	const onsets = noteOnsets(measure.notes);
 
 	// M2 Slice 2 restructures this pass from Slice 1's "finish voice 1
 	// entirely, then voice 2" order into "walk columns left to right, and
@@ -1873,6 +1939,38 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// now N-way.
 	let atPrevColumnByVoice = new Map<number, readonly { d: number; noteX: number }[]>();
 	let atThisColumnByVoice = new Map<number, readonly { d: number; noteX: number }[]>();
+	// Mid-measure clef changes (M6 Slice 4) still to draw, in onset order;
+	// the context every note is currently laid out against; and the fixed
+	// (unjustified, like a header's) width the change clefs drawn so far have
+	// pushed every later column right by.
+	let nextClefChange = 0;
+	let noteCtx = ctx;
+	let clefInsertPx = 0;
+	/**
+	 * Draw every not-yet-drawn change at or before `onset` at `x`, as one
+	 * change clef: only the last one is in force there, and a change to the
+	 * clef already in force (an OMR restatement) draws nothing. The clef's
+	 * ink becomes every voice's "previous ink", so an accidental on the next
+	 * note is pushed clear of it by the ordinary collision shift.
+	 */
+	const drawClefChangesUpTo = (onset: number, x: number): void => {
+		let target: ClefType | null = null;
+		while (nextClefChange < clefChanges.length && onsetKey(clefChanges[nextClefChange]!.onset) <= onsetKey(onset)) {
+			target = clefChanges[nextClefChange++]!.clef;
+		}
+		if (target === null || target === noteCtx.clef) return;
+		noteCtx = ctxForClef(target);
+		const clefX = x + MID_MEASURE_CLEF_GAP * ss;
+		const after = layoutClef(ops, clefX, noteCtx, CHANGE_CLEF_SCALE);
+		// `layoutClef` returns past its own header gap; a change clef inside
+		// the music only needs the smaller lead-in a note gets.
+		const clefRight = after - SPACING.headerGap * ss;
+		clefInsertPx += clefRight + MID_MEASURE_CLEF_GAP * ss - x;
+		for (const voice of voiceNumbers) {
+			const own = previousInkRightByVoice.get(voice)!;
+			previousInkRightByVoice.set(voice, own === null ? clefRight : Math.max(own, clefRight));
+		}
+	};
 	// Whole-measure rests are laid out in their column like any rest, then
 	// moved to the measure's centre once the barline's x is known; this
 	// remembers which ops and hit box each one produced.
@@ -1880,6 +1978,12 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 
 	for (const column of columns) {
 		const key = onsetKey(column.onset);
+		if (nextClefChange < clefChanges.length) {
+			drawClefChangesUpTo(
+				column.onset,
+				cursor + columnOffsetPx.get(key)! + clefInsertPx + Math.max(0, ...shiftAccumByVoice.values())
+			);
+		}
 		atThisColumnByVoice = new Map();
 		// Ink deposited so far *in this column* by an earlier-processed
 		// voice: what lets an accidental in one voice check the other
@@ -1898,7 +2002,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			voiceNoteIndex.set(voice, index + 1);
 
 			const shiftAccum = shiftAccumByVoice.get(voice)!;
-			const baseCellX = cursor + columnOffsetPx.get(key)! + shiftAccum;
+			const baseCellX = cursor + columnOffsetPx.get(key)! + clefInsertPx + shiftAccum;
 
 			// Voice-to-voice notehead offset: a second-interval clash against
 			// any earlier-numbered voice already placed at this same column
@@ -1953,7 +2057,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 				cellX,
 				chord,
 				keyFifths,
-				ctx,
+				noteCtx,
 				beamDirection,
 				lastStatedAlterForStepByVoice.get(voice)!,
 				previousInkRight,
@@ -1978,6 +2082,15 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		atPrevColumnByVoice = atThisColumnByVoice;
 	}
 	const finalShiftByVoice = shiftAccumByVoice;
+	// A change after the last onset (most often right at the measure's end,
+	// the usual spelling of a change for the next downbeat) is drawn after
+	// the last column, before the barline, where engraving puts it.
+	if (nextClefChange < clefChanges.length) {
+		drawClefChangesUpTo(
+			Number.POSITIVE_INFINITY,
+			cursor + columnsWidthPx + clefInsertPx + Math.max(0, ...finalShiftByVoice.values())
+		);
+	}
 	for (const group of beamGroups) layoutBeamGroup(ops, group, stems, ctx);
 	for (const { group, beamY } of crossStaffGroups) layoutBeamGroup(ops, group, stems, ctx, beamY);
 	// The measure's note area ends at the shared columns' own total width,
@@ -1985,7 +2098,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// furthest past it. A single voice's shift is the only one that can ever
 	// be nonzero, so this reduces to exactly the same total the old flat
 	// cursor always produced.
-	cursor += columnsWidthPx + Math.max(0, ...finalShiftByVoice.values());
+	cursor += columnsWidthPx + clefInsertPx + Math.max(0, ...finalShiftByVoice.values());
 	cursor += SPACING.measureTrailOut * ss;
 
 	// Staff lines are per measure, spanning exactly this measure's band, for the
@@ -2112,7 +2225,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		if (!point) continue; // a rest, which can never be tied
 
 		if (note.tiedToId !== null) {
-			const curvesBelow = tieCurvesBelow(point, ctx.lines.middleLine);
+			const curvesBelow = tieCurvesBelow(point, middleLineOf(note));
 			const x0 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxNE[0] * ss + TIE_NOTE_GAP * ss;
 			const target =
 				score.measureOfNote(note.tiedToId) === measure ? placements.get(note.tiedToId) : undefined;
@@ -2133,7 +2246,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			// This note is the receiving end of a tie begun in an earlier
 			// measure: draw only the incoming half, starting from this
 			// measure's own left edge.
-			const curvesBelow = tieCurvesBelow(point, ctx.lines.middleLine);
+			const curvesBelow = tieCurvesBelow(point, middleLineOf(note));
 			const x1 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxSW[0] * ss - TIE_NOTE_GAP * ss;
 			pushTieCurve(ops, startX, point.y, x1, point.y, curvesBelow, tiedFrom.id, ctx);
 		}
@@ -2253,7 +2366,8 @@ function pushRepeatDots(ops: DrawOp[], x: number, ctx: MeasureContext): void {
  * The clef glyph itself (M2 Slice 3 generalizes this from a single
  * always-`gClef` draw): a G clef sitting on G4's line for `treble`, the same
  * G clef with SMuFL's own `gClef8vb` shape (the small "8" below) for
- * `treble8`, or an F clef sitting on F3's line for `bass`. `treble8`'s
+ * `treble8`, an F clef sitting on F3's line for `bass`, or a C clef centred
+ * on middle C's line for `alto`/`tenor` (M6 Slice 4). `treble8`'s
  * notehead/ledger/key-signature math is otherwise identical to `treble`'s
  * (see `CLEF_LINES`'s own comment); this is the one place that difference
  * actually shows up.
@@ -2271,6 +2385,14 @@ function layoutClef(ops: DrawOp[], x: number, ctx: MeasureContext, scale = 1): n
 		ops.push({ kind: 'glyph', glyph: 'fClef', x, y, ...sized });
 		return x + (GLYPH_METRICS.fClef.advance * scale + SPACING.headerGap) * ctx.ss;
 	}
+	if (ctx.clef === 'alto' || ctx.clef === 'tenor') {
+		// The C clef (M6 Slice 4) is drawn centred on its own origin, so the
+		// origin goes on the line it names as middle C: `CLEF_LINES` already
+		// puts C4 on the third line for alto and the fourth for tenor.
+		const y = staffY(diatonicIndex({ step: 'C', alter: 0, octave: 4 }), ctx);
+		ops.push({ kind: 'glyph', glyph: 'cClef', x, y, ...sized });
+		return x + (GLYPH_METRICS.cClef.advance * scale + SPACING.headerGap) * ctx.ss;
+	}
 	const glyph: GlyphName = ctx.clef === 'treble8' ? 'gClef8vb' : 'gClef';
 	// The G clef's origin sits on the line of the G it names, the second line
 	// from the bottom of a treble staff, for both plain treble and treble8
@@ -2285,6 +2407,11 @@ function layoutClef(ops: DrawOp[], x: number, ctx: MeasureContext, scale = 1): n
  *  clef opening a system, typically two-thirds to three-quarters size; the
  *  upper end keeps the "8" of a `gClef8vb` legible. */
 const CHANGE_CLEF_SCALE = 0.75;
+
+/** Clearance on each side of a clef change inside a measure (M6 Slice 4),
+ *  staff spaces: between the previous column's room and the clef, and between
+ *  the clef and the note it precedes. */
+const MID_MEASURE_CLEF_GAP = 0.4;
 
 /**
  * Draw a key signature's accidentals, optionally preceded by whichever
@@ -3197,6 +3324,10 @@ function beatDurationWholes(time: TimeSignature): number {
  * omitted, a lone voice keeps `stemDirectionForNotes`'s ordinary pitch-based
  * rule exactly as before this slice.
  *
+ * `middleLine` may instead be a per-note function (M6 Slice 4), for a
+ * measure whose clef changes partway: each head is then judged against its
+ * own clef's middle line.
+ *
  * `excludeIds` (M2 Slice 6) marks notes that must never join an *automatic*
  * group here, because each already belongs to an explicit
  * `Score.CrossStaffBeam` instead (see `layoutMeasure`'s own cross-staff
@@ -3209,7 +3340,7 @@ function beatDurationWholes(time: TimeSignature): number {
 export function computeBeamGroups(
 	notes: readonly Note[],
 	time: TimeSignature,
-	middleLine: number,
+	middleLine: number | ((note: Note) => number),
 	voiceOverride?: 'up' | 'down',
 	excludeIds?: ReadonlySet<NoteId>
 ): BeamGroup[] {
@@ -3253,6 +3384,20 @@ export function computeBeamGroups(
 
 	// Direction from every head of every chord in the run, so a chord's
 	// outermost head counts toward the farthest-from-the-middle-line rule.
+	// With a per-note middle line (a clef change inside the measure, M6
+	// Slice 4) each head is measured against its own clef's line: the rule
+	// only ever looks at distance from the line, so heads are shifted to be
+	// relative to it and judged against 0.
+	if (typeof middleLine === 'function') {
+		return groups.map((group) => ({
+			notes: group.map((chord) => chord[0]!),
+			direction: stemDirectionForNotes(
+				group.flat().flatMap((note) => (note.pitch ? [diatonicIndex(note.pitch) - middleLine(note)] : [])),
+				0,
+				voiceOverride
+			)
+		}));
+	}
 	return groups.map((group) => ({
 		notes: group.map((chord) => chord[0]!),
 		direction: stemDirectionForNotes(
