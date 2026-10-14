@@ -1,6 +1,6 @@
 # Project Plan: notation-engine
 
-**Current milestone:** M4
+**Current milestone:** M6
 
 Roadmap and full decision record: `OMR_EDITOR_PLAN.md` milestone E13 in the
 `divisi-omr-editor` worktree. This file tracks notation-engine's own
@@ -65,7 +65,7 @@ are still single, unchanging values).
 pass; `npm run check`/`test`/`build` stay green throughout.
 
 **Tasks — Claude:**
-- [x] **Slice 1 — Duration model.** `NoteValue` grows to 16th/32nd/64th,
+- [x] **Slice 1: Duration model.** `NoteValue` grows to 16th/32nd/64th,
       single/double dots, and tuplet ratios (start with triplet); layout
       draws the right notehead/flag/dot combination and a measure's
       durations validate against its time signature's capacity.
@@ -73,14 +73,14 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       triplet across `durationWholes`, notehead/flag selection, and
       measure-capacity validation (valid and invalid cases); demo
       measure shows one of each duration rendering correctly.
-- [x] **Slice 2 — Automatic beaming.** Group consecutive eighth-and-
+- [x] **Slice 2: Automatic beaming.** Group consecutive eighth-and-
       shorter notes within a beat (per time signature) into beams
       instead of individual flags; replaces `layoutStemAndFlag`'s
       per-note flag path for beamed groups. Acceptance: unit tests
       assert correct beam grouping for common meters (4/4, 6/8) incl.
       a rest breaking a group; demo shows a beamed run rendering as one
       beam, not stacked flags.
-- [x] **Slice 3 — Stem direction rules.** Replace the fixed
+- [x] **Slice 3: Stem direction rules.** Replace the fixed
       middle-line-split rule (`layoutStemAndFlag`'s `up = d <
       TREBLE_MIDDLE_LINE`) with the real single-voice rule: direction
       by distance from the middle line, and for a beamed group, one
@@ -88,7 +88,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       unit tests over a range of pitches and one beamed-group case;
       demo shows correct stem directions including a beam that doesn't
       flip mid-group.
-- [x] **Slice 4 — Accidental placement + collision avoidance.**
+- [x] **Slice 4: Accidental placement + collision avoidance.**
       Courtesy accidentals (same pitch altered earlier in the measure
       needs no repeat per MusicXML convention, already partly handled
       by key-aware suppression; extend to same-measure repeats) and
@@ -97,31 +97,31 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       unit tests for repeated-accidental suppression within a measure
       and a tight-spacing collision case; demo shows no accidental
       overlapping adjacent ink.
-- [x] **Slice 5 — Ties.** Same-pitch note tied across a barline or
+- [x] **Slice 5: Ties.** Same-pitch note tied across a barline or
       within a measure; model gains a tie flag/link between two notes,
       layout draws the curve, and duration-capacity validation treats
       a tied pair as one sounding duration. Acceptance: unit tests for
       tie-across-barline and same-measure tie; demo shows a tie curve
       connecting two noteheads.
-- [x] **Slice 6 — Slurs.** Phrase mark spanning an arbitrary run of
+- [x] **Slice 6: Slurs.** Phrase mark spanning an arbitrary run of
       notes (not just a pair); model gains a slur span, layout draws
       one curve over/under the run. Acceptance: unit test for a
       multi-note slur's endpoints and curve direction (above vs below
       based on stem direction); demo shows a slur over a short run.
-- [x] **Slice 7 — Mid-score key/time signature changes.** `Score.time`/
+- [x] **Slice 7: Mid-score key/time signature changes.** `Score.time`/
       `keyFifths` become per-measure (or change-list) rather than one
       score-wide value; layout draws a courtesy signature at the
       change and at the system break before it if one falls there.
       Acceptance: unit test for a score with a key change and a time
       change, each landing at the right measure with correct courtesy
       glyphs; demo score includes one of each.
-- [x] **Slice 8 — Barline types.** Model gains a `BarlineType` field
+- [x] **Slice 8: Barline types.** Model gains a `BarlineType` field
       (normal/double/final/repeat-start/repeat-end) per measure
       boundary; layout draws each variant (final already exists via
       `ctx.isLast`, generalize it). Acceptance: unit test rendering
       each type's draw ops; demo score uses at least a double and a
       repeat pair.
-- [x] **Slice 9 — Note spacing algorithm.** Replace the fixed-plus-
+- [x] **Slice 9: Note spacing algorithm.** Replace the fixed-plus-
       linear spacing in `layout.ts`'s `SPACING` constants with real
       optical spacing (roughly logarithmic duration curve) plus
       justification to fill a system width, superseding the "Phase 0
@@ -155,7 +155,7 @@ both narrowed accordingly below.
 pass; `npm run check`/`test`/`build` stay green throughout.
 
 **Tasks — Claude:**
-- [x] **Slice 1 — Two voices in one staff.** `layoutMeasure`'s single
+- [x] **Slice 1: Two voices in one staff.** `layoutMeasure`'s single
       note-walking cursor splits into one onset-aligned column pass
       across all voices in a measure (same beat -> same x, the widest
       voice's `noteAdvanceSpaces` winning that column) plus independent
@@ -172,7 +172,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       rhythmically independent voices (e.g. a half-note voice against a
       running eighth-note voice) in one staff with correct stems and no
       overlapping ink.
-- [x] **Slice 2 — Voice-to-voice collision avoidance.** Extends M1
+- [x] **Slice 2: Voice-to-voice collision avoidance.** Extends M1
       slice 4's single-voice accidental/ink collision logic across
       voices: noteheads from two voices landing on the same or adjacent
       beat within a second of each other get offset (one nudged right,
@@ -182,7 +182,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       second-interval clash resolving to offset noteheads and an
       accidental clearing the other voice's stem/notehead; demo shows a
       close-interval two-voice passage with no overlapping noteheads.
-- [x] **Slice 3 — Staff/Part model + clef generalization.** `Score`
+- [x] **Slice 3: Staff/Part model + clef generalization.** `Score`
       gains real `Staff`/`Part` types (a part groups one or more
       staves, e.g. one SATB choir part or a piano's two staves);
       `Measure`'s flat global `index` addressing is replaced with a
@@ -199,7 +199,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       scoped to one staff's one measure leaving every other
       staff/measure's ops untouched; demo shows the same pitches
       rendering correctly under treble, bass, and treble-8 clefs.
-- [x] **Slice 4 — Multi-staff system layout.** `layoutScore`'s
+- [x] **Slice 4: Multi-staff system layout.** `layoutScore`'s
       per-system loop gains a nested per-staff pass stacking N staves'
       `staffTopY`s tightly within one system (today exactly one staff
       per system); each staff draws its own clef/key-signature header
@@ -211,7 +211,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       height spanning a multi-staff group, and each staff's own correct
       clef/key header; demo shows a two-staff grand-staff-style system
       with shared barlines and independent clefs.
-- [x] **Slice 5 — Part grouping + braces/brackets.** `Part` (from
+- [x] **Slice 5: Part grouping + braces/brackets.** `Part` (from
       slice 3) gains a brace (curly, for a keyboard-style grouped pair)
       or bracket (square, for a choir/ensemble group) drawn spanning
       its staves' full height at the start of each system, plus a part
@@ -220,7 +220,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       brace/bracket glyph choice and vertical span per part, and name
       label appearing only on system 1; demo shows a 4-staff SATB score
       with a bracket and part labels.
-- [x] **Slice 6 — Cross-staff beaming.** A beam whose notes span two
+- [x] **Slice 6: Cross-staff beaming.** A beam whose notes span two
       staves (e.g. a piano passage crossing hands) breaks the "a region
       never needs another region's pixels" invariant ties/slurs already
       routed around via per-measure splitting (M1 slices 5-6); this
@@ -328,7 +328,7 @@ Slice 6 exposing the minimal position hook M4 will eventually consume.
 pass; `npm run check`/`test`/`build` stay green throughout.
 
 **Tasks — Claude:**
-- [x] **Slice 1 — Tempo model.** A score-wide tempo (beats per minute,
+- [x] **Slice 1: Tempo model.** A score-wide tempo (beats per minute,
       quarter-note-based per MIDI/MusicXML convention), stored as
       `tempoBpm` on `ScoreOptions`/`Score` (default 120), the same
       pattern `keyFifths`/`time` already use for a score-wide musical
@@ -349,7 +349,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       defaulting to 120 when unset and taking an explicit `ScoreOptions`
       value when given; demo check: a hand-computed duration at a known
       BPM matches the function's output within floating-point tolerance.
-- [x] **Slice 2 — Playback timeline.** A pass that walks the score's
+- [x] **Slice 2: Playback timeline.** A pass that walks the score's
       notes in true playback order, independently per voice (whatever
       voice numbers are actually present in a staff's measures, not a
       hardcoded 1/2) and per staff. `Score.notesInOrder()` now takes a
@@ -381,7 +381,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       timeline for `createSatbBracketShowcaseScore` (the project's
       actual 4-staff SATB shape) shows all four staves' onsets landing
       together on shared beats.
-- [x] **Slice 3 — Web Audio lookahead scheduler.** A generic, drift-free
+- [x] **Slice 3: Web Audio lookahead scheduler.** A generic, drift-free
       scheduler using the standard Web Audio scheduling technique (the
       "lookahead" pattern: a `setInterval`-driven loop, running more
       often than strictly needed, that looks a short window ahead of
@@ -399,7 +399,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       lookahead passes, and that advancing the fake clock past an
       event's onset never re-schedules it; demo check: none at this
       slice (no sound wired up yet), deferred to Slice 4.
-- [x] **Slice 4 — Minimal oscillator synthesis.** A synthesis layer
+- [x] **Slice 4: Minimal oscillator synthesis.** A synthesis layer
       wired as Slice 3's "play this event" callback: for each scheduled
       onset, an `OscillatorNode` (a simple, concretely-buildable
       waveform, e.g. triangle, chosen over sampled/soundfont playback
@@ -425,7 +425,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       simultaneous voices (manual, per this repo's established avoidance
       of browser-automation dependencies for anything needing a real
       render).
-- [x] **Slice 5 — Transport controls.** A `PlaybackEngine` (or similar)
+- [x] **Slice 5: Transport controls.** A `PlaybackEngine` (or similar)
       wrapping Slices 2-4 behind a play/pause/stop/seek API, no UI:
       `play()` starts the scheduler from the current position, `pause()`
       stops scheduling and records elapsed position against
@@ -442,7 +442,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       leaving no dangling scheduled nodes; demo check: play/pause/stop/
       seek controls in the dev demo control real audible playback
       correctly by ear.
-- [x] **Slice 6 — Playback position hook.** A minimal, UI-free way for a
+- [x] **Slice 6: Playback position hook.** A minimal, UI-free way for a
       future caller to know what is currently playing: the
       `PlaybackEngine` exposes a current-position query (elapsed
       seconds) and an onset callback fired as each event starts, built
@@ -589,7 +589,7 @@ overlay could later be built on.
 pass; `npm run check`/`test`/`build` stay green throughout.
 
 **Tasks — Claude:**
-- [x] **Slice 1 — Multi-staff selection.** Widen `CanvasRenderer.setSelection`
+- [x] **Slice 1: Multi-staff selection.** Widen `CanvasRenderer.setSelection`
       to return `{ staffIndex, index }` pairs instead of bare measure
       indices, and widen every call site (the demo's own selection
       handler) to pass the returned `staffIndex` through to
@@ -612,7 +612,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       click-to-select and flash-redrawn-region wiring the main canvas
       already has; click a note on its lower (bass) staff and confirm only
       that staff's measure repaints.
-- [x] **Slice 2 — Playback cursor.** `CanvasRenderer` gains a
+- [x] **Slice 2: Playback cursor.** `CanvasRenderer` gains a
       `setPlaybackCursor(noteIds: readonly NoteId[]): { staffIndex, index }[]`
       method (mirroring `setSelection`'s own diff-and-return-affected-
       measures shape, but over a *set* of ids rather than one, since a
@@ -643,7 +643,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       list (no second `PlaybackEngine`/`AudioContext` pair, that is out of
       this slice's scope) and confirms the highlight lands correctly across
       staves.
-- [x] **Slice 3 — Zoom.** No new scaling primitive (per the survey above,
+- [x] **Slice 3: Zoom.** No new scaling primitive (per the survey above,
       `staffSpacePx` already is one); this slice proves and demos that
       Slices 1-2's new `NoteId`-keyed state survives a live rescale.
       Acceptance: a unit test that relays a score out at one `staffSpacePx`,
@@ -656,7 +656,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       smoothly, with whatever note is currently selected and/or
       playback-cursor-highlighted staying correctly highlighted through
       the change.
-- [x] **Slice 4 — Scroll-into-view region lookup.** One small, pure,
+- [x] **Slice 4: Scroll-into-view region lookup.** One small, pure,
       exported helper, `regionForNote(layout: LaidOutScore, noteId: NoteId): Rect | null`
       (naming open to whatever reads clearest against `hit-test.ts`'s own
       naming), returning the region a host should scroll into view for a
@@ -758,7 +758,7 @@ blocked on OMR data the pipeline discards, tracked in that plan, not here.
 pass; `npm run check`/`test`/`build` stay green throughout.
 
 **Tasks — Claude:**
-- [x] **Slice 1 — MusicXML export.** A pure `exportMusicXml(score: Score):
+- [x] **Slice 1: MusicXML export.** A pure `exportMusicXml(score: Score):
       string` in a new `src/io/` module, emitting `score-partwise` MusicXML
       covering everything the model can represent: parts and their staves,
       per-staff clefs (treble/bass/treble8) and per-measure clef changes
@@ -782,7 +782,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       score on screen (manual, this repo's established
       no-browser-automation approach for anything needing a real external
       renderer).
-- [x] **Slice 2 — MusicXML import.** `importMusicXml(xml: string): Score`
+- [x] **Slice 2: MusicXML import.** `importMusicXml(xml: string): Score`
       in `src/io/`, parsing the `score-partwise` subset slice 1 emits plus
       tolerant handling of what Audiveris adds that this model does not
       represent (`<lyric>`, `<direction>` dynamics, `<articulations>`,
@@ -802,7 +802,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       it succeeds with those dropped. Demo check: a real Audiveris MusicXML
       file checked into `src/test/fixtures/` loads and renders in `npm run
       dev` via an "Open MusicXML" control.
-- [x] **Slice 3 — Undo/redo.** A `Score.clone()` (deep, id-preserving)
+- [x] **Slice 3: Undo/redo.** A `Score.clone()` (deep, id-preserving)
       plus an `EditHistory` holding a bounded stack of clones (cap
       configurable, default ~100): `record(score)` pushes and clears the
       redo stack, `undo()`/`redo()` return the neighbouring snapshot, and a
@@ -819,7 +819,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z in `npm run dev` reverse and replay a
       sequence of transposes, with the dirty indicator clearing on save
       and reappearing on the next edit.
-- [x] **Slice 4 — Measure-range selection.** Measure-level hit-testing
+- [x] **Slice 4: Measure-range selection.** Measure-level hit-testing
       (`hitTestMeasure(layout, x, y): { staffIndex, measureIndex } | null`,
       alongside `hit-test.ts`'s existing note lookup) and a
       `CanvasRenderer.setMeasureRange(range: { staffIndex, from, to } |
@@ -838,7 +838,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       (`createGrandStaffShowcaseScore`, from M4 Slice 1) highlights the
       contiguous range, and only the measures whose membership changed
       repaint.
-- [x] **Slice 5 — Range clef change (E7 payload).** `Measure` gains an
+- [x] **Slice 5: Range clef change (E7 payload).** `Measure` gains an
       optional `clef` field, `undefined` meaning "same as the previous
       measure" (or the staff's own `Staff.clef` for measure 0), with
       `Score.clefAt(staffIndex, measureIndex)` walking back to the nearest
@@ -860,7 +860,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       check: select a bar range (slice 4), click a clef button, see the
       clef change with a courtesy glyph and the notes reposition, then Undo
       restores it in one step.
-- [x] **Slice 6 — Seam markers.** A pure `regionForMeasureBoundary(layout:
+- [x] **Slice 6: Seam markers.** A pure `regionForMeasureBoundary(layout:
       LaidOutScore, staffIndex: number, boundaryIndex: number): Rect |
       null` in `src/layout/` (reusing the measure lookup `regionForNote`
       already does, per M4 Slice 4's "reuse, don't re-traverse" note)
@@ -888,16 +888,197 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       (the renderer's selection/redraw API in particular), slices 4-6 may
       need a light re-check.
 
-### M6 — Phase 6: Real-world edge cases [ ]
+### M6 — Phase 6: Real-world edge cases [~]
 
-Ongoing, open-ended. Lyrics, repeats/endings/codas, grace notes,
-articulations, cross-page ties, and the choral-scan edge cases already
-fought once against OSMD (British rests, tenor/bass clef splits, page-to-page
-divisi splits). Unscoped.
+Open-ended; this pass scopes the first 9 slices. Scoped 2026-10-14
+(Claude, with the human picking the fidelity strategy) while M2-M5 are
+still `[?]`; the human chose to start M6 rather than block on those
+reviews.
+
+**Driven by measurement, not the roadmap list.** Every SFCC choral score
+in `divisi-omr-editor/Backend/fixtures/SFCC/` (7 real Audiveris-era
+MusicXML files, the scores the SFCC board's feedback is about) was run
+through `importMusicXml` + `layoutScore`. All 7 import and lay out without
+throwing, but:
+
+- **Chords are the biggest loss by far.** The model has no chord concept,
+  so the importer drops every `<chord/>` note: 1,842 of 8,416 notes (22%)
+  in Brahms "Der Abend", 1,018 of 3,751 in Elgar "Challenge of Thor", 876
+  of 4,551 in Faure "Les Djinns" (the board's named benchmark). Choral
+  divisi is notated as 2-note chords in one voice (Divisi's own
+  `splitChordalDivisi` relies on it), so this is the core choral case, not
+  a piano-only one.
+- **Everything else unmodelled is silently dropped,** and a save
+  re-exports from the model, so engine-edit-then-save would strip an OMR
+  draft of its dynamics (306 in Brahms), hairpins (479), articulations
+  (872) and fermatas. Divisi's OSMD editor avoids this by mutating the XML
+  DOM in place (E2's "leave every element we don't touch exactly as-is");
+  this engine is model-native, so it needs its own answer.
+- Tenor C clef (`<sign>C</sign><line>4</line>`, the board's "tenor line
+  alternating bass <-> tenor clef") falls back to treble; whole-measure
+  rests (`<rest measure="yes"/>`, 392 in Brahms) hit the "no `<type>`,
+  using quarter" fallback.
+- The only note-level edit op is `transposeNote`. E2's OSMD editor also
+  had delete-to-rest and planned duration edits; fixing "British rests all
+  over page 1" needs rest-focused ops.
+- Brahms (5 `<part>`s) imports as 7 `Part`s, an import bug. Its full
+  layout takes ~1.1s (the others 11-67ms).
+- Lyrics, grace notes and repeats are rare in this corpus (zero `<lyric>`
+  in all 7 files and in every Audiveris output in Divisi's local storage;
+  11 `<grace>` total; repeats only in Frost Myth), so they sit last.
+
+**Fidelity decision (human, 2026-10-14): model the common things, pass
+the rest through.** Chords, C clefs, articulations/fermatas, dynamics and
+hairpins become real model features with layout. Everything still
+unmodelled is kept as an opaque, position-anchored passthrough payload
+and re-emitted verbatim on export, so an import -> edit -> export round
+trip never loses OMR data. Each modelling slice then "promotes" its
+elements out of passthrough.
+
+**Chord model (decided here, re-check in Slice 2):** follow MusicXML: each
+notehead stays its own `Note` (own id, so hit-testing, selection,
+transpose, ties and the playback cursor keep working per head unchanged),
+with a chord membership marker joining it to the previous note's onset.
+The cost is that every duration walk (`measureDurationWholes`,
+`validateMeasure`, the playback timeline, beaming, horizontal spacing)
+must count a chord once; Slice 2 enumerates and tests those sites. The
+alternative (one `Note` with `pitches[]`) was rejected because it breaks
+per-head identity everywhere M4/M5 already rely on it.
+
+**Real fixtures live in the repo.** Slice 1 copies the 7 SFCC
+`.musicxml` files (~6MB, PDFs excluded) into `src/test/fixtures/sfcc/`
+(private learning-tool use, per the board's copyright note in Divisi's
+memory), and a corpus test becomes every later slice's regression net.
+
+**Acceptance criteria (whole milestone):** each slice's criteria below
+pass; `npm run check`/`test`/`build` stay green; the corpus test's
+dropped-element count reaches zero for every modelled-or-passthrough
+element by Slice 3 and stays there.
+
+**Tasks — Claude:**
+- [ ] **Slice 1: Real-corpus harness + import fixes.** Copy the 7 SFCC
+      fixtures in; add a corpus test that imports and lays out each and
+      records, per file, source `<note>` count vs model note count, part
+      and staff counts, and a per-element-name tally of what was dropped
+      (the importer reports drops through a structured collector instead
+      of only `console.warn`). Fix the Brahms part-count bug (5 `<part>`
+      must yield 5 `Part`s), import `<rest measure="yes"/>` as a
+      whole-measure rest that fills its measure for any time signature
+      (layout centres it, the standard engraving), and make the "no
+      `<type>`" fallback derive from `<duration>` where it maps exactly.
+      Acceptance: corpus test green and its drop tally snapshotted; unit
+      tests for the part-count case, measure rests in 3/4, 2/2 and 6/8, and
+      the duration-derived fallback; no "using quarter" warnings left on
+      the corpus except genuinely unmappable durations, each listed.
+- [ ] **Slice 2: Chords.** Model per the chord decision above; layout
+      stacks noteheads on one stem (seconds displaced to the opposite side
+      of the stem, the standard rule), stem length spanning the chord,
+      stem direction from the chord's extremes (reusing
+      `stemDirectionForNotes`), stacked accidentals in non-colliding
+      columns, ledger lines for the outermost heads, augmentation dots per
+      head, ties per member; beaming treats a chord as one beam member.
+      Import reads `<chord/>`, export emits it; playback sounds every
+      member at the onset (the M3 timeline already handles simultaneous
+      onsets across voices); `transposeNote` on one member moves only that
+      head. Acceptance: unit tests for each listed layout rule (incl. a
+      second in up- and down-stem chords and a 3-accidental stack), every
+      duration-walking site counting a chord once, round-trip
+      `import(export(s))` with chords, and the corpus test's dropped
+      `<chord>` count at 0 with note counts matching source except
+      remaining grace notes. Demo: a chord showcase score plus Les Djinns
+      loadable in `npm run dev`.
+- [ ] **Slice 3: Lossless passthrough.** Unmodelled elements are kept
+      on import as opaque XML subtrees anchored where they appeared: on a
+      `Note` (e.g. `<notations>` children, `<lyric>`, `<notehead>`), on a
+      `Measure` at an onset (`<direction>`, `<print>`, `<harmony>`), or on
+      measure attributes (`<staff-details>`, `<transpose>`), and export
+      re-emits each at its anchor. Passthrough survives `Score.clone`
+      (undo) and edits: transposing a note keeps its payload; deleting a
+      note (Slice 7) drops its own payload only. Acceptance: for every
+      corpus file, `export(import(file))` has the same multiset of element
+      names as the source (modulo a documented normalization list, e.g.
+      `<divisions>` rescaling and whitespace), and the same after a
+      transpose + undo; unit tests for each anchor kind.
+- [ ] **Slice 4: C clefs.** `ClefType` gains `alto` (C3) and `tenor` (C4)
+      with their position tables and Bravura glyphs; import/export map
+      them; `setClefRange` (M5 Slice 5) accepts them so the board's
+      bass <-> tenor alternation is fixable with the existing tool.
+      Acceptance: unit tests for middle C's position under each clef,
+      key-signature placement under alto/tenor (the tenor-clef sharp
+      pattern differs from treble/bass), a mid-staff bass -> tenor ->
+      bass range, and the Les Djinns C3 warning gone from the corpus
+      test. Demo: switch a range to tenor clef and back.
+- [ ] **Slice 5: Articulations + fermatas.** Model staccato, staccatissimo,
+      accent, strong accent (marcato), tenuto and fermata on `Note`
+      (promoted out of passthrough); layout places each on the notehead
+      side opposite the stem (fermata always above the staff), stacking
+      outward and clearing ledger lines/slurs; playback shortens
+      staccato/staccatissimo and lengthens fermatas by a fixed factor.
+      Acceptance: placement unit tests for up/down stems and chords, the
+      corpus `<articulations>` children promoted (passthrough count for
+      them 0), round trip preserved.
+- [ ] **Slice 6: Dynamics + hairpins.** Model dynamic marks (pp..ff, sf,
+      fp and the like) and crescendo/diminuendo wedges as staff-anchored
+      directions at an onset (a wedge spans start onset to stop onset,
+      possibly across measures and system breaks); layout places them
+      below the staff (above for a vocal staff with lyrics, deferred to
+      Slice 9) without colliding with low notes; a wedge crossing a system
+      break draws as two open segments like a slur does (M2's slur
+      splitting); playback scales note velocity. Region-scoped redraw
+      rule: a wedge's ops belong to the measures it crosses, so a scoped
+      redraw of one of them repaints its segment (tested). Acceptance:
+      layout/collision unit tests, cross-system wedge test, corpus
+      `<dynamics>`/`<wedge>` promoted, round trip preserved.
+- [ ] **Slice 7: Correction ops (E2 parity).** Model edit ops, each
+      recording one `EditHistory` entry and returning the touched
+      measures for scoped redraw: `noteToRest` (E2's delete, keeps
+      duration so nothing shifts), `restToNote(pitch)`, `setDuration`
+      (value/dots; refuses or reports when the measure would overflow,
+      never silently shifts the next measure), `addChordMember` /
+      `removeChordMember`, and `setTie` exposed as an undoable op so a
+      tie lost at a page join can be re-added. Acceptance: unit tests per
+      op incl. undo restoring the exact prior model, measure-capacity
+      enforcement on `setDuration`, removing a chord's anchor promoting
+      the next member (the rough edge E2's spike hit). Demo: keyboard
+      shortcuts for each in `npm run dev`, fixing a mis-read rest in Les
+      Djinns' first page.
+- [ ] **Slice 8: Grace notes.** Model a grace note (with/without slash)
+      attached before its principal note, taking no measure time; layout
+      draws it cue-sized with its own small stem/flag/slash, spacing
+      before the principal; playback steals a fixed short time from the
+      principal. Acceptance: unit tests for zero duration contribution,
+      layout size/position, round trip; corpus `<grace>` notes now in the
+      model.
+- [ ] **Slice 9: Lyrics.** Model per-note lyric syllables (verse number,
+      syllabic begin/middle/end/single, extender) promoted from
+      passthrough; layout places verse lines below the staff, centres
+      syllables under noteheads, draws hyphens between split syllables
+      and extender lines, and widens measures so syllables don't collide.
+      Acceptance: unit tests for hyphen/extender drawing incl. across a
+      system break, collision-driven widening, round trip, plus a
+      hand-written SATB-with-lyrics fixture (the corpus has none).
+
+**Tasks — Human:**
+- [ ] Review this scoping (slice order, the chord model decision, the
+      passthrough approach) before or during Slice 1, the same convention
+      as M1-M5.
+- [ ] Get a real Audiveris output that contains lyrics, if Audiveris can
+      produce one from an SFCC PDF, so Slice 9 has a real fixture.
+
+**Not yet scoped (later M6 passes):** repeats/endings/codas with playback
+semantics (only Frost Myth has repeats); cross-page ties beyond Slice 7's
+manual re-tie (the page join itself is Divisi's E3/E10); divisi splits
+where the staff count changes between pages (Divisi's segmentation
+problem; the engine side is covered by chords); British rests beyond
+Slice 1 + Slice 7 (the misread itself is upstream OMR).
 
 ## Backlog
 
-- (none yet)
+- Full layout of Brahms "Der Abend" (337 measures, 6 staves) takes ~1.1s,
+  vs 11-67ms for the other SFCC scores; profile once chords land (M6
+  Slice 2), since first paint on open is the user-visible cost.
+-  (compressed MusicXML) import: Divisi's Mozart Lacrymosa fixture
+  is `.mxl`; the importer only takes an XML string today.
 
 ## Log
 
@@ -2337,3 +2518,13 @@ divisi splits). Unscoped.
   strip height varies with each measure's region; the demo picks its
   system-break boundary at toggle time, so after a resize it may no longer
   sit on a break until re-toggled.
+- 2026-10-14: M6 (real-world edge cases) first pass scoped, with M2-M5
+  still `[?]` (human chose to move on). Ran all 7 SFCC fixtures through
+  import + layout: none throw, but chords (22% of notes in Brahms) are
+  dropped whole, and every unmodelled element (dynamics, hairpins,
+  articulations) would be lost on save. Human chose "model the common
+  things, pass the rest through". Scoped 9 slices: corpus harness + import
+  fixes, chords, lossless passthrough, C clefs, articulations/fermatas,
+  dynamics/hairpins, E2 correction ops, grace notes, lyrics. Repeats,
+  cross-page ties and staff-count divisi splits stay unscoped for a later
+  pass. Brahms layout perf and `.mxl` import went to Backlog.
