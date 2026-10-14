@@ -2259,3 +2259,19 @@ divisi splits). Unscoped.
   passed (user, 2026-10-14). Synth timbre (bare triangle oscillator, M3
   Slice 4) noted as unpleasant during that check; user chose not to track
   it.
+- 2026-10-14: Fixed two playback bugs found during Slice 3's manual demo
+  check (both pre-existing, neither caused by Slice 3). (1) Engine bug in
+  `computePlaybackTimeline` (M3): each `(staff, voice)` kept its own cursor
+  that only advanced over that voice's own notes, so a voice absent from
+  earlier measures started at time 0 wherever it first appeared.
+  `createFullDemoScore`'s voice 2 (measures 23-26 only) played on top of
+  measure 1, and the playback cursor bounced between the top and bottom of
+  the score. Now every voice re-anchors to shared per-measure start times (a
+  measure lasts as long as its longest voice on any staff, or its time
+  signature's capacity if empty); regression test added. (2) Demo bug in
+  `followPlaybackCursor` (M4 Slice 4): `canvas.offsetTop` was measured from
+  the body because `#score-scroll` was not positioned, and a smooth scroll
+  restarted on every onset; the wrapper is now `position: relative` and it
+  scrolls only when the measure is off screen. Verified in headless Chrome:
+  the score box now scrolls once per system, top to bottom. 379 tests pass.
+

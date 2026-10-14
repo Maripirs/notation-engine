@@ -124,6 +124,33 @@ describe('computePlaybackTimeline', () => {
 		expect(byPitch('C5')!.startSeconds).toBeCloseTo(0.75, 10);
 	});
 
+	it('starts a voice that first appears in a later measure at that measure, not at time 0', () => {
+		// Regression: each voice used to keep its own cursor that only advanced
+		// over that voice's own notes, so a voice absent from measures 0-1 began
+		// counting from 0 in measure 2 and sounded on top of measure 0. That is
+		// exactly `createFullDemoScore`'s shape (voice 2 only in its last few
+		// measures), where it made the demo's playback cursor, and its
+		// auto-scroll, bounce between the top and the bottom of the score.
+		const score = new Score({ tempoBpm: 60 });
+		const quarter = (step: 'C' | 'E' | 'G', voice: number) => ({
+			pitch: { step, alter: 0 as const, octave: 4 },
+			value: 'quarter' as const,
+			voice
+		});
+		for (let m = 0; m < 3; m++) {
+			const measure = score.appendMeasure();
+			for (let beat = 0; beat < 4; beat++) score.appendNote(measure, quarter('C', 1));
+			if (m === 2) for (let beat = 0; beat < 4; beat++) score.appendNote(measure, quarter('E', 2));
+		}
+
+		const events = computePlaybackTimeline(score);
+		const voice2Starts = events
+			.filter((event) => formatPitch(event.pitch) === 'E4')
+			.map((event) => event.startSeconds);
+		// 60 bpm quarter = 1s; measure 2 starts at 2 bars * 4 beats = 8s.
+		expect(voice2Starts).toEqual([8, 9, 10, 11]);
+	});
+
 	it('lands every staff of an SATB score on the same shared onsets', () => {
 		// createSatbBracketShowcaseScore: 4 staves, each one voice, each 4 quarter
 		// notes per measure, rhythmically identical across staves. Every staff's

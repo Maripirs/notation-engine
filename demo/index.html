@@ -47,6 +47,9 @@
 			 * this wrapper existed; this element only adds the scrolling behaviour.
 			 */
 			#score-scroll {
+				/* The canvas's offsetParent, so main.ts's followPlaybackCursor can
+				   read canvas.offsetTop relative to this wrapper. */
+				position: relative;
 				max-height: 22rem;
 				overflow-y: auto;
 			}

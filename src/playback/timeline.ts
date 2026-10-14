@@ -1,4 +1,4 @@
-import type { NoteId, Pitch, Score, Staff } from '../model/index.js';
+import { measureCapacityWholes, type NoteId, type Pitch, type Score, type Staff } from '../model/index.js';
 import { durationToSeconds } from './tempo.js';
 
 /**
@@ -32,6 +32,38 @@ export interface OnsetEvent {
  * insertion order, so "first-seen order" falls out for free rather than
  * needing a second pass to sort.
  */
+/**
+ * Where each measure index starts, in whole notes from the top of the score.
+ *
+ * A measure lasts as long as its longest voice on any staff (so a pickup or
+ * an under-full measure is not padded to the time signature), falling back to
+ * the time signature's capacity when no staff has any notes there. Measure
+ * starts are shared by every staff and voice, which is what keeps a voice
+ * that is silent for several measures (has no notes at all there, not even
+ * rests) from drifting: it re-anchors to the right bar line each measure
+ * instead of resuming from wherever its own last note left off.
+ */
+function measureStartsWholes(score: Score): number[] {
+	const measureCount = Math.max(0, ...score.staves.map((staff) => staff.measures.length));
+	const starts: number[] = [];
+	let cursor = 0;
+	for (let index = 0; index < measureCount; index++) {
+		starts.push(cursor);
+		let longest = 0;
+		for (const staff of score.staves) {
+			const measure = staff.measures[index];
+			if (!measure) continue;
+			const perVoice = new Map<number, number>();
+			for (const note of measure.notes) {
+				perVoice.set(note.voice, (perVoice.get(note.voice) ?? 0) + note.durationWholes);
+			}
+			longest = Math.max(longest, ...perVoice.values());
+		}
+		cursor += longest > 0 ? longest : measureCapacityWholes(score.timeAt(index));
+	}
+	return starts;
+}
+
 function voicesInStaff(staff: Staff): number[] {
 	const voices = new Set<number>();
 	for (const measure of staff.measures) {
@@ -95,6 +127,7 @@ function voicesInStaff(staff: Staff): number[] {
 export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 	const bpm = score.tempoBpm;
 	const events: OnsetEvent[] = [];
+	const measureStarts = measureStartsWholes(score);
 
 	for (const staff of score.staves) {
 		for (const voice of voicesInStaff(staff)) {
@@ -106,6 +139,7 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 			let openIndex: number | null = null;
 
 			for (const measure of staff.measures) {
+				cursorWholes = measureStarts[measure.index]!;
 				for (const note of measure.notes) {
 					if (note.voice !== voice) continue;
 

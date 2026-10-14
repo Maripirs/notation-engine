@@ -481,14 +481,26 @@ let onsetFlushQueued = false;
  * per note to hand to `Element.scrollIntoView`, so this computes a manual
  * `scrollTo` instead: `canvas.offsetTop` accounts for the canvas's own
  * position within the wrapper (0 today, since the canvas is the wrapper's
- * only child, but read rather than assumed in case that ever changes), and
- * centring on the region's vertical midpoint rather than snapping to its top
- * edge keeps a system from sitting flush against the wrapper's rim.
+ * only child, but read rather than assumed in case that ever changes). That
+ * only holds because `#score-scroll` is `position: relative` in index.html,
+ * which makes it the canvas's `offsetParent`; without it `offsetTop` is
+ * measured from the page body and every target overshoots by the height of
+ * the prose above the score. Centring on the region's vertical midpoint
+ * rather than snapping to its top edge keeps a system from sitting flush
+ * against the wrapper's rim.
+ *
+ * It scrolls only when the measure is not already fully visible. Onsets fire
+ * several times a second, and restarting a smooth scroll on every one (even
+ * toward the same target) makes successive animations cancel each other and
+ * the view visibly judder; in practice this now scrolls once per system.
  */
 function followPlaybackCursor(noteId: NoteId): void {
 	const region = regionForNote(layout, noteId);
 	if (!region) return;
-	const targetTop = canvas.offsetTop + region.y + region.height / 2 - scoreScroll.clientHeight / 2;
+	const top = canvas.offsetTop + region.y;
+	const viewTop = scoreScroll.scrollTop;
+	if (top >= viewTop && top + region.height <= viewTop + scoreScroll.clientHeight) return;
+	const targetTop = top + region.height / 2 - scoreScroll.clientHeight / 2;
 	scoreScroll.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
 }
 
