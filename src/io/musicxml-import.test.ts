@@ -627,8 +627,9 @@ describe('importMusicXml: drop and passthrough diagnostics (M6 Slices 1, 3)', ()
 		expect(sorted(diagnostics.passthrough)).toEqual({
 			// The tempo direction is exactly export's own shape in the first
 			// measure, so it is `Score.tempoBpm`, not passthrough.
-			// (Its staccato and fermata are modelled since M6 Slice 5.)
-			dynamics: 1,
+			// (Its staccato and fermata are modelled since M6 Slice 5, the
+			// `<p/>` since Slice 6; its direction's `<sound>` stays payload.
+			// The hairpin start has no stop to pair with, so it stays too.)
 			ending: 1,
 			florble: 1,
 			grace: 1,

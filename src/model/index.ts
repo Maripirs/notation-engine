@@ -27,8 +27,19 @@ export type {
 	Slur,
 	SlurSpec,
 	TimeSignature,
-	TupletRatio
+	TupletRatio,
+	WedgeSpec
 } from './score.js';
+export type {
+	DirectionSource,
+	DynamicKind,
+	DynamicMark,
+	Placement,
+	Wedge,
+	WedgeEnd,
+	WedgeKind
+} from './directions.js';
+export { DYNAMIC_KINDS, NO_DYNAMICS, positionBefore, sortDynamics } from './directions.js';
 export { assertScoresEquivalent } from './score-equivalence.js';
 export type { Fraction, MeasurePassthrough, OpaqueElement } from './passthrough.js';
 export { NO_PASSTHROUGH, opaqueElementKey } from './passthrough.js';

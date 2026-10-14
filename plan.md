@@ -1017,7 +1017,7 @@ element by Slice 3 and stays there.
       Acceptance: placement unit tests for up/down stems and chords, the
       corpus `<articulations>` children promoted (passthrough count for
       them 0), round trip preserved.
-- [ ] **Slice 6: Dynamics + hairpins.** Model dynamic marks (pp..ff, sf,
+- [x] **Slice 6: Dynamics + hairpins.** Model dynamic marks (pp..ff, sf,
       fp and the like) and crescendo/diminuendo wedges as staff-anchored
       directions at an onset (a wedge spans start onset to stop onset,
       possibly across measures and system breaks); layout places them
@@ -2896,3 +2896,123 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   tied-into segment shortens only that segment, leaving a gap mid-tie;
   fermata over a barline (`<barline><fermata>`) stays passthrough; no edit
   op adds or removes a mark yet.
+- 2026-10-14: M6 Slice 6 (dynamics + hairpins) done, via subagent.
+  Model (`src/model/directions.ts`): `DynamicKind` (MusicXML's `<dynamics>`
+  child names: p/f ladders pppppp..ffffff, mp, mf, sf, sfz, sffz, sfp, sfpp,
+  sfzp, fp, fz, rf, rfz, pf, n; every one has a Bravura combined glyph),
+  `DynamicMark { kind, onset, placement, voice, source }` on
+  `Measure.dynamics` (sorted, immutable, the display staff's measure), and
+  `Wedge { kind, staffIndex, placement, start, stop }` on `Score.wedges`, a
+  score-level span list like `slurs`, each end a `{ measureIndex, onset,
+  voice, source }` position (not note ids: MusicXML anchors a hairpin to a
+  time, and stops often fall at a measure's end). `placement` is `null` when
+  unstated (drawn below). `voice` is only the stream export writes in.
+  Lossless round trip via `DirectionSource { element, slot, divisions,
+  markAttrs }`: the source `<direction>` minus the promoted
+  `<direction-type>`s (and minus `placement` when a dynamic or hairpin start
+  owns it), the slot each came from, and the mark element's unread
+  attributes (a wedge's `spread`). Marks read from one `<direction>` share
+  one `element` object (identity is the grouping, kept by `clone`), so a
+  dynamic + hairpin direction, or Audiveris' zero-length start+stop
+  direction, is written back as one. `Score.addDynamic`/`addWedge`,
+  `buildScore` (`MeasureBuildSpec.dynamics`, a 4th `wedges: WedgeSpec[]`
+  argument), `clone` and `assertScoresEquivalent` (multisets of kind, onsets,
+  placement, source key; `voice` deliberately not compared) cover it.
+  Import: a `<direction>` with a promotable `<direction-type>` (exactly one
+  child: `<dynamics>` with one empty modelled kind, or `<wedge>` of type
+  crescendo/diminuendo/stop) is anchored by `MeasureAnchors` as before, and
+  at the end of the part `promoteDirections` reads onset/stream/divisions
+  off its passthrough entry, removes it, and builds marks. A dynamic goes on
+  the staff its `<staff>` names (piano directions are often written in the
+  other staff's stream). Hairpins pair by `number` per part in time order
+  (measure, onset, document order); an unpaired end keeps its whole
+  direction (and any dynamic in it, propagated to its partner's direction)
+  as passthrough. A direction holding only the mark (plus its `<staff>` in a
+  multi-staff part) gets `source: null`, so built scores round-trip to the
+  same model. Left as passthrough: `<other-dynamics>`, two marks in one
+  `<dynamics>`, wedge `continue`, and `<note><notations><dynamics>` (none in
+  the corpus). Export: `directionAnchorsForPart` turns marks into synthetic
+  positional anchors (the clef-change mechanism), rebuilding source
+  directions slot by slot or writing a fresh `<direction>`; wedge `number`s
+  are allocated afresh per part, lowest free among hairpins whose closed
+  spans touch, so re-import pairs them regardless of same-onset order;
+  anchor divisions fold into `<divisions>`.
+  Corpus: `dynamics` gone from every passthrough tally (all 473 source
+  `<dynamics>` promoted: Brahms 153, Coleridge-Taylor 31, Faure 119,
+  Gardiner 55, Frost Myth 73, Elgar 38, Fay's Song 4); `wedge` passthrough 0
+  except Brahms 7 and Frost Myth 4, all genuine source mismatches left as
+  passthrough rather than guessed (a start numbered 3 whose stop says 4, two
+  Brahms Part 1 diminuendos whose stops Audiveris wrote into Part 2, one
+  start with no stop). Wedges modelled: Brahms 236, Coleridge-Taylor 90,
+  Faure 70, Gardiner 81, Frost Myth 59, Elgar 54, Fay's Song 79. The
+  snapshot gains per-file `dynamics` (by kind) and `wedges` counts, and the
+  test asserts source `<dynamics>` = model dynamics and source `<wedge>` = 2
+  x wedges + passthrough wedges. Lossless round trip, re-import equivalence,
+  byte-identical second export and transpose+undo all green. Snapshot
+  updated deliberately (only those lines).
+  Layout: a separate pass per staff per system (`layoutDirectionRow`), run
+  in `layoutScore` after a row's measures exist and redone for one measure
+  in `relayoutMeasure` from cached neighbours. `LaidOutMeasure.inkExtent`
+  (new, optional) records each measure's ink extent minus barlines (a
+  shared multi-staff barline reaches into the staff gap) and minus
+  directions. Each side of a system row gets one baseline
+  (`directionBaselines`): clearance 0.6 plus Bravura's tallest ascent
+  (1.776) below the lowest ink of every measure carrying a mark on that
+  side, mirrored above with the deepest descent; so a system's dynamics and
+  hairpins line up and clear low notes, stems, ledgers, marks and curves of
+  the measures they sit in (a per-measure skyline, not per x). A dynamic is
+  centred on the notehead/rest at its onset (interpolated by time between
+  onsets, towards the barline after the last), clamped inside its measure's
+  band. A hairpin is two straight lines (degenerate `curve` ops, Bravura
+  `hairpinThickness`) from its start x (notehead left, or past a dynamic at
+  that onset) to its stop x (before the notehead there, before a dynamic at
+  that onset or the next downbeat, or the barline), opening 1.1 spaces,
+  centred half an x-height above the baseline. It is cut at every barline,
+  each measure owning its piece (so `measureRegion` covers it). Across a
+  system break: one segment per system, the opening shared evenly between
+  segments, a continuation starting just left of the new system's first
+  note; a stop on the downbeat of a measure that opens a new system ends at
+  the previous barline (no stub). Hairpins shorter than 1 space (OMR's
+  zero-length ones) are not drawn. `relayoutMeasure` returns `null` if the
+  edit moved the row's baseline (tolerance 0.001px), since every other
+  marked measure would be stale. Bravura `dynamic*` combined glyphs and
+  `hairpinThickness` added to the glyph script and regenerated (additions
+  only).
+  Playback (`timeline.ts`, documented `DYNAMIC_LEVELS`): ladder pppppp 0.1
+  ... pp 0.35, p 0.5, mp 0.62, mf 0.75, f 0.88, ff 1.0, fff 1.1 ... ffffff
+  1.4, held per staff until the next dynamic; music before a staff's first
+  dynamic keeps level 1 (scores without dynamics sound unchanged). Accent
+  kinds (sf, sfz, fz, rf, rfz 1.0; sffz 1.1) affect only attacks at their
+  onset; fp/sfp/sfpp/sfzp attack then hold p/p/pp/p (`DYNAMIC_ACCENTS`); pf
+  one step up; n `NIENTE_LEVEL` 0.05. A hairpin ramps linearly in written
+  time from the level at its start to the next plain dynamic at/after its
+  stop (before the next hairpin starts), else one ladder step, held after
+  the stop. Multiplied with the Slice 5 accent velocity.
+  Demo: `createDynamicsShowcaseScore` (8 measures: p < f, a diminuendo that
+  crosses a system break in the demo, pp under a ledger A3 lowering the
+  line, sfz/fp/rfz/sffz, mp and a crescendo above, a 3-measure pp < ff)
+  appended to `createFullDemoScore` (`appendMeasures` now copies dynamics
+  and offsets wedges) and exported. Verified headlessly in system Chrome
+  (demo, no page errors besides the pre-existing 404) and offline at
+  staff space 11-14 via node-canvas: Brahms m19-26 and Fay's Song m9-16.
+  Tests: 551 -> 582 (layout 12 in new `src/layout/direction-layout.test.ts`,
+  io 8 in new `src/io/directions.test.ts`, model 4 in new
+  `src/model/directions.test.ts`, playback 6, renderer region 1; the
+  diagnostics test now expects the paired `<p/>` promoted and the unpaired
+  wedge still passthrough); `check`/`build` green. Bench scoped edit
+  0.339/0.288/0.283/0.336 ms at 4/16/64/124 measures, full redraw 30.8 ms at
+  124, i.e. unchanged (the pass is skipped for rows with no marks).
+  Noticed, not fixed: `<offset>` is kept but not used for layout; a
+  hairpin's `spread` is kept for export but layout uses a fixed opening;
+  staff spacing is still fixed (`SPACING.staffGap`), so in close choral
+  systems a staff's below-hairpins and the next staff's above-hairpins can
+  meet or touch the neighbour's notes (visible in Fay's Song), and a
+  direction reaching past the half gap makes the two staves' regions
+  overlap by a few pixels (the same pre-existing class as deep ledger
+  notes); dynamics and hairpins do not avoid each other horizontally beyond
+  the start/stop rule (a hairpin spanning a mid-hairpin dynamic runs through
+  it), nor lyrics (Slice 9, which should move vocal dynamics above); a
+  neighbour's hairpin piece can go stale after a scoped edit that shifts
+  note x without changing width (the slur precedent); per-staff playback
+  levels ignore a grand staff's shared dynamics; no edit op adds or removes
+  a dynamic or hairpin yet.

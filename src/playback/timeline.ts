@@ -1,9 +1,11 @@
 import {
+	DYNAMIC_KINDS,
 	eventArticulations,
 	eventFermata,
 	measureCapacityWholes,
 	noteEvents,
 	type Articulation,
+	type DynamicKind,
 	type NoteId,
 	type Pitch,
 	type Score,
@@ -31,10 +33,12 @@ export interface OnsetEvent {
 	readonly startSeconds: number;
 	readonly durationSeconds: number;
 	/**
-	 * Loudness relative to an ordinary note (M6 Slice 5): present only for an
-	 * accented attack (`ACCENT_VELOCITY`, `MARCATO_VELOCITY`), absent meaning
-	 * 1. `playOnsetEvent` scales its peak gain by it; the synth has no other
-	 * notion of velocity, so this is the whole of it.
+	 * Loudness relative to an ordinary note (M6 Slice 5): present only when
+	 * it differs from 1, i.e. for an accented attack (`ACCENT_VELOCITY`,
+	 * `MARCATO_VELOCITY`) and, since M6 Slice 6, for a note under a dynamic or
+	 * hairpin (`DYNAMIC_LEVELS`, multiplied with the accent). `playOnsetEvent`
+	 * scales its peak gain by it; the synth has no other notion of velocity,
+	 * so this is the whole of it.
 	 */
 	readonly velocity?: number;
 }
@@ -69,6 +73,153 @@ export const DETACHED_LEGATO_FRACTION = 0.75;
 export const ACCENT_VELOCITY = 1.3;
 export const MARCATO_VELOCITY = 1.5;
 export const FERMATA_FACTOR = 2;
+
+/**
+ * How dynamics and hairpins change playback (M6 Slice 6): a loudness level
+ * per staff, multiplied into each attack's `velocity` (with any accent's).
+ * Deliberately simple and fixed:
+ *
+ *  - A plain dynamic sets the staff's level from `DYNAMIC_LEVELS` (pp 0.35,
+ *    p 0.5, mp 0.62, mf 0.75, f 0.88, ff 1.0, ...), held until the staff's
+ *    next dynamic. Music before a staff's first dynamic keeps level 1, the
+ *    synth's own full level, so a score without dynamics sounds as before.
+ *  - An accent dynamic (sf, sfz, sffz, fz, rf, rfz) is a momentary level for
+ *    the attacks at its onset only (`DYNAMIC_ACCENTS`), after which the held
+ *    level resumes. The combinations play both: fp/sfp/sfpp/sfzp attack at
+ *    the first level and then hold the second.
+ *  - `pf` (più forte) holds one ladder step above the level in force; `n`
+ *    (niente) holds `NIENTE_LEVEL`.
+ *  - A hairpin interpolates the held level linearly in written time from the
+ *    level in force at its start to its target: the staff's next plain
+ *    dynamic at or after its stop and before any later hairpin starts, else
+ *    one ladder step up (crescendo) or down (diminuendo) from the start
+ *    level. Past the stop the target is held until the next dynamic.
+ *
+ * Levels are per staff (all its voices), with no carry-over between staves.
+ */
+export const DYNAMIC_LEVELS: Readonly<Partial<Record<DynamicKind, number>>> = {
+	pppppp: 0.1,
+	ppppp: 0.14,
+	pppp: 0.18,
+	ppp: 0.25,
+	pp: 0.35,
+	p: 0.5,
+	mp: 0.62,
+	mf: 0.75,
+	f: 0.88,
+	ff: 1,
+	fff: 1.1,
+	ffff: 1.2,
+	fffff: 1.3,
+	ffffff: 1.4
+};
+/** Accent and combination dynamics: the attack level at their own onset,
+ *  and the level held after (`undefined`: the previous level resumes). */
+export const DYNAMIC_ACCENTS: Readonly<Partial<Record<DynamicKind, { attack: number; hold?: DynamicKind }>>> = {
+	sf: { attack: 1 },
+	sfz: { attack: 1 },
+	fz: { attack: 1 },
+	rf: { attack: 1 },
+	rfz: { attack: 1 },
+	sffz: { attack: 1.1 },
+	fp: { attack: 0.88, hold: 'p' },
+	sfp: { attack: 1, hold: 'p' },
+	sfpp: { attack: 1, hold: 'pp' },
+	sfzp: { attack: 1, hold: 'p' }
+};
+export const NIENTE_LEVEL = 0.05;
+
+/** The plain ladder, softest first, for one-step moves. */
+const LADDER: readonly DynamicKind[] = DYNAMIC_KINDS.filter((kind) => DYNAMIC_LEVELS[kind] !== undefined);
+
+/** The ladder level one step from `level` (`dir` +1 louder, -1 softer). */
+function stepLevel(level: number, dir: 1 | -1): number {
+	const levels = LADDER.map((kind) => DYNAMIC_LEVELS[kind]!);
+	if (dir > 0) return levels.find((l) => l > level + 1e-9) ?? level;
+	return [...levels].reverse().find((l) => l < level - 1e-9) ?? level;
+}
+
+/**
+ * One staff's loudness over written time (wholes from the top of the score):
+ * `at(x)` is the level for an attack at `x`. Built once per staff from its
+ * dynamics and hairpins; see `DYNAMIC_LEVELS` for the rules.
+ */
+function staffDynamics(
+	score: Score,
+	staffIndex: number,
+	measureStarts: readonly number[]
+): ((x: number) => number) | null {
+	const staff = score.staves[staffIndex]!;
+	const marks: { x: number; kind: DynamicKind }[] = [];
+	for (const measure of staff.measures) {
+		for (const mark of measure.dynamics) marks.push({ x: measureStarts[measure.index]! + mark.onset, kind: mark.kind });
+	}
+	const wedges = score.wedges
+		.filter((w) => w.staffIndex === staffIndex)
+		.map((w) => ({
+			kind: w.kind,
+			start: measureStarts[w.start.measureIndex]! + w.start.onset,
+			stop: measureStarts[w.stop.measureIndex]! + w.stop.onset
+		}))
+		.sort((a, b) => a.start - b.start);
+	if (marks.length === 0 && wedges.length === 0) return null;
+	marks.sort((a, b) => a.x - b.x);
+
+	// Held-level breakpoints: (x, level) steps, then hairpin ramps over them.
+	const steps: { x: number; level: number }[] = [];
+	const accents = new Map<number, number>();
+	let level = 1;
+	for (const { x, kind } of marks) {
+		const plain = DYNAMIC_LEVELS[kind];
+		const accent = DYNAMIC_ACCENTS[kind];
+		if (plain !== undefined) level = plain;
+		else if (accent) {
+			accents.set(Math.round(x * 1e9), accent.attack);
+			if (accent.hold) level = DYNAMIC_LEVELS[accent.hold]!;
+		} else if (kind === 'pf') level = stepLevel(level, 1);
+		else if (kind === 'n') level = NIENTE_LEVEL;
+		steps.push({ x, level });
+	}
+	// The held level in force at x, before any hairpin.
+	const heldAt = (x: number): number => {
+		let found = 1;
+		for (const step of steps) {
+			if (step.x > x + 1e-9) break;
+			found = step.level;
+		}
+		return found;
+	};
+	const ramps = wedges.map((wedge, i) => {
+		const from = heldAt(wedge.start);
+		const nextStart = wedges[i + 1]?.start ?? Number.POSITIVE_INFINITY;
+		const target = marks.find(
+			(m) => m.x >= wedge.stop - 1e-9 && m.x < nextStart - 1e-9 && DYNAMIC_LEVELS[m.kind] !== undefined
+		);
+		const to = target ? DYNAMIC_LEVELS[target.kind]! : stepLevel(from, wedge.kind === 'crescendo' ? 1 : -1);
+		return { ...wedge, from, to };
+	});
+	return (x) => {
+		const accent = accents.get(Math.round(x * 1e9));
+		if (accent !== undefined) return accent;
+		// Whatever was set last at or before x: a dynamic, or a hairpin start
+		// (which wins a tie with a dynamic at its own onset, the `p<` shape).
+		let lastStep: { x: number; level: number } | undefined;
+		for (const step of steps) {
+			if (step.x > x + 1e-9) break;
+			lastStep = step;
+		}
+		let lastRamp: (typeof ramps)[number] | undefined;
+		for (const ramp of ramps) {
+			if (ramp.start > x + 1e-9) break;
+			lastRamp = ramp;
+		}
+		if (lastRamp && (!lastStep || lastStep.x <= lastRamp.start + 1e-9)) {
+			if (x >= lastRamp.stop) return lastRamp.to;
+			return lastRamp.from + ((lastRamp.to - lastRamp.from) * (x - lastRamp.start)) / (lastRamp.stop - lastRamp.start);
+		}
+		return lastStep?.level ?? 1;
+	};
+}
 
 /** The fraction of its written length an event with these marks sounds for. */
 function soundingFraction(marks: readonly Articulation[]): number {
@@ -245,6 +396,8 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 	const seconds = (wholes: number): number => durationToSeconds(wholes, bpm);
 
 	for (const staff of score.staves) {
+		// The staff's dynamics (M6 Slice 6), or `null` for none.
+		const dynamicLevel = staffDynamics(score, staff.index, measureStarts);
 		for (const voice of voicesInStaff(staff)) {
 			let cursorWholes = 0;
 			// The still-accumulating events tie chains are extending, keyed by
@@ -269,7 +422,7 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 					const marks = eventArticulations(chord);
 					const startSeconds = seconds(warp(cursorWholes));
 					const spanSeconds = seconds(warp(cursorWholes + anchor.durationWholes)) - startSeconds;
-					const velocity = attackVelocity(marks);
+					const velocity = attackVelocity(marks) * (dynamicLevel ? dynamicLevel(cursorWholes) : 1);
 
 					for (const note of chord) {
 						if (note.isRest) continue;

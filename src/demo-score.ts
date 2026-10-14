@@ -952,6 +952,99 @@ export function createArticulationShowcaseScore(): Score {
 	);
 }
 
+/**
+ * M6 Slice 6's dynamics and hairpins showcase, eight measures in C major 4/4:
+ *
+ * 1. `p` under a low note and a crescendo from it to an `f`: the hairpin
+ *    starts after the `p` and stops before the `f`.
+ * 2. The `f`, then a diminuendo across the barline into measure 3 (in the
+ *    demo's systems this barline is also a system break: the diminuendo's
+ *    first segment ends half closed and the continuation opens the next
+ *    system at that same width).
+ * 3. `pp` at the diminuendo's end, under a low A3 with a ledger line: the
+ *    whole system's dynamics line drops to clear it.
+ * 4. Accent and combination dynamics: `sfz`, `fp`, `rfz`, `sffz`.
+ * 5. Above the staff (`placement="above"`, how choral scores mark a vocal
+ *    staff): `mp` and a crescendo above.
+ * 6-8. A long crescendo from `pp` to `ff` crossing two barlines, drawn as
+ *    one straight wedge out of three per-measure pieces.
+ */
+export function createDynamicsShowcaseScore(): Score {
+	return buildScore(
+		[
+			{
+				keyFifths: 0,
+				notes: [
+					['E4', 'quarter'],
+					['C4', 'quarter'],
+					['D4', 'quarter'],
+					['E4', 'quarter']
+				],
+				dynamics: [{ kind: 'p' }]
+			},
+			{
+				notes: [
+					['G4', 'half'],
+					['A4', 'quarter'],
+					['B4', 'quarter']
+				],
+				dynamics: [{ kind: 'f' }]
+			},
+			{
+				notes: [
+					['A3', 'half'],
+					['C4', 'half']
+				],
+				dynamics: [{ kind: 'pp', onset: 0.5 }]
+			},
+			{
+				notes: [
+					['C5', 'quarter'],
+					['D5', 'quarter'],
+					['E5', 'quarter'],
+					['F5', 'quarter']
+				],
+				dynamics: [
+					{ kind: 'sfz' },
+					{ kind: 'fp', onset: 0.25 },
+					{ kind: 'rfz', onset: 0.5 },
+					{ kind: 'sffz', onset: 0.75 }
+				]
+			},
+			{
+				notes: [
+					['G4', 'quarter'],
+					['A4', 'quarter'],
+					['B4', 'half']
+				],
+				dynamics: [{ kind: 'mp', placement: 'above' }]
+			},
+			{
+				notes: [
+					['C5', 'half'],
+					['B4', 'half']
+				],
+				dynamics: [{ kind: 'pp' }]
+			},
+			[
+				['A4', 'quarter'],
+				['G4', 'quarter'],
+				['F4', 'quarter'],
+				['E4', 'quarter']
+			],
+			{ notes: [['D4', 'whole']], dynamics: [{ kind: 'ff' }] }
+		],
+		{ keyFifths: 0, time: { beats: 4, beatType: 4 } },
+		[],
+		[
+			{ kind: 'crescendo', start: [0, 0.25], stop: [1, 0] },
+			{ kind: 'diminuendo', start: [1, 0.5], stop: [2, 0.5] },
+			{ kind: 'crescendo', start: [4, 0.25], stop: [4, 0.75], placement: 'above' },
+			{ kind: 'crescendo', start: [5, 0], stop: [7, 0] }
+		]
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
@@ -967,8 +1060,12 @@ export function createArticulationShowcaseScore(): Score {
  * point at. */
 function appendMeasures(score: Score, source: Score): void {
 	const copiedIdOf = new Map<NoteId, NoteId>();
+	// Dynamics and hairpins (M6 Slice 6) are positional, so they only need
+	// their measure indices moved by where the source lands.
+	const measureOffset = score.measures.length;
 	for (const measure of source.measures) {
 		const copy = score.appendMeasure();
+		copy.dynamics = measure.dynamics;
 		// A per-measure key/time change is already an absolute value (not a
 		// delta from the source score's own initial one), so it carries over
 		// unchanged regardless of where this showcase lands in the combined
@@ -1010,6 +1107,13 @@ function appendMeasures(score: Score, source: Score): void {
 	for (const slur of source.slurs) {
 		score.addSlur(copiedIdOf.get(slur.startNoteId)!, copiedIdOf.get(slur.endNoteId)!);
 	}
+	for (const wedge of source.wedges) {
+		score.wedges.push({
+			...wedge,
+			start: { ...wedge.start, measureIndex: wedge.start.measureIndex + measureOffset },
+			stop: { ...wedge.stop, measureIndex: wedge.stop.measureIndex + measureOffset }
+		});
+	}
 }
 
 /**
@@ -1019,7 +1123,8 @@ function appendMeasures(score: Score, source: Score): void {
  * barline showcase, M2 Slice 1's two-voice showcase and M2 Slice 2's voice-
  * collision showcase, so a human can see all eight render without disturbing
  * `createDemoScore`'s frozen shape (see the comment on it above). M6 Slice 2's
- * chord showcase follows them, then M6 Slice 5's articulation showcase, each
+ * chord showcase follows them, then M6 Slice 5's articulation showcase and M6
+ * Slice 6's dynamics showcase, each
  * last when added so every earlier measure keeps the index it always had.
  */
 export function createFullDemoScore(): Score {
@@ -1034,5 +1139,6 @@ export function createFullDemoScore(): Score {
 	appendMeasures(score, createVoiceClashShowcaseScore());
 	appendMeasures(score, createChordShowcaseScore());
 	appendMeasures(score, createArticulationShowcaseScore());
+	appendMeasures(score, createDynamicsShowcaseScore());
 	return score;
 }

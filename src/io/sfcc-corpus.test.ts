@@ -9,6 +9,9 @@
 // the passthrough tally, and an accidental regression shows up the same way
 // rather than silently.
 //
+// Since M6 Slice 6 the snapshot also tallies the dynamics (by kind) and
+// hairpins promoted into the model.
+//
 // Since M6 Slice 3 it is also the lossless-save acceptance test: `export(
 // import(file))` must carry the same multiset of element names as the file,
 // modulo the normalizations listed in `NORMALIZED` (and the few counted
@@ -166,6 +169,22 @@ describe('SFCC corpus: import + layout', () => {
 			expect(passthrough.articulations).toBeUndefined();
 			expect(passthrough.fermata).toBeUndefined();
 
+			// Dynamics and hairpins promoted into the model (M6 Slice 6). Every
+			// source `<dynamics>` is in the corpus's one promotable shape, so all
+			// of them land in the model. Every `<wedge>` is a hairpin end:
+			// either half of a modelled `Wedge`, or one the source never paired
+			// (a start whose stop has another `number`, or sits in another
+			// part: OMR slips), which stays passthrough rather than guessing.
+			const dynamicKinds: Record<string, number> = {};
+			for (const staff of score.staves) {
+				for (const measure of staff.measures) {
+					for (const mark of measure.dynamics) dynamicKinds[mark.kind] = (dynamicKinds[mark.kind] ?? 0) + 1;
+				}
+			}
+			expect(Object.values(dynamicKinds).reduce((a, b) => a + b, 0)).toBe(descendants(source, 'dynamics').length);
+			expect(passthrough.dynamics).toBeUndefined();
+			expect(score.wedges.length * 2 + (passthrough.wedge ?? 0)).toBe(descendants(source, 'wedge').length);
+
 			expect({
 				sourceNotes,
 				modelNotes,
@@ -181,6 +200,8 @@ describe('SFCC corpus: import + layout', () => {
 				dropped,
 				passthrough,
 				marks: sorted(new Map(Object.entries(marks))),
+				dynamics: sorted(new Map(Object.entries(dynamicKinds))),
+				wedges: score.wedges.length,
 				fallbacks: diagnostics.fallbacks.map(
 					(f) => `${f.kind} ${f.partId} m${f.measureNumber}: ${f.detail}`
 				)

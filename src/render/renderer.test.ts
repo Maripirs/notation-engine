@@ -24,7 +24,7 @@ import { CanvasRenderer } from './renderer.js';
 import { GLYPH_METRICS } from './glyph-metrics.js';
 
 interface Recorded {
-	readonly call: 'fillRect' | 'clearRect' | 'fillText';
+	readonly call: 'fillRect' | 'clearRect' | 'fillText' | 'curve';
 	readonly x: number;
 	readonly y: number;
 	/** Right edge, so a glyph's origin and a rectangle's extent compare the same way. */
@@ -46,6 +46,19 @@ function recordingContext(): { ctx: CanvasRenderingContext2D; calls: Recorded[] 
 		},
 		fillText(_text: string, x: number, y: number) {
 			calls.push({ call: 'fillText', x, y, right: x, bottom: y });
+		},
+		// Curves (ties, slurs, hairpins: M6 Slice 6) are recorded as one call
+		// spanning their start and end points.
+		lineWidth: 1,
+		strokeStyle: '',
+		beginPath() {},
+		stroke() {},
+		moveTo(x: number, y: number) {
+			calls.push({ call: 'curve', x, y, right: x, bottom: y });
+		},
+		bezierCurveTo(_a: number, _b: number, _c: number, _d: number, x: number, y: number) {
+			const start = calls.pop()!;
+			calls.push({ call: 'curve', x: Math.min(start.x, x), y: Math.min(start.y, y), right: Math.max(start.x, x), bottom: Math.max(start.y, y) });
 		}
 	};
 	return { ctx: stub as unknown as CanvasRenderingContext2D, calls };
@@ -1163,6 +1176,65 @@ describe('CanvasRenderer: articulations and fermatas in a scoped redraw (M6 Slic
 			expect(op.y - bBoxNE[1] * updated!.staffSpacePx).toBeGreaterThanOrEqual(clear.y);
 			expect(op.y - bBoxSW[1] * updated!.staffSpacePx).toBeLessThanOrEqual(clear.bottom);
 			expect(within(measure.region, { ...clear, x: op.x, right: op.x + bBoxNE[0] * updated!.staffSpacePx })).toBe(true);
+		}
+	});
+});
+
+describe('CanvasRenderer: dynamics and hairpins in a scoped redraw (M6 Slice 6)', () => {
+	it('repaints exactly its own piece of a hairpin crossing three measures, and its dynamic', () => {
+		const score = buildScore(
+			[
+				[['C5', 'half'], ['D5', 'half']],
+				{ notes: [['E5', 'half'], ['F5', 'half']], dynamics: [{ kind: 'mp', onset: 0.5 }] },
+				[['G5', 'half'], ['A5', 'half']]
+			],
+			{ keyFifths: 0 },
+			[],
+			[{ kind: 'crescendo', start: [0, 0], stop: [2, 0.5] }]
+		);
+		const layout = layoutScore(score);
+		const recorder = recordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, layout);
+		renderer.drawAll();
+		const curvesOf = (index: number) =>
+			layout.measures[index]!.ops.filter((op): op is Extract<DrawOp, { kind: 'curve' }> => op.kind === 'curve');
+		// Two lines per measure, and the pieces abut at each barline: one wedge.
+		for (const index of [0, 1, 2]) expect(curvesOf(index)).toHaveLength(2);
+		expect(curvesOf(0)[0]!.x1).toBeCloseTo(curvesOf(1)[0]!.x0, 6);
+		expect(curvesOf(0)[0]!.y1).toBeCloseTo(curvesOf(1)[0]!.y0, 6);
+		expect(curvesOf(1)[1]!.x1).toBeCloseTo(curvesOf(2)[1]!.x0, 6);
+
+		for (const index of [0, 1, 2]) {
+			recorder.calls.length = 0;
+			// A transpose in the middle measure goes through the scoped path too.
+			if (index === 1) {
+				const touched = score.transposeNote(score.measures[1]!.notes[0]!.id, 1)!;
+				const updated = relayoutMeasure(score, renderer.layout, touched);
+				expect(updated).not.toBeNull();
+				renderer.setLayout(updated!);
+			}
+			renderer.redrawMeasure(index);
+			const measure = renderer.layout.measures[index]!;
+			const clear = recorder.calls[0]!;
+			const painted = recorder.calls.filter((call) => call.call === 'curve');
+			const own = measure.ops.filter((op) => op.kind === 'curve');
+			// Every curve this measure owns (its two hairpin lines) was repainted,
+			// all inside the area it cleared.
+			expect(painted).toHaveLength(own.length);
+			for (const call of painted) {
+				expect(within(measure.region, call)).toBe(true);
+				expect(call.y).toBeGreaterThanOrEqual(clear.y);
+				expect(call.bottom).toBeLessThanOrEqual(clear.bottom);
+			}
+			if (index === 1) {
+				const dynamic = measure.ops.find((op) => op.kind === 'glyph' && op.glyph === 'dynamicMP')!;
+				expect(dynamic).toBeDefined();
+				expect(
+					recorder.calls.some(
+						(call) => call.call === 'fillText' && dynamic.kind === 'glyph' && call.x === dynamic.x && call.y === dynamic.y
+					)
+				).toBe(true);
+			}
 		}
 	});
 });

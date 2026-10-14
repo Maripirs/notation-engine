@@ -3,6 +3,13 @@
 exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
 {
   "dropped": {},
+  "dynamics": {
+    "f": 40,
+    "mf": 5,
+    "mp": 3,
+    "p": 101,
+    "pp": 4,
+  },
   "fallbacks": [],
   "marks": {
     "fermata inverted": 1,
@@ -25,7 +32,6 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
     "arpeggiate": 10,
     "attributes": 8,
     "cue": 4,
-    "dynamics": 153,
     "grace": 11,
     "identification": 1,
     "ornaments": 3,
@@ -34,18 +40,26 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
     "tie": 10,
     "tied": 27,
     "tuplet": 461,
-    "wedge": 479,
+    "wedge": 7,
   },
   "sourceForwards": 0,
   "sourceNotes": 8416,
   "sourceParts": 5,
   "staves": 6,
+  "wedges": 236,
 }
 `;
 
 exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 1`] = `
 {
   "dropped": {},
+  "dynamics": {
+    "ff": 5,
+    "mf": 9,
+    "p": 8,
+    "pp": 5,
+    "ppp": 4,
+  },
   "fallbacks": [
     "note-value P1 m14: unsupported <type>breve</type>, duration 16 at divisions 2",
     "note-value P1 m29: unsupported <type>breve</type>, duration 16 at divisions 2",
@@ -73,20 +87,27 @@ exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 
   ],
   "passthrough": {
     "cue": 2,
-    "dynamics": 31,
     "identification": 1,
-    "wedge": 180,
   },
   "sourceForwards": 0,
   "sourceNotes": 676,
   "sourceParts": 4,
   "staves": 4,
+  "wedges": 90,
 }
 `;
 
 exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`] = `
 {
   "dropped": {},
+  "dynamics": {
+    "f": 38,
+    "ff": 15,
+    "mf": 6,
+    "p": 40,
+    "pp": 16,
+    "ppp": 4,
+  },
   "fallbacks": [],
   "marks": {
     "accent": 20,
@@ -108,7 +129,6 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
   "passthrough": {
     "attributes": 7,
     "cue": 1,
-    "dynamics": 119,
     "grace": 8,
     "identification": 1,
     "octave-shift": 7,
@@ -118,18 +138,22 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
     "tie": 1,
     "tied": 7,
     "tuplet": 268,
-    "wedge": 140,
   },
   "sourceForwards": 0,
   "sourceNotes": 4551,
   "sourceParts": 5,
   "staves": 6,
+  "wedges": 70,
 }
 `;
 
 exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
 {
   "dropped": {},
+  "dynamics": {
+    "f": 53,
+    "mf": 2,
+  },
   "fallbacks": [],
   "marks": {
     "accent": 151,
@@ -148,22 +172,25 @@ exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
   "passthrough": {
     "arpeggiate": 28,
     "attributes": 6,
-    "dynamics": 55,
     "identification": 1,
     "staff-details": 8,
     "technical": 1,
-    "wedge": 162,
   },
   "sourceForwards": 0,
   "sourceNotes": 3516,
   "sourceParts": 5,
   "staves": 6,
+  "wedges": 81,
 }
 `;
 
 exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`] = `
 {
   "dropped": {},
+  "dynamics": {
+    "f": 10,
+    "ff": 28,
+  },
   "fallbacks": [],
   "marks": {
     "accent": 168,
@@ -184,7 +211,6 @@ exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`]
     "(group): [0, 1, 2, 3]",
   ],
   "passthrough": {
-    "dynamics": 38,
     "identification": 1,
     "octave-shift": 4,
     "ornaments": 106,
@@ -194,18 +220,21 @@ exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`]
     "tie": 4,
     "tied": 13,
     "tuplet": 154,
-    "wedge": 108,
   },
   "sourceForwards": 0,
   "sourceNotes": 3751,
   "sourceParts": 5,
   "staves": 6,
+  "wedges": 54,
 }
 `;
 
 exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
 {
   "dropped": {},
+  "dynamics": {
+    "f": 4,
+  },
   "fallbacks": [],
   "marks": {
     "accent": 6,
@@ -222,22 +251,30 @@ exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
     "(group): [0, 1, 2, 3]",
   ],
   "passthrough": {
-    "dynamics": 4,
     "identification": 1,
     "technical": 6,
     "tied": 1,
-    "wedge": 158,
   },
   "sourceForwards": 0,
   "sourceNotes": 798,
   "sourceParts": 4,
   "staves": 4,
+  "wedges": 79,
 }
 `;
 
 exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] = `
 {
   "dropped": {},
+  "dynamics": {
+    "f": 33,
+    "ff": 1,
+    "fp": 9,
+    "mf": 17,
+    "mp": 7,
+    "p": 3,
+    "pp": 3,
+  },
   "fallbacks": [],
   "marks": {
     "accent": 1,
@@ -257,7 +294,6 @@ exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] =
     "(group): [0, 1, 2, 3, 4]",
   ],
   "passthrough": {
-    "dynamics": 73,
     "identification": 1,
     "ornaments": 11,
     "staff-details": 5,
@@ -265,11 +301,12 @@ exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] =
     "tie": 1,
     "tied": 2,
     "tuplet": 8,
-    "wedge": 122,
+    "wedge": 4,
   },
   "sourceForwards": 0,
   "sourceNotes": 1584,
   "sourceParts": 5,
   "staves": 5,
+  "wedges": 59,
 }
 `;

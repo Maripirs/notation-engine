@@ -38,6 +38,15 @@
 // different streams (it writes stream by stream), and nothing reads their
 // relative order.
 //
+// Dynamics and hairpins (M6 Slice 6) are compared as multisets per measure
+// (dynamics) and per score (hairpins): kind, onset(s), placement and the kept
+// `DirectionSource` (its element by `opaqueElementKey` at its divisions, its
+// slot and the mark's unread attributes). A mark's `voice` is not compared:
+// it only says which stream export writes the `<direction>` in, and export
+// writes a mark in its own staff's stream even when the source wrote it in
+// another staff's (a `<direction>` naming `<staff>2</staff>` after a staff-1
+// note), so a round trip may legitimately change it.
+//
 // Every mismatch throws an `Error` naming the first thing that differed, so a
 // failing round-trip test points straight at the divergence.
 
@@ -47,6 +56,7 @@
 // `pitch.js` / `score.js`).
 import { opaqueElementKey, type MeasurePassthrough, type OpaqueElement } from './passthrough.js';
 import { formatPitch, type Pitch } from './pitch.js';
+import type { DirectionSource, DynamicMark, Wedge, WedgeEnd } from './directions.js';
 import type { ClefChange, Measure, Note, Part, Score } from './score.js';
 
 /**
@@ -108,12 +118,51 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 			);
 
 			assertMeasurePassthroughEquivalent(where, actualStaff.measures[m]!, expectedStaff.measures[m]!);
+			assertEqual(
+				`${where} dynamics`,
+				dynamicsKey(actualStaff.measures[m]!.dynamics),
+				dynamicsKey(expectedStaff.measures[m]!.dynamics)
+			);
 			assertMeasureNotesEquivalent(where, actual, expected, actualStaff.measures[m]!.notes, expectedStaff.measures[m]!.notes);
 		}
 	}
 
 	assertSlursEquivalent(actual, expected);
+	assertEqual('wedges', wedgesKey(actual.wedges), wedgesKey(expected.wedges));
 	assertPartsEquivalent(actual, expected);
+}
+
+// --- Dynamics and hairpins (M6 Slice 6) --------------------------------
+
+function onsetKey(onset: number): string {
+	return String(Math.round(onset * 1e9) / 1e9);
+}
+
+function directionSourceKey(source: DirectionSource | null): string {
+	if (source === null) return '-';
+	const attrs = Object.keys(source.markAttrs)
+		.sort()
+		.map((key) => `${key}=${JSON.stringify(source.markAttrs[key])}`)
+		.join(',');
+	return `#${source.slot}[${attrs}]${opaqueElementKey(source.element, source.divisions)}`;
+}
+
+function dynamicsKey(marks: readonly DynamicMark[]): string {
+	return marks
+		.map((mark) => `${mark.kind}@${onsetKey(mark.onset)} ${mark.placement ?? '-'} ${directionSourceKey(mark.source)}`)
+		.sort()
+		.join('\n');
+}
+
+function wedgeEndKey(end: WedgeEnd): string {
+	return `m${end.measureIndex}@${onsetKey(end.onset)} ${directionSourceKey(end.source)}`;
+}
+
+function wedgesKey(wedges: readonly Wedge[]): string {
+	return wedges
+		.map((w) => `${w.kind} s${w.staffIndex} ${w.placement ?? '-'} ${wedgeEndKey(w.start)} -> ${wedgeEndKey(w.stop)}`)
+		.sort()
+		.join('\n');
 }
 
 function clefChangesKey(changes: readonly ClefChange[]): string {

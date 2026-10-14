@@ -31,7 +31,8 @@ import type {
 	Slur,
 	TimeSignature
 } from '../model/score.js';
-import { eventArticulations, eventFermata, noteEvents } from '../model/score.js';
+import { eventArticulations, eventFermata, measureDurationWholes, noteEvents } from '../model/score.js';
+import type { DynamicKind, DynamicMark, Placement, Wedge } from '../model/directions.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -1133,6 +1134,12 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	const measures: LaidOutMeasure[] = [];
 	const systems: { measureIndices: number[]; topY: number; spacingScale: number; staffIndex: number }[] = [];
 	const partDecorationOps: DrawOp[] = [];
+	// Which system each measure lands in (M6 Slice 6): a hairpin crossing a
+	// system break is drawn one segment per system.
+	const systemOf: number[] = [];
+	systemPlans.forEach((plan, i) => {
+		for (const m of plan) systemOf[m] = i;
+	});
 
 	// Provisional frame: the very first staff's own nominal top is 0, and the
 	// whole score is shifted down by `shiftY` at the very end, the same
@@ -1217,6 +1224,10 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 				rowMeasures.push(laid);
 				x = laid.region.x + laid.region.width;
 			}
+			// Dynamics and hairpins (M6 Slice 6), once the row's measures exist:
+			// they line up across the row and a hairpin spans measures.
+			const directed = layoutDirectionRow(score, { staffIndex, measures: rowMeasures, staffTopY, ss, systemOf });
+			rowMeasures.splice(0, rowMeasures.length, ...directed);
 			measures.push(...rowMeasures);
 			systems.push({ measureIndices: [...plan], topY: staffTopY, spacingScale: scales[staffIndex]!, staffIndex });
 
@@ -1565,7 +1576,7 @@ export function relayoutMeasure(
 	// natural width at this column, which is out of this slice's scope; that
 	// remains a separate, documented, pre-existing gap.
 	const span = barlineSpan(staffIndex, score.staves.length, system.topY, ss);
-	const laid = layoutMeasure(score, measure, {
+	const base = layoutMeasure(score, measure, {
 		ss,
 		staffTopY: system.topY,
 		startX: previous.region.x,
@@ -1579,6 +1590,35 @@ export function relayoutMeasure(
 		barlineTop: span.top,
 		barlineBottom: span.bottom
 	});
+
+	// Dynamics and hairpins (M6 Slice 6), redone for this measure against its
+	// cached neighbours in the system. Their shared baseline depends on every
+	// marked measure's ink, so if this edit moved it, every other marked
+	// measure in the system is stale too: that is a full relayout, not a
+	// single-measure one.
+	let laid = base;
+	const first = system.measureIndices[0]!;
+	const last = system.measureIndices[system.measureIndices.length - 1]!;
+	if (rowHasDirections(score, staffIndex, first, last)) {
+		const systemOf: number[] = [];
+		staffSystems.forEach((s, i) => {
+			for (const m of s.measureIndices) systemOf[m] = i;
+		});
+		const cached = (i: number) => layout.measures.find((m) => m.staffIndex === staffIndex && m.index === i)!;
+		const before: DirectionRow = { staffIndex, measures: system.measureIndices.map(cached), staffTopY: system.topY, ss, systemOf };
+		const after: DirectionRow = {
+			...before,
+			measures: system.measureIndices.map((i) => (i === measureIndex ? base : cached(i)))
+		};
+		const old = directionBaselines(score, before);
+		const baselines = directionBaselines(score, after);
+		// Sub-pixel tolerance, as for the width below: the cached extents went
+		// through `layoutScore`'s final translation, this one did not.
+		const moved = (a: number | null, b: number | null): boolean =>
+			a === null || b === null ? a !== b : Math.abs(a - b) > 0.001;
+		if (moved(old.above, baselines.above) || moved(old.below, baselines.below)) return null;
+		laid = withDirectionOps(base, directionOpsForMeasure(score, after, baselines, base), system.topY, ss);
+	}
 
 	// Sub-pixel tolerance: the same arithmetic run twice should agree exactly,
 	// but a width comparison is not worth making brittle over a float.
@@ -2179,6 +2219,8 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// comment on exactly which draws below this reads it for.
 	const barlineTop = ctx.barlineTop ?? staffTopY;
 	const barlineBottom = ctx.barlineBottom ?? staffTopY + 4 * ss;
+	// The end barline's ops, left out of `inkExtent` (see `LaidOutMeasure`).
+	const barlineOpsFrom = ops.length;
 	const lineThickness = ED.staffLineThickness * ss;
 	for (let line = 0; line < 5; line++) {
 		ops.unshift({
@@ -2223,6 +2265,8 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			height: barlineBottom - barlineTop
 		});
 	}
+	// Five staff lines were `unshift`ed in since `barlineOpsFrom` was taken.
+	const barlineOps = new Set(ops.slice(barlineOpsFrom + 5));
 
 	// Ties: two same-pitch notes sounding as one continuous note, connected by
 	// a curve from the first notehead to the second. A tie fully contained in
@@ -2368,12 +2412,20 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		}
 	}
 
+	const ink = measureRegion(
+		ops.filter((op) => !barlineOps.has(op)),
+		startX,
+		measureWidth,
+		staffTopY,
+		ss
+	);
 	return {
 		index: measure.index,
 		staffIndex: ctx.staffIndex,
 		region: measureRegion(ops, startX, measureWidth, staffTopY, ss),
 		ops,
-		notes
+		notes,
+		inkExtent: { top: ink.y + REGION_BLEED_PX, bottom: ink.y + ink.height - REGION_BLEED_PX }
 	};
 }
 
@@ -4025,6 +4077,353 @@ function pushSlurSegment(
 	);
 }
 
+// --- Dynamics and hairpins (M6 Slice 6) ------------------------------------
+//
+// Placed in a pass of their own, after a system's measures on one staff are
+// laid out (`layoutDirectionRow`), because the two rules that place them both
+// read more than one measure: a system's dynamics and hairpins share one
+// baseline per side of the staff, low (or high) enough to clear the ink of
+// every measure carrying one, and a hairpin is one straight wedge from its
+// start's x to its stop's x, which are usually in different measures. Every
+// input to that pass is a measure's finished `LaidOutMeasure` (its region, its
+// notes' boxes, its `inkExtent`) plus the model, so `relayoutMeasure` can
+// redo it for one re-laid-out measure from its cached neighbours.
+//
+// Ownership stays per measure, as region-scoped redraw needs: a dynamic's
+// glyph is in the ops of the measure holding it, and a hairpin is cut at
+// every barline it crosses, each measure drawing its own piece of the two
+// lines, so repainting any one measure puts back exactly its piece. A
+// hairpin that crosses a system break is one segment per system, the
+// continuation starting at the left of the new system's music: the opening
+// grows (crescendo) or shrinks (diminuendo) across the whole hairpin, so a
+// two-system crescendo ends its first segment half open and starts the
+// second there, the way engraving continues one (Gould, *Behind Bars*,
+// "Hairpins").
+
+/** Bravura's combined glyph for each dynamic. */
+const DYNAMIC_GLYPHS: Readonly<Record<DynamicKind, GlyphName>> = {
+	pppppp: 'dynamicPPPPPP',
+	ppppp: 'dynamicPPPPP',
+	pppp: 'dynamicPPPP',
+	ppp: 'dynamicPPP',
+	pp: 'dynamicPP',
+	p: 'dynamicPiano',
+	mp: 'dynamicMP',
+	mf: 'dynamicMF',
+	f: 'dynamicForte',
+	ff: 'dynamicFF',
+	fff: 'dynamicFFF',
+	ffff: 'dynamicFFFF',
+	fffff: 'dynamicFFFFF',
+	ffffff: 'dynamicFFFFFF',
+	sf: 'dynamicSforzando1',
+	sfz: 'dynamicSforzato',
+	sffz: 'dynamicSforzatoFF',
+	sfp: 'dynamicSforzandoPiano',
+	sfpp: 'dynamicSforzandoPianissimo',
+	sfzp: 'dynamicSforzatoPiano',
+	fp: 'dynamicFortePiano',
+	fz: 'dynamicForzando',
+	rf: 'dynamicRinforzando1',
+	rfz: 'dynamicRinforzando2',
+	pf: 'dynamicPF',
+	n: 'dynamicNiente'
+};
+
+const DIRECTION = {
+	/** Blank between the ink a direction clears and the dynamic's tallest
+	 *  letter (or a hairpin's edge), staff spaces. */
+	clearance: 0.6,
+	/** How far a dynamic letter can reach above its baseline (an `f`'s
+	 *  ascender) and below it (a `p`'s or `f`'s descender), staff spaces:
+	 *  Bravura's tallest and deepest dynamic glyphs. Every dynamic sits on one
+	 *  baseline per side, so these fixed figures, not each glyph's own box,
+	 *  decide how far that baseline is from the ink; a system's marks then
+	 *  line up whatever letters they use. */
+	ascent: 1.776,
+	descent: 0.608,
+	/** Height above the baseline of a hairpin's centre line: half the letters'
+	 *  x-height, so a hairpin points at the middle of a `p` or `f`. */
+	hairpinCentre: 0.55,
+	/** A hairpin's full opening, staff spaces. MusicXML's `spread` default is
+	 *  1.5; engraved hairpins are commonly a little narrower than a dynamic's
+	 *  x-height, and this sits between the two. */
+	hairpinOpening: 1.1,
+	/** Gap between a hairpin's end and a dynamic it meets, staff spaces. */
+	dynamicGap: 0.4,
+	/** Gap between a hairpin's stop and the notehead it stops at. */
+	noteGap: 0.3,
+	/** A hairpin whose drawn length would come out shorter than this is not
+	 *  drawn (OMR's zero-length hairpins, a start and stop at one onset). */
+	minLength: 1
+} as const;
+
+/** One staff's measures in one system, as `layoutDirectionRow` needs them:
+ *  `measures` laid out without directions (or cached with them; only their
+ *  regions, notes and `inkExtent` are read), in order. */
+interface DirectionRow {
+	readonly staffIndex: number;
+	readonly measures: readonly LaidOutMeasure[];
+	readonly staffTopY: number;
+	readonly ss: number;
+	/** System index of every measure on this staff, so a hairpin can tell
+	 *  which of its systems a measure is in. */
+	readonly systemOf: readonly number[];
+}
+
+/** A wedge's effective stop: a stop on the downbeat of a measure that opens a
+ *  new system is read as the end of the measure before it (the barline), so
+ *  the hairpin does not reappear as a stub at the next system's start. */
+function wedgeStop(score: Score, wedge: Wedge, systemOf: readonly number[]): { measureIndex: number; onset: number } {
+	const { stop, start } = wedge;
+	if (stop.onset === 0 && stop.measureIndex > start.measureIndex && systemOf[stop.measureIndex] !== systemOf[stop.measureIndex - 1]) {
+		const previous = score.staves[wedge.staffIndex]!.measures[stop.measureIndex - 1]!;
+		return { measureIndex: stop.measureIndex - 1, onset: measureDurationWholes(previous) };
+	}
+	return stop;
+}
+
+function sideOf(placement: Placement | null): Placement {
+	return placement ?? 'below';
+}
+
+/**
+ * The dynamics baseline (canvas y) on each side of the staff for a row: below
+ * the lowest ink (above the highest) of every measure in the row carrying a
+ * dynamic or a piece of a hairpin on that side, or `null` for a side with
+ * none. One value per side is what lines a system's marks up.
+ */
+function directionBaselines(score: Score, row: DirectionRow): { above: number | null; below: number | null } {
+	const { ss, staffIndex } = row;
+	let lowest: number | null = null;
+	let highest: number | null = null;
+	const mark = (laid: LaidOutMeasure, side: Placement): void => {
+		const extent = laid.inkExtent ?? { top: row.staffTopY, bottom: row.staffTopY + 4 * ss };
+		if (side === 'below') lowest = Math.max(lowest ?? extent.bottom, extent.bottom);
+		else highest = Math.min(highest ?? extent.top, extent.top);
+	};
+	const first = row.measures[0]?.index ?? 0;
+	const last = row.measures[row.measures.length - 1]?.index ?? -1;
+	const staff = score.staves[staffIndex]!;
+	for (const laid of row.measures) {
+		for (const dynamic of staff.measures[laid.index]!.dynamics) mark(laid, sideOf(dynamic.placement));
+	}
+	for (const wedge of score.wedges) {
+		if (wedge.staffIndex !== staffIndex) continue;
+		const stop = wedgeStop(score, wedge, row.systemOf);
+		if (stop.measureIndex < first || wedge.start.measureIndex > last) continue;
+		for (const laid of row.measures) {
+			if (laid.index >= wedge.start.measureIndex && laid.index <= stop.measureIndex) mark(laid, sideOf(wedge.placement));
+		}
+	}
+	return {
+		below: lowest === null ? null : lowest + (DIRECTION.clearance + DIRECTION.ascent) * ss,
+		above: highest === null ? null : highest - (DIRECTION.clearance + DIRECTION.descent) * ss
+	};
+}
+
+/**
+ * The x a direction at `onset` (wholes into the measure) lines up with: the
+ * centre of the notehead (or rest) at that onset, the leftmost if several
+ * voices have one; between two onsets that have notes, interpolated by time;
+ * after the last one, interpolated towards the barline at the measure's end.
+ * Also returns whether a note sits exactly there, which a hairpin's stop uses
+ * to stop short of its head.
+ */
+function directionX(
+	score: Score,
+	staffIndex: number,
+	laid: LaidOutMeasure,
+	onset: number,
+	ss: number
+): { readonly x: number; readonly atNote: boolean } {
+	const measure = score.staves[staffIndex]!.measures[laid.index]!;
+	const onsets = noteOnsets(measure.notes);
+	const boxes = new Map(laid.notes.map((n) => [n.id, n.bounds]));
+	const xs = new Map<number, number>();
+	for (const note of measure.notes) {
+		const box = boxes.get(note.id);
+		const at = onsets.get(note.id);
+		if (!box || at === undefined) continue;
+		const key = onsetKey(at);
+		const centre = box.x + box.width / 2;
+		xs.set(key, Math.min(xs.get(key) ?? centre, centre));
+	}
+	const known = [...xs].sort((a, b) => a[0] - b[0]);
+	const key = onsetKey(onset);
+	const exact = xs.get(key);
+	if (exact !== undefined) return { x: exact, atNote: true };
+	const right = laid.region.x + laid.region.width;
+	const end = { key: onsetKey(Math.max(measureDurationWholes(measure), onset)), x: right - ss };
+	if (known.length === 0) return { x: laid.region.x + (laid.region.width * Math.min(1, onset / (end.key || 1))), atNote: false };
+	let before: readonly [number, number] | undefined;
+	let after: readonly [number, number] | undefined;
+	for (const entry of known) {
+		if (entry[0] < key) before = entry;
+		else if (!after) after = entry;
+	}
+	if (!before) return { x: known[0]![1], atNote: false };
+	const next = after ?? ([end.key, end.x] as const);
+	const t = next[0] === before[0] ? 1 : (key - before[0]) / (next[0] - before[0]);
+	return { x: before[1] + (next[1] - before[1]) * t, atNote: false };
+}
+
+/** Where a dynamic's glyph goes: centred on its onset's x, kept inside its
+ *  measure's band (a region never reaches into a neighbour's). */
+function dynamicPlacement(
+	score: Score,
+	staffIndex: number,
+	laid: LaidOutMeasure,
+	mark: DynamicMark,
+	ss: number
+): { readonly glyph: GlyphName; readonly x: number; readonly left: number; readonly right: number } {
+	const glyph = DYNAMIC_GLYPHS[mark.kind];
+	const { bBoxSW, bBoxNE } = GLYPH_METRICS[glyph];
+	const width = (bBoxNE[0] - bBoxSW[0]) * ss;
+	const centre = directionX(score, staffIndex, laid, mark.onset, ss).x;
+	const minLeft = laid.region.x + 0.2 * ss;
+	const maxLeft = laid.region.x + laid.region.width - 0.2 * ss - width;
+	const left = Math.max(minLeft, Math.min(maxLeft, centre - width / 2));
+	return { glyph, x: left - bBoxSW[0] * ss, left, right: left + width };
+}
+
+/**
+ * The ops one measure of `row` draws for its dynamics and its pieces of
+ * hairpins, given the row's `baselines`. Every hairpin end and every
+ * neighbour it reads is in `row` or derived from the model alone.
+ */
+function directionOpsForMeasure(
+	score: Score,
+	row: DirectionRow,
+	baselines: { above: number | null; below: number | null },
+	laid: LaidOutMeasure
+): DrawOp[] {
+	const { ss, staffIndex } = row;
+	const ops: DrawOp[] = [];
+	const staff = score.staves[staffIndex]!;
+	const laidOf = (index: number): LaidOutMeasure | undefined => row.measures.find((m) => m.index === index);
+	const baselineOf = (side: Placement): number => baselines[side] ?? row.staffTopY + (side === 'below' ? 6.4 : -2.4) * ss;
+
+	for (const mark of staff.measures[laid.index]!.dynamics) {
+		const placed = dynamicPlacement(score, staffIndex, laid, mark, ss);
+		ops.push({ kind: 'glyph', glyph: placed.glyph, x: placed.x, y: baselineOf(sideOf(mark.placement)) });
+	}
+
+	const thisSystem = row.systemOf[laid.index]!;
+	const rowFirst = row.measures[0]!;
+	const rowLast = row.measures[row.measures.length - 1]!;
+	for (const wedge of score.wedges) {
+		if (wedge.staffIndex !== staffIndex || wedge.start.measureIndex > laid.index) continue;
+		const stop = wedgeStop(score, wedge, row.systemOf);
+		if (stop.measureIndex < laid.index) continue;
+		const side = sideOf(wedge.placement);
+		// Is there a dynamic on this side at (measure, onset)? Its box, if so.
+		const dynamicAt = (index: number, onset: number) => {
+			const laidThere = laidOf(index);
+			const mark = laidThere
+				? staff.measures[index]!.dynamics.find((d) => sideOf(d.placement) === side && Math.abs(d.onset - onset) < 1e-9)
+				: undefined;
+			return laidThere && mark ? dynamicPlacement(score, staffIndex, laidThere, mark, ss) : undefined;
+		};
+
+		// This system's segment, start to end x.
+		let x0: number;
+		const startLaid = row.systemOf[wedge.start.measureIndex] === thisSystem ? laidOf(wedge.start.measureIndex) : undefined;
+		if (startLaid) {
+			const dynamic = dynamicAt(wedge.start.measureIndex, wedge.start.onset);
+			x0 = dynamic
+				? dynamic.right + DIRECTION.dynamicGap * ss
+				: directionX(score, staffIndex, startLaid, wedge.start.onset, ss).x - 0.6 * ss;
+		} else {
+			// A continuation: from the left of this system's music.
+			x0 = Math.min(...rowFirst.notes.map((n) => n.bounds.x), rowFirst.region.x + rowFirst.region.width) - 0.5 * ss;
+		}
+		let x1: number;
+		const stopLaid = row.systemOf[stop.measureIndex] === thisSystem ? laidOf(stop.measureIndex) : undefined;
+		if (stopLaid) {
+			const at = directionX(score, staffIndex, stopLaid, stop.onset, ss);
+			x1 = at.atNote ? at.x - (0.6 + DIRECTION.noteGap) * ss : at.x;
+			const measureEnd = measureDurationWholes(staff.measures[stop.measureIndex]!);
+			const dynamic =
+				dynamicAt(stop.measureIndex, stop.onset) ??
+				(stop.onset >= measureEnd - 1e-9 && row.systemOf[stop.measureIndex + 1] === thisSystem
+					? dynamicAt(stop.measureIndex + 1, 0)
+					: undefined);
+			if (dynamic) x1 = Math.min(x1, dynamic.left - DIRECTION.dynamicGap * ss);
+		} else {
+			// Continues on the next system: to this system's end.
+			x1 = rowLast.region.x + rowLast.region.width - ss;
+		}
+		if (x1 - x0 < DIRECTION.minLength * ss) continue;
+
+		// The opening at this segment's two ends: the hairpin's systems share
+		// the growth evenly.
+		const firstSystem = row.systemOf[wedge.start.measureIndex]!;
+		const segments = row.systemOf[stop.measureIndex]! - firstSystem + 1;
+		const i = thisSystem - firstSystem;
+		const full = DIRECTION.hairpinOpening * ss;
+		const grow = (fraction: number): number => (wedge.kind === 'crescendo' ? fraction : 1 - fraction) * full;
+		const open0 = grow(i / segments);
+		const open1 = grow((i + 1) / segments);
+
+		// This measure's piece of the segment.
+		const left = Math.max(x0, laid.region.x);
+		const right = Math.min(x1, laid.region.x + laid.region.width);
+		if (right <= left) continue;
+		const at = (x: number): number => open0 + ((open1 - open0) * (x - x0)) / (x1 - x0);
+		const centreY = baselineOf(side) - DIRECTION.hairpinCentre * ss;
+		const a = at(left) / 2;
+		const b = at(right) / 2;
+		pushStraightLine(ops, left, centreY - a, right, centreY - b, ss);
+		pushStraightLine(ops, left, centreY + a, right, centreY + b, ss);
+	}
+	return ops;
+}
+
+/** A straight stroke as a `curve` op (its control points on the line). */
+function pushStraightLine(ops: DrawOp[], x0: number, y0: number, x1: number, y1: number, ss: number): void {
+	pushCurve(
+		ops,
+		x0,
+		y0,
+		x0 + (x1 - x0) / 3,
+		y0 + (y1 - y0) / 3,
+		x0 + ((x1 - x0) * 2) / 3,
+		y0 + ((y1 - y0) * 2) / 3,
+		x1,
+		y1,
+		ED.hairpinThickness * ss,
+		undefined
+	);
+}
+
+/** Whether a staff's measures `first..last` (one system) have anything for
+ *  the direction pass to draw: the cheap check that keeps a score without
+ *  dynamics or hairpins on exactly its old layout path. */
+function rowHasDirections(score: Score, staffIndex: number, first: number, last: number): boolean {
+	const staff = score.staves[staffIndex]!;
+	for (let i = first; i <= last; i++) if (staff.measures[i]!.dynamics.length > 0) return true;
+	return score.wedges.some((w) => w.staffIndex === staffIndex && w.start.measureIndex <= last && w.stop.measureIndex >= first);
+}
+
+/** `laid` with `extra` ops appended and its region grown to cover them. */
+function withDirectionOps(laid: LaidOutMeasure, extra: readonly DrawOp[], staffTopY: number, ss: number): LaidOutMeasure {
+	if (extra.length === 0) return laid;
+	const ops = [...laid.ops, ...extra];
+	return { ...laid, ops, region: measureRegion(ops, laid.region.x, laid.region.width, staffTopY, ss) };
+}
+
+/** Every measure of `row` with its dynamics and hairpin pieces added. */
+function layoutDirectionRow(score: Score, row: DirectionRow): LaidOutMeasure[] {
+	const first = row.measures[0]?.index ?? 0;
+	const last = row.measures[row.measures.length - 1]?.index ?? -1;
+	if (!rowHasDirections(score, row.staffIndex, first, last)) return [...row.measures];
+	const baselines = directionBaselines(score, row);
+	return row.measures.map((laid) =>
+		withDirectionOps(laid, directionOpsForMeasure(score, row, baselines, laid), row.staffTopY, row.ss)
+	);
+}
+
 function pushGlyph(
 	ops: DrawOp[],
 	glyph: GlyphName,
@@ -4145,6 +4544,9 @@ function translateMeasure(measure: LaidOutMeasure, dy: number): LaidOutMeasure {
 		notes: measure.notes.map((note) => ({
 			id: note.id,
 			bounds: { ...note.bounds, y: note.bounds.y + dy }
-		}))
+		})),
+		...(measure.inkExtent
+			? { inkExtent: { top: measure.inkExtent.top + dy, bottom: measure.inkExtent.bottom + dy } }
+			: {})
 	};
 }

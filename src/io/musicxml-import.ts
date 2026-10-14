@@ -46,16 +46,30 @@
 // it as a `chordWithPrevious` head and adds no time. The one thing that does
 // track the time cursor is passthrough anchoring (`MeasureAnchors`): a
 // `<direction>` read after a `<backup>` sits at the backed-up time.
+//
+// Dynamics and hairpins (M6 Slice 6) ride that same anchoring: their
+// `<direction>` is anchored like any passthrough one, and once the whole part
+// is read (a hairpin's stop can be measures after its start) `promoteDirections`
+// turns it into model marks, keeping the rest of the element as the marks'
+// `DirectionSource`, and takes it back out of the measure's passthrough.
 
 import {
 	ARTICULATIONS,
+	DYNAMIC_KINDS,
 	Measure,
 	measureCapacityWholes,
 	NO_PASSTHROUGH,
+	sortDynamics,
 	NOTE_VALUE_WHOLES,
 	Score,
 	type Articulation,
 	type ClefType,
+	type DirectionSource,
+	type DynamicKind,
+	type DynamicMark,
+	type Placement,
+	type Wedge,
+	type WedgeKind,
 	type Fermata,
 	type MeasurePassthrough,
 	type Note,
@@ -328,6 +342,9 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 		// `<divisions>` is normally stated once, in measure 0, but a tolerant
 		// reader honours a later restatement too.
 		let divisions = info.divisions;
+		// `<direction>`s carrying a dynamic or hairpin end, promoted once the
+		// whole part is read (`promoteDirections`).
+		const candidates: DirectionCandidate[] = [];
 
 		for (let m = 0; m < measureCount; m++) {
 			const measureEl = measureEls[m]!;
@@ -434,13 +451,16 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 					// the onset it appeared at. A name not even MusicXML knows is
 					// kept too, but worth a warning.
 					anchors.item(el);
-					if (el.name === 'direction') tallyDirection(el, report);
+					const pieces = el.name === 'direction' ? directionPieces(el) : null;
+					if (pieces) candidates.push({ element: el, m, measureObjs, pieces, order: candidates.length });
+					else if (el.name === 'direction') tallyDirection(el, report);
 					else report.keep(el.name);
 					if (!KNOWN_MEASURE_PASSTHROUGH.has(el.name)) report.unrecognized(el.name, 'measure');
 				}
 			}
 			anchors.finish();
 		}
+		promoteDirections(candidates, info, score, report);
 	}
 
 	linkTies(builtNotes, score);
@@ -665,6 +685,261 @@ class MeasureAnchors {
 	#clock(k: number, voice: number): Rational {
 		return this.#streamClock.get(`${k}:${voice}`) ?? ZERO;
 	}
+}
+
+// --- Dynamics and hairpins (M6 Slice 6) ------------------------------------
+
+/** One promotable `<direction-type>` inside a `<direction>`. */
+type DirectionPiece =
+	| { readonly slot: number; readonly kind: 'dynamic'; readonly dynamic: DynamicKind; readonly markAttrs: Readonly<Record<string, string>> }
+	| {
+			readonly slot: number;
+			readonly kind: 'wedge';
+			readonly type: WedgeKind | 'stop';
+			readonly number: string;
+			readonly markAttrs: Readonly<Record<string, string>>;
+	  };
+
+/** A `<direction>` with at least one promotable piece, while its part is read. */
+interface DirectionCandidate {
+	readonly element: XmlElement;
+	readonly m: number;
+	readonly measureObjs: readonly Measure[];
+	readonly pieces: readonly DirectionPiece[];
+	/** Document order within the part, the tie-break for hairpin pairing. */
+	readonly order: number;
+}
+
+const DYNAMIC_OWNED: ReadonlySet<string> = new Set<string>(DYNAMIC_KINDS);
+
+/**
+ * The `<direction-type>`s of `directionEl` the model can hold, or `null` for
+ * none. A `<direction-type>` is promoted only in the one shape that maps
+ * exactly: a single child, either a `<dynamics>` holding exactly one empty
+ * element of a modelled kind (`<p/>`; an `<other-dynamics>` text, or two marks
+ * in one `<dynamics>`, stay passthrough), or a `<wedge>` whose `type` is
+ * `crescendo`, `diminuendo` or `stop` (a `continue` stays passthrough). Any
+ * other `<direction-type>` beside it (`<words>`, ...) stays in the
+ * `DirectionSource`.
+ */
+function directionPieces(directionEl: XmlElement): DirectionPiece[] | null {
+	const pieces: DirectionPiece[] = [];
+	directionEl.children.forEach((c, slot) => {
+		if (c.name !== 'direction-type' || c.children.length !== 1 || Object.keys(c.attrs).length > 0) return;
+		const mark = c.children[0]!;
+		if (mark.name === 'dynamics') {
+			const only = mark.children.length === 1 ? mark.children[0]! : undefined;
+			if (!only || !DYNAMIC_OWNED.has(only.name) || only.children.length > 0 || only.text.trim() !== '') return;
+			if (Object.keys(only.attrs).length > 0) return;
+			pieces.push({ slot, kind: 'dynamic', dynamic: only.name as DynamicKind, markAttrs: mark.attrs });
+		} else if (mark.name === 'wedge') {
+			const type = mark.attrs.type;
+			if (type !== 'crescendo' && type !== 'diminuendo' && type !== 'stop') return;
+			if (mark.children.length > 0) return;
+			const { type: _type, number = '1', ...markAttrs } = mark.attrs;
+			pieces.push({ slot, kind: 'wedge', type, number, markAttrs });
+		}
+	});
+	return pieces.length > 0 ? pieces : null;
+}
+
+/**
+ * Turn a part's candidate `<direction>`s into `DynamicMark`s and `Wedge`s,
+ * once the whole part has been read and anchored.
+ *
+ * Each candidate was anchored by `MeasureAnchors` like any passthrough
+ * element, so its onset, stream and divisions are read off that entry, which
+ * is then removed: what the model holds is no longer passthrough. A dynamic is
+ * drawn on the staff its `<staff>` names (the stream it was written in can be
+ * another staff's: a piano's `<direction><staff>2</staff>` usually follows
+ * staff-1 notes), defaulting to the stream's staff.
+ *
+ * Hairpins pair start to stop by `number` (default 1) within the part, in
+ * time order (measure, onset, then document order), which also pairs the
+ * zero-length hairpins Audiveris writes as a start and a stop in one
+ * `<direction>`. A start whose number is still open leaves the earlier start
+ * unpaired; an unpaired start or stop cannot be modelled, so its whole
+ * `<direction>` (with any dynamic beside it) stays passthrough, exactly as
+ * before this slice.
+ */
+function promoteDirections(
+	candidates: readonly DirectionCandidate[],
+	info: { readonly baseStaffIndex: number; readonly staffCount: number },
+	score: Score,
+	report: ImportReporter
+): void {
+	if (candidates.length === 0) return;
+
+	// Where each candidate was anchored.
+	interface Anchored {
+		readonly candidate: DirectionCandidate;
+		readonly k: number;
+		readonly anchor: MeasurePassthrough;
+		/** Staff within the part the marks are drawn on. */
+		readonly displayK: number;
+		readonly onset: number;
+	}
+	const anchoredList: Anchored[] = [];
+	for (const candidate of candidates) {
+		const k = candidate.measureObjs.findIndex((measure) => measure.passthrough.some((a) => a.element === candidate.element));
+		if (k === -1) continue;
+		const anchor = candidate.measureObjs[k]!.passthrough.find((a) => a.element === candidate.element)!;
+		const staffText = childText(candidate.element, 'staff');
+		const displayK =
+			staffText === undefined ? k : Math.min(Math.max(1, intText(staffText, 1)), info.staffCount) - 1;
+		anchoredList.push({ candidate, k, anchor, displayK, onset: anchor.onset.num / anchor.onset.den });
+	}
+
+	// Pair hairpin ends by number, in time order.
+	type WedgeRef = { readonly at: Anchored; readonly piece: Extract<DirectionPiece, { kind: 'wedge' }> };
+	const ends: WedgeRef[] = [];
+	for (const at of anchoredList) {
+		for (const piece of at.candidate.pieces) if (piece.kind === 'wedge') ends.push({ at, piece });
+	}
+	ends.sort(
+		(a, b) =>
+			a.at.candidate.m - b.at.candidate.m ||
+			a.at.onset - b.at.onset ||
+			a.at.candidate.order - b.at.candidate.order ||
+			a.piece.slot - b.piece.slot
+	);
+	const open = new Map<string, WedgeRef>();
+	const pairs: [WedgeRef, WedgeRef][] = [];
+	const paired = new Set<WedgeRef>();
+	for (const end of ends) {
+		if (end.piece.type !== 'stop') {
+			open.set(end.piece.number, end);
+			continue;
+		}
+		const start = open.get(end.piece.number);
+		if (!start) continue;
+		open.delete(end.piece.number);
+		pairs.push([start, end]);
+		paired.add(start);
+		paired.add(end);
+	}
+	const rejected = new Set<DirectionCandidate>();
+	for (const end of ends) if (!paired.has(end)) rejected.add(end.at.candidate);
+	// A rejected direction keeps all its pieces, so a hairpin with one end in
+	// it cannot be modelled either: reject its other end's direction too,
+	// until nothing changes (rare chains of shared directions).
+	for (let changed = rejected.size > 0; changed; ) {
+		changed = false;
+		for (const [start, stop] of pairs) {
+			const a = rejected.has(start.at.candidate);
+			const b = rejected.has(stop.at.candidate);
+			if (a !== b) {
+				rejected.add(a ? stop.at.candidate : start.at.candidate);
+				changed = true;
+			}
+		}
+	}
+
+	// Build each promoted direction's source and marks.
+	const sourceOf = new Map<DirectionPiece, DirectionSource>();
+	const placementOf = new Map<DirectionCandidate, Placement | null>();
+	const promotedByMeasure = new Map<Measure, Set<XmlElement>>();
+	const newDynamics = new Map<Measure, DynamicMark[]>();
+	for (const at of anchoredList) {
+		const { candidate } = at;
+		if (rejected.has(candidate)) {
+			tallyDirection(candidate.element, report);
+			continue;
+		}
+		// A dynamic or a hairpin start owns the direction's `placement`; a
+		// bare stop leaves it in the source, where it changes nothing drawn.
+		const ownsPlacement = candidate.pieces.some((p) => p.kind === 'dynamic' || p.type !== 'stop');
+		const placementAttr = candidate.element.attrs.placement;
+		const placement: Placement | null =
+			ownsPlacement && (placementAttr === 'above' || placementAttr === 'below') ? placementAttr : null;
+		placementOf.set(candidate, placement);
+		const slots = new Set(candidate.pieces.map((p) => p.slot));
+		let attrs = candidate.element.attrs;
+		if (placement !== null) {
+			const { placement: _placement, ...rest } = attrs;
+			attrs = rest;
+		}
+		const element: OpaqueElement = Object.freeze({
+			...candidate.element,
+			attrs: Object.freeze(attrs),
+			children: Object.freeze(candidate.element.children.filter((_, i) => !slots.has(i))),
+			// A `<direction>` has no character data of its own, only the
+			// indentation between children, which would read as content once
+			// every child is cut out (and export regenerates indentation).
+			text: ''
+		});
+		// A direction holding nothing but one mark (and, in a multi-staff part,
+		// its `<staff>`) is exactly what export writes for a mark with no
+		// source, so it gets none: a score built in code then round-trips to
+		// the same model, and a later edit of the mark is not tied to a stale
+		// wrapper.
+		const plain =
+			candidate.pieces.length === 1 &&
+			Object.keys(candidate.pieces[0]!.markAttrs).length === 0 &&
+			Object.keys(attrs).length === 0 &&
+			element.children.every((c) => c.name === 'staff' && info.staffCount > 1 && intText(c.text, 0) === at.displayK + 1) &&
+			element.children.length === (info.staffCount > 1 ? 1 : 0);
+		for (const piece of candidate.pieces) {
+			if (plain) continue;
+			sourceOf.set(piece, Object.freeze({ element, slot: piece.slot, divisions: at.anchor.divisions, markAttrs: piece.markAttrs }));
+		}
+		tallyDirection(element, report);
+
+		const holder = candidate.measureObjs[at.k]!;
+		const promoted = promotedByMeasure.get(holder) ?? new Set();
+		promoted.add(candidate.element);
+		promotedByMeasure.set(holder, promoted);
+
+		const target = candidate.measureObjs[at.displayK]!;
+		const voice = voiceOnStaff(target, at.k === at.displayK ? at.anchor.voice : undefined);
+		for (const piece of candidate.pieces) {
+			if (piece.kind !== 'dynamic') continue;
+			const list = newDynamics.get(target) ?? [];
+			list.push(Object.freeze({ kind: piece.dynamic, onset: at.onset, placement, voice, source: sourceOf.get(piece) ?? null }));
+			newDynamics.set(target, list);
+		}
+	}
+
+	for (const [measure, promoted] of promotedByMeasure) {
+		const kept = measure.passthrough.filter((a) => !promoted.has(a.element));
+		measure.passthrough = kept.length > 0 ? Object.freeze(kept) : NO_PASSTHROUGH;
+	}
+	for (const [measure, marks] of newDynamics) measure.dynamics = Object.freeze(sortDynamics([...measure.dynamics, ...marks]));
+
+	// Hairpins: drawn on the start's staff; each end's stream is on that
+	// staff, the one export writes both ends from.
+	const wedges: Wedge[] = [];
+	for (const [start, stop] of pairs) {
+		if (rejected.has(start.at.candidate) || rejected.has(stop.at.candidate)) continue;
+		const displayK = start.at.displayK;
+		const staffIndex = info.baseStaffIndex + displayK;
+		const end = (ref: WedgeRef) => {
+			const measure = ref.at.candidate.measureObjs[displayK]!;
+			return Object.freeze({
+				measureIndex: ref.at.candidate.m,
+				onset: ref.at.onset,
+				voice: voiceOnStaff(measure, ref.at.k === displayK ? ref.at.anchor.voice : undefined),
+				source: sourceOf.get(ref.piece) ?? null
+			});
+		};
+		wedges.push(
+			Object.freeze({
+				kind: start.piece.type as WedgeKind,
+				staffIndex,
+				placement: placementOf.get(start.at.candidate) ?? null,
+				start: end(start),
+				stop: end(stop)
+			})
+		);
+	}
+	score.wedges.push(...wedges);
+}
+
+/** `preferred` if `measure` has notes in that voice, else its first voice
+ *  (1 when it has none): the stream export writes a mark on this staff in. */
+function voiceOnStaff(measure: Measure, preferred: number | undefined): number {
+	if (preferred !== undefined && measure.notes.some((note) => note.voice === preferred)) return preferred;
+	return measure.notes[0]?.voice ?? preferred ?? 1;
 }
 
 // --- Attributes: mid-score and per-part key/time changes ---------------------

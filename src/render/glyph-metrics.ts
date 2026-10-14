@@ -517,6 +517,240 @@ export const GLYPH_METRICS = {
 		bBoxNE: [2.42, 0],
 		anchors: {}
 	},
+	dynamicPiano: {
+		name: 'dynamicPiano',
+		codepoint: 0xE520,
+		description: 'Piano',
+		advance: 1.46,
+		bBoxSW: [-0.356, -0.568],
+		bBoxNE: [1.464, 1.096],
+		anchors: {}
+	},
+	dynamicPP: {
+		name: 'dynamicPP',
+		codepoint: 0xE52B,
+		description: 'pp',
+		advance: 2.908,
+		bBoxSW: [-0.328, -0.568],
+		bBoxNE: [2.912, 1.096],
+		anchors: {}
+	},
+	dynamicPPP: {
+		name: 'dynamicPPP',
+		codepoint: 0xE52A,
+		description: 'ppp',
+		advance: 4.288,
+		bBoxSW: [-0.368, -0.568],
+		bBoxNE: [4.292, 1.096],
+		anchors: {}
+	},
+	dynamicPPPP: {
+		name: 'dynamicPPPP',
+		codepoint: 0xE529,
+		description: 'pppp',
+		advance: 5.668,
+		bBoxSW: [-0.408, -0.568],
+		bBoxNE: [5.672, 1.096],
+		anchors: {}
+	},
+	dynamicPPPPP: {
+		name: 'dynamicPPPPP',
+		codepoint: 0xE528,
+		description: 'ppppp',
+		advance: 7.104,
+		bBoxSW: [-0.408, -0.568],
+		bBoxNE: [7.092, 1.096],
+		anchors: {}
+	},
+	dynamicPPPPPP: {
+		name: 'dynamicPPPPPP',
+		codepoint: 0xE527,
+		description: 'pppppp',
+		advance: 8.496,
+		bBoxSW: [-0.408, -0.568],
+		bBoxNE: [8.512, 1.096],
+		anchors: {}
+	},
+	dynamicForte: {
+		name: 'dynamicForte',
+		codepoint: 0xE522,
+		description: 'Forte',
+		advance: 1.456,
+		bBoxSW: [-0.564, -0.608],
+		bBoxNE: [1.456, 1.776],
+		anchors: {}
+	},
+	dynamicFF: {
+		name: 'dynamicFF',
+		codepoint: 0xE52F,
+		description: 'ff',
+		advance: 2.436,
+		bBoxSW: [-0.54, -0.608],
+		bBoxNE: [2.44, 1.776],
+		anchors: {}
+	},
+	dynamicFFF: {
+		name: 'dynamicFFF',
+		codepoint: 0xE530,
+		description: 'fff',
+		advance: 3.324,
+		bBoxSW: [-0.62, -0.608],
+		bBoxNE: [3.32, 1.776],
+		anchors: {}
+	},
+	dynamicFFFF: {
+		name: 'dynamicFFFF',
+		codepoint: 0xE531,
+		description: 'ffff',
+		advance: 4.28,
+		bBoxSW: [-0.62, -0.608],
+		bBoxNE: [4.28, 1.776],
+		anchors: {}
+	},
+	dynamicFFFFF: {
+		name: 'dynamicFFFFF',
+		codepoint: 0xE532,
+		description: 'fffff',
+		advance: 5.24,
+		bBoxSW: [-0.62, -0.608],
+		bBoxNE: [5.24, 1.776],
+		anchors: {}
+	},
+	dynamicFFFFFF: {
+		name: 'dynamicFFFFFF',
+		codepoint: 0xE533,
+		description: 'ffffff',
+		advance: 6.2,
+		bBoxSW: [-0.62, -0.608],
+		bBoxNE: [6.2, 1.776],
+		anchors: {}
+	},
+	dynamicMP: {
+		name: 'dynamicMP',
+		codepoint: 0xE52C,
+		description: 'mp',
+		advance: 3.304,
+		bBoxSW: [-0.08, -0.568],
+		bBoxNE: [3.3, 1.096],
+		anchors: {}
+	},
+	dynamicMF: {
+		name: 'dynamicMF',
+		codepoint: 0xE52D,
+		description: 'mf',
+		advance: 3.188,
+		bBoxSW: [-0.08, -0.66],
+		bBoxNE: [3.272, 1.724],
+		anchors: {}
+	},
+	dynamicPF: {
+		name: 'dynamicPF',
+		codepoint: 0xE52E,
+		description: 'pf',
+		advance: 3.08,
+		bBoxSW: [-0.288, -0.608],
+		bBoxNE: [3.08, 1.776],
+		anchors: {}
+	},
+	dynamicFortePiano: {
+		name: 'dynamicFortePiano',
+		codepoint: 0xE534,
+		description: 'Forte-piano',
+		advance: 2.476,
+		bBoxSW: [-0.564, -0.608],
+		bBoxNE: [2.476, 1.776],
+		anchors: {}
+	},
+	dynamicForzando: {
+		name: 'dynamicForzando',
+		codepoint: 0xE535,
+		description: 'Forzando',
+		advance: 1.988,
+		bBoxSW: [-0.564, -0.608],
+		bBoxNE: [1.988, 1.776],
+		anchors: {}
+	},
+	dynamicSforzando1: {
+		name: 'dynamicSforzando1',
+		codepoint: 0xE536,
+		description: 'Sforzando 1',
+		advance: 2.416,
+		bBoxSW: [0, -0.608],
+		bBoxNE: [2.416, 1.776],
+		anchors: {}
+	},
+	dynamicSforzandoPiano: {
+		name: 'dynamicSforzandoPiano',
+		codepoint: 0xE537,
+		description: 'Sforzando-piano',
+		advance: 3.384,
+		bBoxSW: [0, -0.608],
+		bBoxNE: [3.38, 1.776],
+		anchors: {}
+	},
+	dynamicSforzandoPianissimo: {
+		name: 'dynamicSforzandoPianissimo',
+		codepoint: 0xE538,
+		description: 'Sforzando-pianissimo',
+		advance: 4.792,
+		bBoxSW: [0, -0.608],
+		bBoxNE: [4.796, 1.776],
+		anchors: {}
+	},
+	dynamicSforzato: {
+		name: 'dynamicSforzato',
+		codepoint: 0xE539,
+		description: 'Sforzato',
+		advance: 2.928,
+		bBoxSW: [0, -0.608],
+		bBoxNE: [2.932, 1.776],
+		anchors: {}
+	},
+	dynamicSforzatoPiano: {
+		name: 'dynamicSforzatoPiano',
+		codepoint: 0xE53A,
+		description: 'Sforzato-piano',
+		advance: 4.3,
+		bBoxSW: [0, -0.608],
+		bBoxNE: [4.304, 1.776],
+		anchors: {}
+	},
+	dynamicSforzatoFF: {
+		name: 'dynamicSforzatoFF',
+		codepoint: 0xE53B,
+		description: 'Sforzatissimo',
+		advance: 3.856,
+		bBoxSW: [0, -0.608],
+		bBoxNE: [3.856, 1.776],
+		anchors: {}
+	},
+	dynamicRinforzando1: {
+		name: 'dynamicRinforzando1',
+		codepoint: 0xE53C,
+		description: 'Rinforzando 1',
+		advance: 2.5,
+		bBoxSW: [-0.08, -0.608],
+		bBoxNE: [2.5, 1.776],
+		anchors: {}
+	},
+	dynamicRinforzando2: {
+		name: 'dynamicRinforzando2',
+		codepoint: 0xE53D,
+		description: 'Rinforzando 2',
+		advance: 2.976,
+		bBoxSW: [-0.08, -0.608],
+		bBoxNE: [2.976, 1.776],
+		anchors: {}
+	},
+	dynamicNiente: {
+		name: 'dynamicNiente',
+		codepoint: 0xE526,
+		description: 'Niente',
+		advance: 1.232,
+		bBoxSW: [-0.092, -0.04],
+		bBoxNE: [1.232, 1.096],
+		anchors: {}
+	},
 } as const satisfies Record<string, GlyphMetrics>;
 
 /** Name of any glyph this engine knows how to draw. */
@@ -553,6 +787,7 @@ export const ENGRAVING_DEFAULTS = {
 	tieMidpointThickness: 0.22,
 	slurMidpointThickness: 0.22,
 	bracketThickness: 0.5,
+	hairpinThickness: 0.16,
 } as const;
 
 /**

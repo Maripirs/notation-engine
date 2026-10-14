@@ -14,6 +14,16 @@
 
 import type { Pitch } from './pitch.js';
 import { parsePitch, pitchesEqual, transpose } from './pitch.js';
+import {
+	NO_DYNAMICS,
+	positionBefore,
+	sortDynamics,
+	type DynamicKind,
+	type DynamicMark,
+	type Placement,
+	type Wedge,
+	type WedgeKind
+} from './directions.js';
 import { NO_PASSTHROUGH, type MeasurePassthrough, type OpaqueElement } from './passthrough.js';
 
 /** Note values Divisi draws, whole down to 64th. */
@@ -414,6 +424,13 @@ export class Measure {
 	 * for "which clef is this note in". Replaced wholesale, never mutated.
 	 */
 	clefChanges: readonly ClefChange[] = NO_CLEF_CHANGES;
+	/**
+	 * Dynamic marks drawn on this measure's staff (M6 Slice 6; see
+	 * `DynamicMark`), sorted by onset. A hairpin spans measures, so it lives
+	 * on the score instead (`Score.wedges`). Replaced wholesale, never
+	 * mutated, like `clefChanges`.
+	 */
+	dynamics: readonly DynamicMark[] = NO_DYNAMICS;
 	/**
 	 * The barline at the boundary *after* this measure: `'normal'`, `'double'`,
 	 * `'final'` or `'repeatEnd'`. `'repeatStart'` is deliberately not a valid
@@ -819,6 +836,14 @@ export class Score {
 	 *  what this does and does not model. */
 	readonly crossStaffBeams: CrossStaffBeam[] = [];
 	/**
+	 * Every crescendo/diminuendo hairpin (M6 Slice 6; see `Wedge`), in the
+	 * order they were added. A score-level list like `slurs`, since a hairpin
+	 * spans measures; layout and playback find the ones crossing a measure by
+	 * scanning it, which is cheap at the hundreds a real score has. Entries are
+	 * immutable: an edit replaces one.
+	 */
+	readonly wedges: Wedge[] = [];
+	/**
 	 * The score header the model does not hold (M6 Slice 3): every
 	 * `<score-partwise>` child before `<part-list>` (`<work>`,
 	 * `<movement-title>`, `<identification>`, `<defaults>`, `<credit>`), in
@@ -1120,6 +1145,68 @@ export class Score {
 	}
 
 	/**
+	 * Add a dynamic mark (M6 Slice 6) at `onset` wholes into measure
+	 * `measureIndex` of staff `staffIndex`, keeping `Measure.dynamics` sorted.
+	 * For a score built in code; import reads marks with their source attached
+	 * (`DynamicMark.source`) and sets the list directly. `voice` defaults to
+	 * the measure's first voice, the stream export writes the mark in.
+	 */
+	addDynamic(
+		staffIndex: number,
+		measureIndex: number,
+		spec: { readonly kind: DynamicKind; readonly onset?: number; readonly placement?: Placement; readonly voice?: number }
+	): DynamicMark {
+		const measure = this.staves[staffIndex]?.measures[measureIndex];
+		if (!measure) throw new Error(`addDynamic: no measure ${measureIndex} on staff ${staffIndex}`);
+		const onset = spec.onset ?? 0;
+		if (onset < 0) throw new Error(`addDynamic: onset ${onset} is before the measure's downbeat`);
+		const mark: DynamicMark = {
+			kind: spec.kind,
+			onset,
+			placement: spec.placement ?? null,
+			voice: spec.voice ?? measure.notes[0]?.voice ?? 1,
+			source: null
+		};
+		measure.dynamics = sortDynamics([...measure.dynamics, mark]);
+		return mark;
+	}
+
+	/**
+	 * Add a crescendo/diminuendo hairpin (M6 Slice 6) on staff `staffIndex`
+	 * from `start` to `stop`, each a measure index plus an onset in wholes
+	 * from that measure's downbeat (default 0; a stop "at the barline" is the
+	 * measure's own length). Throws for a missing staff or measure, or a stop
+	 * before its start. For a score built in code, like `addDynamic`.
+	 */
+	addWedge(spec: {
+		readonly kind: WedgeKind;
+		readonly staffIndex?: number;
+		readonly placement?: Placement;
+		readonly start: { readonly measureIndex: number; readonly onset?: number };
+		readonly stop: { readonly measureIndex: number; readonly onset?: number };
+	}): Wedge {
+		const staffIndex = spec.staffIndex ?? 0;
+		const staff = this.staves[staffIndex];
+		if (!staff) throw new Error(`addWedge: no staff at index ${staffIndex}`);
+		const end = (position: { readonly measureIndex: number; readonly onset?: number }, which: string) => {
+			const measure = staff.measures[position.measureIndex];
+			if (!measure) throw new Error(`addWedge: ${which} measure ${position.measureIndex} is not on staff ${staffIndex}`);
+			return {
+				measureIndex: position.measureIndex,
+				onset: position.onset ?? 0,
+				voice: measure.notes[0]?.voice ?? 1,
+				source: null
+			};
+		};
+		const start = end(spec.start, 'start');
+		const stop = end(spec.stop, 'stop');
+		if (positionBefore(stop, start)) throw new Error('addWedge: the stop comes before the start');
+		const wedge: Wedge = { kind: spec.kind, staffIndex, placement: spec.placement ?? null, start, stop };
+		this.wedges.push(wedge);
+		return wedge;
+	}
+
+	/**
 	 * Add an explicit cross-staff beam (M2 Slice 6) linking `noteIds`, each
 	 * already a note in its own staff's own Measure. See `CrossStaffBeam`'s own
 	 * comment for what this does and does not model.
@@ -1378,6 +1465,8 @@ export class Score {
 				if (measure.clef !== undefined) measureCopy.clef = measure.clef;
 				// Each `ClefChange` is immutable, so only the array is fresh.
 				if (measure.clefChanges.length > 0) measureCopy.clefChanges = [...measure.clefChanges];
+				// Dynamic marks are immutable too (their `source` included).
+				if (measure.dynamics.length > 0) measureCopy.dynamics = [...measure.dynamics];
 				if (measure.time !== undefined) {
 					measureCopy.time = { beats: measure.time.beats, beatType: measure.time.beatType };
 				}
@@ -1428,6 +1517,9 @@ export class Score {
 		for (const slur of this.slurs) {
 			copy.slurs.push({ startNoteId: slur.startNoteId, endNoteId: slur.endNoteId });
 		}
+
+		// Immutable entries, shared; only the list is fresh.
+		copy.wedges.push(...this.wedges);
 
 		for (const beam of this.crossStaffBeams) {
 			const beamCopy: CrossStaffBeam = {
@@ -1506,6 +1598,8 @@ export interface MeasureBuildSpec {
 	readonly endBarline?: BarlineType;
 	/** See `Measure.startBarline`. Omit for no repeat-start mark at this measure's own start. */
 	readonly startBarline?: 'repeatStart';
+	/** See `Measure.dynamics` (M6 Slice 6): dynamic marks by onset in wholes (default 0). */
+	readonly dynamics?: readonly { readonly kind: DynamicKind; readonly onset?: number; readonly placement?: Placement }[];
 }
 
 /** `spec is MeasureBuildSpec`, distinguishing it from a bare `MeasureSpec` by
@@ -1540,6 +1634,17 @@ export interface SlurSpec {
 }
 
 /**
+ * One hairpin (M6 Slice 6) for `buildScore`: `start`/`stop` are `[measureIndex,
+ * onsetWholes]` into the `measures` array, the shape `Score.addWedge` takes.
+ */
+export interface WedgeSpec {
+	readonly kind: WedgeKind;
+	readonly start: readonly [measureIndex: number, onset: number];
+	readonly stop: readonly [measureIndex: number, onset: number];
+	readonly placement?: Placement;
+}
+
+/**
  * Build a score from a compact literal, so demo scores and test fixtures read
  * like music rather than like constructor calls. Phase 0 has no importer, so
  * every score in this repo is written by hand and this is how. Phase 5's
@@ -1548,7 +1653,8 @@ export interface SlurSpec {
 export function buildScore(
 	measures: readonly (MeasureSpec | MeasureBuildSpec)[],
 	options: ScoreOptions = {},
-	slurs: readonly SlurSpec[] = []
+	slurs: readonly SlurSpec[] = [],
+	wedges: readonly WedgeSpec[] = []
 ): Score {
 	const score = new Score(options);
 	// Notes requesting `extra.tiedToNext`, and every note built so far in
@@ -1632,6 +1738,19 @@ export function buildScore(
 			throw new Error(`slur end [${endMeasureIndex}, ${endNoteIndex}] is not a note in this score`);
 		}
 		score.addSlur(startNote.id, endNote.id);
+	}
+	// Dynamics after the notes, so each defaults to its measure's first voice.
+	measures.forEach((spec, measureIndex) => {
+		if (!isMeasureBuildSpec(spec) || !spec.dynamics) return;
+		for (const dynamic of spec.dynamics) score.addDynamic(0, measureIndex, dynamic);
+	});
+	for (const spec of wedges) {
+		score.addWedge({
+			kind: spec.kind,
+			placement: spec.placement,
+			start: { measureIndex: spec.start[0], onset: spec.start[1] },
+			stop: { measureIndex: spec.stop[0], onset: spec.stop[1] }
+		});
 	}
 	return score;
 }

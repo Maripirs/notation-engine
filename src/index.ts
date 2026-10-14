@@ -24,6 +24,7 @@ export {
 	createChordShowcaseScore,
 	createDemoScore,
 	createDurationShowcaseScore,
+	createDynamicsShowcaseScore,
 	createFullDemoScore,
 	createGrandStaffShowcaseScore,
 	createSlurShowcaseScore,

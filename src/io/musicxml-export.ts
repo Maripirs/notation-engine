@@ -37,7 +37,9 @@ import {
 	type Note,
 	type NoteId,
 	type OpaqueElement,
+	type DirectionSource,
 	type Part,
+	type Placement,
 	type Score,
 	type TimeSignature
 } from '../model/index.js';
@@ -320,6 +322,10 @@ function writePart(
 	// positional passthrough; see `divisionsForPart`).
 	const everyNote: Note[] = [];
 	const everyAnchor: MeasurePassthrough[] = [];
+	// Dynamics and hairpin ends (M6 Slice 6), as synthetic positional anchors
+	// per `staffIndex:measureIndex`; see `directionAnchorsForPart`.
+	const directionAnchors = directionAnchorsForPart(score, partStaves, multiStaff);
+	for (const list of directionAnchors.values()) everyAnchor.push(...list);
 	// A mid-measure clef change's onset (M6 Slice 4) may need a `<backup>` to
 	// reach it, so it must land on whole divisions too.
 	const clefChangeOnsets: number[] = [];
@@ -371,7 +377,7 @@ function writePart(
 			xml.close('direction');
 		}
 
-		writeMeasureNotes(xml, score, partStaves, m, divisions, multiStaff);
+		writeMeasureNotes(xml, score, partStaves, m, divisions, multiStaff, directionAnchors);
 
 		writeBarlines(
 			xml,
@@ -523,7 +529,8 @@ function writeMeasureNotes(
 	partStaves: readonly number[],
 	m: number,
 	divisions: number,
-	multiStaff: boolean
+	multiStaff: boolean,
+	directionAnchors: ReadonlyMap<string, readonly MeasurePassthrough[]>
 ): void {
 	let cursor: Rational = ZERO;
 	let firstStream = true;
@@ -537,6 +544,7 @@ function writeMeasureNotes(
 		const streams = [...groupNotesByVoice(measure.notes)];
 		const anchorsByVoice = anchorsByStream(measure, streams.map(([voice]) => voice));
 		addClefChangeAnchors(anchorsByVoice, measure, streams[0]?.[0], k + 1);
+		addDirectionAnchors(anchorsByVoice, directionAnchors.get(`${staffIndex}:${m}`), streams.map(([voice]) => voice));
 		if (streams.length === 0 && anchorsByVoice.size > 0) streams.push([[...anchorsByVoice.keys()][0]!, []]);
 
 		for (const [voice, voiceNotes] of streams) {
@@ -703,6 +711,195 @@ function addClefChangeAnchors(
 	}
 	list.sort((a, b) => compare(anchorOnset(a), anchorOnset(b)));
 	anchorsByVoice.set(voice, list);
+}
+
+// --- Dynamics and hairpins (M6 Slice 6) ------------------------------------
+
+/** One modelled mark's contribution to a `<direction>`: its regenerated
+ *  `<direction-type>`, and where it goes. */
+interface DirectionPiece {
+	readonly staffIndex: number;
+	readonly measureIndex: number;
+	readonly onset: number;
+	readonly voice: number;
+	readonly source: DirectionSource | null;
+	/** The direction's placement when this mark owns it (a dynamic or a
+	 *  hairpin start), else `undefined` (a stop keeps its source's). */
+	readonly placement: Placement | null | undefined;
+	readonly directionType: OpaqueElement;
+}
+
+const leafElement = (name: string, attrs: Readonly<Record<string, string>> = {}): OpaqueElement => ({
+	name,
+	attrs,
+	children: [],
+	text: ''
+});
+
+/**
+ * Every dynamic and hairpin end on `partStaves`, as one synthetic positional
+ * anchor per `<direction>` to write, keyed by `staffIndex:measureIndex`. They
+ * ride the passthrough anchor writer exactly as mid-measure clef changes do,
+ * so export puts each `<direction>` at its onset in its stream and import
+ * reads it back at the same anchor.
+ *
+ * A mark read from a file is written back into its own `DirectionSource`:
+ * marks sharing one source element (several read from one `<direction>`)
+ * become that one `<direction>` again, their regenerated `<direction-type>`s
+ * put back at their original slots. A mark built in code gets a plain
+ * `<direction>` of its own, with a `<staff>` in a multi-staff part.
+ *
+ * Hairpin `number`s are allocated here, per part, not kept from the source
+ * (see `Wedge`): in start order, each hairpin takes the lowest number not
+ * held by another hairpin whose span touches its own, ends included. Touching
+ * hairpins never share a number, so the importer's pairing (time order, then
+ * document order) matches them back up however their `<direction>`s at one
+ * onset end up ordered in the document.
+ */
+function directionAnchorsForPart(
+	score: Score,
+	partStaves: readonly number[],
+	multiStaff: boolean
+): Map<string, MeasurePassthrough[]> {
+	const pieces: DirectionPiece[] = [];
+	for (const staffIndex of partStaves) {
+		for (const measure of score.staves[staffIndex]!.measures) {
+			for (const mark of measure.dynamics) {
+				pieces.push({
+					staffIndex,
+					measureIndex: measure.index,
+					onset: mark.onset,
+					voice: mark.voice,
+					source: mark.source,
+					placement: mark.placement,
+					directionType: directionTypeElement({
+						name: 'dynamics',
+						attrs: mark.source?.markAttrs ?? {},
+						children: [leafElement(mark.kind)],
+						text: ''
+					})
+				});
+			}
+		}
+	}
+
+	const wedges = score.wedges
+		.filter((wedge) => partStaves.includes(wedge.staffIndex))
+		.sort((a, b) => a.start.measureIndex - b.start.measureIndex || a.start.onset - b.start.onset);
+	const position = (end: { readonly measureIndex: number; readonly onset: number }): number =>
+		// A sortable scalar: measures never hold anywhere near 1e6 wholes.
+		end.measureIndex * 1e6 + end.onset;
+	const assigned: { readonly stop: number; readonly number: number }[] = [];
+	for (const wedge of wedges) {
+		const startAt = position(wedge.start);
+		const taken = new Set(assigned.filter((a) => a.stop >= startAt - 1e-9).map((a) => a.number));
+		let number = 1;
+		while (taken.has(number)) number++;
+		assigned.push({ stop: position(wedge.stop), number });
+		const wedgeElement = (type: string, source: DirectionSource | null): OpaqueElement =>
+			directionTypeElement(leafElement('wedge', { type, number: String(number), ...(source?.markAttrs ?? {}) }));
+		pieces.push({
+			staffIndex: wedge.staffIndex,
+			measureIndex: wedge.start.measureIndex,
+			onset: wedge.start.onset,
+			voice: wedge.start.voice,
+			source: wedge.start.source,
+			placement: wedge.placement,
+			directionType: wedgeElement(wedge.kind, wedge.start.source)
+		});
+		pieces.push({
+			staffIndex: wedge.staffIndex,
+			measureIndex: wedge.stop.measureIndex,
+			onset: wedge.stop.onset,
+			voice: wedge.stop.voice,
+			source: wedge.stop.source,
+			placement: undefined,
+			directionType: wedgeElement('stop', wedge.stop.source)
+		});
+	}
+
+	// Group pieces into `<direction>`s: by source element identity, or alone.
+	const groups = new Map<object, DirectionPiece[]>();
+	for (const piece of pieces) {
+		const key = piece.source?.element ?? piece;
+		const list = groups.get(key);
+		if (list) list.push(piece);
+		else groups.set(key, [piece]);
+	}
+	const byMeasure = new Map<string, MeasurePassthrough[]>();
+	for (const group of groups.values()) {
+		const first = group[0]!;
+		const element = first.source
+			? rebuildDirection(first.source.element, group)
+			: freshDirection(first, multiStaff ? partStaves.indexOf(first.staffIndex) + 1 : undefined);
+		const key = `${first.staffIndex}:${first.measureIndex}`;
+		const anchor: MeasurePassthrough = {
+			element,
+			onset: quartersToWholes(quartersFromWholes(first.onset)),
+			voice: first.voice,
+			lead: false,
+			divisions: first.source?.divisions ?? 1
+		};
+		const list = byMeasure.get(key);
+		if (list) list.push(anchor);
+		else byMeasure.set(key, [anchor]);
+	}
+	return byMeasure;
+}
+
+function directionTypeElement(child: OpaqueElement): OpaqueElement {
+	return { name: 'direction-type', attrs: {}, children: [child], text: '' };
+}
+
+/** A source `<direction>` with its marks' `<direction-type>`s back in their
+ *  slots, and the placement a mark owns back on it (first, as written). */
+function rebuildDirection(kept: OpaqueElement, group: readonly DirectionPiece[]): OpaqueElement {
+	const bySlot = [...group].sort((a, b) => a.source!.slot - b.source!.slot);
+	const children: OpaqueElement[] = [];
+	let next = 0;
+	let piece = 0;
+	const total = kept.children.length + bySlot.length;
+	for (let i = 0; i < total; i++) {
+		if (piece < bySlot.length && bySlot[piece]!.source!.slot === i) children.push(bySlot[piece++]!.directionType);
+		else if (next < kept.children.length) children.push(kept.children[next++]!);
+	}
+	while (piece < bySlot.length) children.push(bySlot[piece++]!.directionType);
+	const placement = group.find((p) => p.placement !== undefined && p.placement !== null)?.placement;
+	const attrs = placement ? { placement, ...kept.attrs } : kept.attrs;
+	return { ...kept, attrs, children };
+}
+
+/** A `<direction>` for a mark built in code. */
+function freshDirection(piece: DirectionPiece, staffNumber: number | undefined): OpaqueElement {
+	const children = [piece.directionType];
+	if (staffNumber !== undefined) children.push({ name: 'staff', attrs: {}, children: [], text: String(staffNumber) });
+	return {
+		name: 'direction',
+		attrs: piece.placement ? { placement: piece.placement } : {},
+		children,
+		text: ''
+	};
+}
+
+/** Merge a staff measure's direction anchors into its streams, stably after
+ *  any passthrough at the same onset. A voice with no notes on the staff
+ *  falls back to its first stream, as `anchorsByStream` does. */
+function addDirectionAnchors(
+	anchorsByVoice: Map<number, MeasurePassthrough[]>,
+	anchors: readonly MeasurePassthrough[] | undefined,
+	voices: readonly number[]
+): void {
+	if (!anchors || anchors.length === 0) return;
+	const fallback = voices[0] ?? [...anchorsByVoice.keys()][0] ?? anchors[0]!.voice;
+	const touched = new Set<number>();
+	for (const anchor of anchors) {
+		const voice = voices.includes(anchor.voice) ? anchor.voice : fallback;
+		const list = anchorsByVoice.get(voice) ?? [];
+		list.push(anchor);
+		anchorsByVoice.set(voice, list);
+		touched.add(voice);
+	}
+	for (const voice of touched) anchorsByVoice.get(voice)!.sort((a, b) => compare(anchorOnset(a), anchorOnset(b)));
 }
 
 /** `<attributes><clef number>...</clef></attributes>` as an opaque element,

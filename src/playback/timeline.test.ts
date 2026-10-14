@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { buildScore, formatPitch, Score } from '../model/index.js';
 import { createSatbBracketShowcaseScore, createTwoVoiceShowcaseScore } from '../demo-score.js';
-import { computePlaybackTimeline, type OnsetEvent } from './timeline.js';
+import { ACCENT_VELOCITY, computePlaybackTimeline, DYNAMIC_LEVELS, type OnsetEvent } from './timeline.js';
 
 /** `formatPitch` on an event's pitch, for readable assertions instead of
  *  comparing raw `{ step, alter, octave }` objects field by field. */
@@ -277,5 +277,79 @@ describe('computePlaybackTimeline: articulations and fermatas (M6 Slice 5)', () 
 		const at = (name: string) => events.find((event) => formatPitch(event.pitch) === name)!;
 		expect(at('F4').durationSeconds).toBe(2);
 		expect(at('G4').startSeconds).toBe(3);
+	});
+});
+
+describe('computePlaybackTimeline: dynamics and hairpins (M6 Slice 6)', () => {
+	const velocities = (score: Score) => computePlaybackTimeline(score).map((event) => event.velocity ?? 1);
+	const quarters = (step: string): [string, 'quarter'][] => [
+		[`${step}4`, 'quarter'],
+		[`${step}4`, 'quarter'],
+		[`${step}4`, 'quarter'],
+		[`${step}4`, 'quarter']
+	];
+
+	it('holds a dynamic until the next one; music before the first keeps full level', () => {
+		const score = buildScore([
+			[['C4', 'half'], ['D4', 'half']],
+			{ notes: [['E4', 'half'], ['F4', 'half']], dynamics: [{ kind: 'pp' }, { kind: 'f', onset: 0.5 }] },
+			[['G4', 'whole']]
+		]);
+		expect(velocities(score)).toEqual([1, 1, DYNAMIC_LEVELS.pp, DYNAMIC_LEVELS.f, DYNAMIC_LEVELS.f]);
+	});
+
+	it('plays an accent dynamic on its own attack only, and fp as forte then piano', () => {
+		const score = buildScore([
+			{ notes: quarters('C'), dynamics: [{ kind: 'p' }, { kind: 'sfz', onset: 0.25 }, { kind: 'fp', onset: 0.5 }] }
+		]);
+		expect(velocities(score)).toEqual([DYNAMIC_LEVELS.p, 1, 0.88, DYNAMIC_LEVELS.p]);
+	});
+
+	it('multiplies the dynamic level with an accent', () => {
+		const score = buildScore([{ notes: [['C4', 'whole', { articulations: ['accent'] }]], dynamics: [{ kind: 'p' }] }]);
+		expect(velocities(score)[0]).toBeCloseTo(DYNAMIC_LEVELS.p! * ACCENT_VELOCITY, 9);
+	});
+
+	it('ramps a hairpin linearly from the level at its start to the dynamic after its stop', () => {
+		const score = buildScore(
+			[
+				{ notes: quarters('C'), dynamics: [{ kind: 'p' }] },
+				{ notes: [['D4', 'whole']], dynamics: [{ kind: 'f' }] }
+			],
+			{},
+			[],
+			[{ kind: 'crescendo', start: [0, 0], stop: [1, 0] }]
+		);
+		const [a, b, c, d, e] = velocities(score);
+		const p = DYNAMIC_LEVELS.p!;
+		const f = DYNAMIC_LEVELS.f!;
+		expect(a).toBeCloseTo(p, 9);
+		expect(b).toBeCloseTo(p + (f - p) * 0.25, 9);
+		expect(c).toBeCloseTo(p + (f - p) * 0.5, 9);
+		expect(d).toBeCloseTo(p + (f - p) * 0.75, 9);
+		expect(e).toBeCloseTo(f, 9);
+	});
+
+	it('moves one step when no dynamic follows the hairpin, and holds that after the stop', () => {
+		const score = buildScore(
+			[{ notes: quarters('C'), dynamics: [{ kind: 'mf' }] }, [['D4', 'whole']]],
+			{},
+			[],
+			[{ kind: 'diminuendo', start: [0, 0], stop: [0, 1] }]
+		);
+		const levels = velocities(score);
+		expect(levels[2]).toBeCloseTo((DYNAMIC_LEVELS.mf! + DYNAMIC_LEVELS.mp!) / 2, 9);
+		expect(levels[4]).toBeCloseTo(DYNAMIC_LEVELS.mp!, 9);
+	});
+
+	it('keeps each staff\'s dynamics to that staff', () => {
+		const score = new Score();
+		score.appendStaff();
+		for (const staffIndex of [0, 1]) {
+			const measure = score.appendMeasure(staffIndex);
+			score.appendNote(measure, { pitch: { step: 'C', alter: 0, octave: 4 }, value: 'whole' });
+		}
+		score.addDynamic(1, 0, { kind: 'pp' });
+		expect(velocities(score)).toEqual([1, DYNAMIC_LEVELS.pp]);
 	});
 });

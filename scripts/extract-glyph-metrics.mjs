@@ -110,7 +110,36 @@ const GLYPHS = [
 	'articMarcatoAbove',
 	'articMarcatoBelow',
 	'fermataAbove',
-	'fermataBelow'
+	'fermataBelow',
+	// Dynamics (M6 Slice 6). SMuFL publishes a combined glyph for every
+	// dynamic the model holds (`DynamicKind`), so each is drawn as one glyph,
+	// with the font's own kerning, rather than assembled letter by letter.
+	'dynamicPiano',
+	'dynamicPP',
+	'dynamicPPP',
+	'dynamicPPPP',
+	'dynamicPPPPP',
+	'dynamicPPPPPP',
+	'dynamicForte',
+	'dynamicFF',
+	'dynamicFFF',
+	'dynamicFFFF',
+	'dynamicFFFFF',
+	'dynamicFFFFFF',
+	'dynamicMP',
+	'dynamicMF',
+	'dynamicPF',
+	'dynamicFortePiano',
+	'dynamicForzando',
+	'dynamicSforzando1',
+	'dynamicSforzandoPiano',
+	'dynamicSforzandoPianissimo',
+	'dynamicSforzato',
+	'dynamicSforzatoPiano',
+	'dynamicSforzatoFF',
+	'dynamicRinforzando1',
+	'dynamicRinforzando2',
+	'dynamicNiente'
 ];
 
 // Engraving defaults are line thicknesses and extensions the font *recommends*
@@ -133,7 +162,9 @@ const ENGRAVING_DEFAULTS = [
 	// between its `bracketTop`/`bracketBottom` end pieces, the same
 	// hand-drawn-rect-at-the-font's-own-thickness convention every other
 	// line in this list already follows.
-	'bracketThickness'
+	'bracketThickness',
+	// A hairpin's two lines (M6 Slice 6), drawn as straight strokes.
+	'hairpinThickness'
 ];
 
 // The stem attachment anchors we use. SMuFL publishes many more per notehead

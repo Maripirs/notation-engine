@@ -135,6 +135,20 @@ export interface LaidOutMeasure {
 	readonly region: Rect;
 	readonly ops: readonly DrawOp[];
 	readonly notes: readonly LaidOutNote[];
+	/**
+	 * The vertical extent (canvas y) of this measure's own ink apart from its
+	 * barlines and its dynamics/hairpins (M6 Slice 6): the staff, notes,
+	 * stems, beams, ledger lines, marks, ties and slurs. Dynamics and hairpins
+	 * clear it, and a system's dynamics line up at one height computed from
+	 * the extents of every measure carrying one (see `layout.ts`'s
+	 * `directionBaselines`); recorded so a scoped `relayoutMeasure` can redo
+	 * that from its neighbours without laying them out again. A shared
+	 * multi-staff barline is left out because it reaches into the gap between
+	 * staves by construction, which would push every dynamic below it.
+	 * Optional only so hand-built test fixtures need not state it; layout
+	 * always sets it.
+	 */
+	readonly inkExtent?: { readonly top: number; readonly bottom: number };
 }
 
 export interface LaidOutScore {
