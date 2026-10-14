@@ -684,7 +684,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       audio playback, now performable via the dev demo controls added
       2026-09-06 (see M3's own Log entry above).
 
-### M5 — Phase 5: Reparity with E2-E12 [ ]
+### M5 — Phase 5: Reparity with E2-E12 [?]
 
 Est. 1-2 months. Re-port the editor features Divisi currently runs on OSMD
 (`OMR_EDITOR_PLAN.md` E4 seam markers, E7 bar-range clef change, E8 undo/
@@ -860,7 +860,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       check: select a bar range (slice 4), click a clef button, see the
       clef change with a courtesy glyph and the notes reposition, then Undo
       restores it in one step.
-- [ ] **Slice 6 — Seam markers.** A pure `regionForMeasureBoundary(layout:
+- [x] **Slice 6 — Seam markers.** A pure `regionForMeasureBoundary(layout:
       LaidOutScore, staffIndex: number, boundaryIndex: number): Rect |
       null` in `src/layout/` (reusing the measure lookup `regionForNote`
       already does, per M4 Slice 4's "reuse, don't re-traverse" note)
@@ -2312,3 +2312,28 @@ divisi splits). Unscoped.
   Noted, not fixed: the grand-staff showcase is two one-staff parts, so the
   multi-staff `<clef number="2">` export path is covered only by a
   hand-built test score.
+- 2026-10-14: M5 Slice 6 (seam markers) done, via subagent, reviewed and
+  re-verified in the main session. `regionForMeasureBoundary(layout,
+  staffIndex, boundaryIndex)` in `src/layout/region-for-measure-boundary.ts`:
+  boundary `i` is the left edge of measure `i` (so at a system break, the
+  start of the new system), `i === measureCount` the final barline; strip is
+  0.6 staff spaces wide (`SEAM_STRIP_WIDTH_STAFF_SPACES`), centred on the
+  edge except the final one, which sits inside it so the thick final barline
+  is fully covered; height is the owning measure's region. Out-of-range,
+  non-integer or missing-staff input returns `null`.
+  `CanvasRenderer.setSeamMarkers` stores the list outside every measure's
+  ops/region and re-resolves strips on `setLayout`; `drawAll` paints them
+  last. Unlike `partDecorations`, strips overlap measure regions, so scoped
+  redraws repaint each strip's intersection with the redrawn region (clipped,
+  so translucent fill never stacks). `setSeamMarkers` itself does not paint
+  (a removed strip can lie partly outside every region), so the host calls
+  `drawAll` after it. New pixel-level node-canvas test proves strip pixels
+  match a fresh full draw after a transpose plus scoped redraw. Demo: "Show
+  seam markers" toggle on the main canvas; verified headlessly in Chrome.
+  429 tests pass; `check`/`build` green. All 6 M5 slices done; M5 is `[?]`
+  pending the scoping review and manual demo check.
+  Noted, not fixed: scoped redraw already leaves faint anti-aliasing
+  differences at fractional region edges (pre-existing, no seams needed);
+  strip height varies with each measure's region; the demo picks its
+  system-break boundary at toggle time, so after a resize it may no longer
+  sit on a break until re-toggled.

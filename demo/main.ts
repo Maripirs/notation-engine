@@ -51,6 +51,7 @@ const upButton = document.querySelector<HTMLButtonElement>('#up')!;
 const downButton = document.querySelector<HTMLButtonElement>('#down')!;
 const fullButton = document.querySelector<HTMLButtonElement>('#full')!;
 const flashButton = document.querySelector<HTMLButtonElement>('#flash')!;
+const seamsButton = document.querySelector<HTMLButtonElement>('#seams')!;
 const zoomOutButton = document.querySelector<HTMLButtonElement>('#zoom-out')!;
 const zoomInButton = document.querySelector<HTMLButtonElement>('#zoom-in')!;
 const playbackPlayButton = document.querySelector<HTMLButtonElement>('#playback-play')!;
@@ -380,6 +381,39 @@ flashButton.addEventListener('click', () => {
 	}
 	ctx.restore();
 	window.setTimeout(() => renderer.redrawMeasures(lastScopedMeasures), 450);
+});
+
+// Seam markers (M5 Slice 6). Stands in for an OMR host marking where one
+// stitched scan fragment ends and the next begins: the host owns the list,
+// the engine just draws it. Hand-picked boundaries, plus the first measure of
+// the second system so one mark lands on a system break (computed from the
+// current layout at toggle time, since where the score casts off depends on
+// the window width). `setSeamMarkers` only takes effect on the next
+// `drawAll`, so toggling repaints the whole score once; after that, a
+// transpose's scoped `redrawMeasure` keeps the marks intact on its own.
+let seamsOn = false;
+
+function demoSeamBoundaries(): { staffIndex: number; boundaryIndex: number }[] {
+	const staffMeasures = layout.measures.filter((m) => m.staffIndex === 0).length;
+	const staffSystems = layout.systems.filter((system) => system.staffIndex === 0);
+	const systemBreak = staffSystems[1]?.measureIndices[0];
+	const picked = new Set([1, 5, staffMeasures]);
+	if (systemBreak !== undefined) picked.add(systemBreak);
+	return [...picked].sort((a, b) => a - b).map((boundaryIndex) => ({ staffIndex: 0, boundaryIndex }));
+}
+
+seamsButton.addEventListener('click', () => {
+	seamsOn = !seamsOn;
+	const boundaries = seamsOn ? demoSeamBoundaries() : [];
+	renderer.setSeamMarkers(boundaries);
+	lastFullDrawMs = drawAll();
+	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
+	seamsButton.textContent = seamsOn ? 'Hide seam markers' : 'Show seam markers';
+	status.textContent = seamsOn
+		? `Seam markers at boundaries ${boundaries.map((b) => b.boundaryIndex).join(', ')} ` +
+			'(boundary i = start of measure i, 0-based; the last is the final barline). ' +
+			'Transpose a note next to one: the scoped redraw keeps the mark.'
+		: 'Seam markers cleared.';
 });
 
 // Resizing the window changes how much room a system has, so it can change

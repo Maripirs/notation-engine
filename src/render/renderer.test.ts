@@ -11,9 +11,11 @@
 // coordinates of every call is a complete record of which pixels the renderer
 // would have touched.
 
+import { createCanvas } from 'canvas';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { createDemoScore } from '../demo-score.js';
 import { layoutScore, relayoutMeasure } from '../layout/layout.js';
+import { regionForMeasureBoundary } from '../layout/region-for-measure-boundary.js';
 import { parsePitch } from '../model/pitch.js';
 import { buildScore, Score } from '../model/score.js';
 import type { NoteId } from '../model/score.js';
@@ -887,5 +889,241 @@ describe('CanvasRenderer.setMeasureRange (M5 Slice 4)', () => {
 			.filter((m) => m.staffIndex === 0 && (m.index === 1 || m.index === 2))
 			.map((m) => ({ style: tint, ...m.region }));
 		expect(tintFills).toEqual(expected);
+	});
+});
+
+describe('CanvasRenderer.setSeamMarkers (M5 Slice 6)', () => {
+	const SEAM = 'rgba(1, 2, 3, 0.5)';
+
+	/** `recordingContext`, plus the fill style each `fillRect` was issued
+	 *  with, so a seam strip's fill can be told apart from staff lines,
+	 *  stems and barlines (all plain `fillRect`s too). */
+	function styledRecordingContext(): {
+		ctx: CanvasRenderingContext2D;
+		calls: (Recorded & { readonly style: string })[];
+	} {
+		const calls: (Recorded & { readonly style: string })[] = [];
+		const stub = {
+			font: '',
+			fillStyle: '',
+			strokeStyle: '',
+			textBaseline: 'alphabetic',
+			fillRect(x: number, y: number, width: number, height: number) {
+				calls.push({ call: 'fillRect', x, y, right: x + width, bottom: y + height, style: stub.fillStyle });
+			},
+			clearRect(x: number, y: number, width: number, height: number) {
+				calls.push({ call: 'clearRect', x, y, right: x + width, bottom: y + height, style: '' });
+			},
+			fillText(_text: string, x: number, y: number) {
+				calls.push({ call: 'fillText', x, y, right: x, bottom: y, style: stub.fillStyle });
+			}
+		};
+		return { ctx: stub as unknown as CanvasRenderingContext2D, calls };
+	}
+
+	const withinBox = (rect: Rect, point: { x: number; right: number; y: number; bottom: number }, slack = 0.001) =>
+		point.x >= rect.x - slack &&
+		point.right <= rect.x + rect.width + slack &&
+		point.y >= rect.y - slack &&
+		point.bottom <= rect.y + rect.height + slack;
+
+	const intersect = (a: Rect, b: Rect): Rect | null => {
+		const x = Math.max(a.x, b.x);
+		const y = Math.max(a.y, b.y);
+		const right = Math.min(a.x + a.width, b.x + b.width);
+		const bottom = Math.min(a.y + a.height, b.y + b.height);
+		return right > x && bottom > y ? { x, y, width: right - x, height: bottom - y } : null;
+	};
+
+	let score: Score;
+	let layout: LaidOutScore;
+	let recorder: ReturnType<typeof styledRecordingContext>;
+	let renderer: CanvasRenderer;
+
+	beforeEach(() => {
+		score = createDemoScore();
+		layout = layoutScore(score);
+		recorder = styledRecordingContext();
+		renderer = new CanvasRenderer(recorder.ctx, layout, { seamMarker: SEAM });
+	});
+
+	it('drawAll paints one strip per marker, last, at regionForMeasureBoundary\'s rect', () => {
+		renderer.setSeamMarkers([
+			{ staffIndex: 0, boundaryIndex: 1 },
+			{ staffIndex: 0, boundaryIndex: 4 }
+		]);
+		renderer.drawAll();
+		const seamCalls = recorder.calls.filter((call) => call.style === SEAM);
+		expect(seamCalls).toHaveLength(2);
+		// The two seam fills are the very last calls: an overlay over all ink.
+		expect(recorder.calls.slice(-2)).toEqual(seamCalls);
+		const m1 = layout.measures[1]!.region;
+		expect(seamCalls[0]!.x + (seamCalls[0]!.right - seamCalls[0]!.x) / 2).toBeCloseTo(m1.x, 6);
+	});
+
+	it('drops a boundary that does not exist in the layout without throwing', () => {
+		renderer.setSeamMarkers([
+			{ staffIndex: 0, boundaryIndex: 99 },
+			{ staffIndex: 3, boundaryIndex: 0 }
+		]);
+		renderer.drawAll();
+		expect(recorder.calls.filter((call) => call.style === SEAM)).toEqual([]);
+		expect(renderer.seamMarkers).toHaveLength(2);
+	});
+
+	it('setSeamMarkers([]) clears them from the next drawAll', () => {
+		renderer.setSeamMarkers([{ staffIndex: 0, boundaryIndex: 2 }]);
+		renderer.drawAll();
+		expect(recorder.calls.some((call) => call.style === SEAM)).toBe(true);
+
+		renderer.setSeamMarkers([]);
+		recorder.calls.length = 0;
+		renderer.drawAll();
+		expect(recorder.calls.some((call) => call.style === SEAM)).toBe(false);
+		recorder.calls.length = 0;
+		renderer.redrawMeasure(2);
+		expect(recorder.calls.some((call) => call.style === SEAM)).toBe(false);
+	});
+
+	it("setting markers never changes any measure's region", () => {
+		const before = renderer.layout.measures.map((m) => m.region);
+		renderer.setSeamMarkers([
+			{ staffIndex: 0, boundaryIndex: 0 },
+			{ staffIndex: 0, boundaryIndex: 2 },
+			{ staffIndex: 0, boundaryIndex: 4 }
+		]);
+		renderer.drawAll();
+		expect(renderer.layout).toBe(layout);
+		expect(renderer.layout.measures.map((m) => m.region)).toEqual(before);
+		// And the same layout with no markers set lays out identically.
+		expect(layoutScore(createDemoScore()).measures.map((m) => m.region)).toEqual(before);
+	});
+
+	it('transposing a note next to a seam and redrawing its measure repaints the seam inside that region, and only there', () => {
+		// Seams on both sides of measure index 1: boundary 1 (its start) and
+		// boundary 2 (its end barline, which measure 2's strip straddles).
+		const seams = [
+			{ staffIndex: 0, boundaryIndex: 1 },
+			{ staffIndex: 0, boundaryIndex: 2 }
+		];
+		renderer.setSeamMarkers(seams);
+		renderer.drawAll();
+		recorder.calls.length = 0;
+
+		const target = score.measures[1]!.notes[0]!;
+		const touched = score.transposeNote(target.id, 1);
+		expect(touched).toBe(1);
+		const updated = relayoutMeasure(score, layout, touched!)!;
+		renderer.setLayout(updated);
+		renderer.redrawMeasure(touched!);
+
+		const region = updated.measures[1]!.region;
+		// Still scoped: every call, seam fills included, stays inside the region.
+		expect(recorder.calls.length).toBeGreaterThan(0);
+		for (const call of recorder.calls) expect(withinBox(region, call)).toBe(true);
+
+		// Both strips' overlapping parts are repainted, exactly clipped to the
+		// region, after the background clear and after every ink op.
+		const expected = seams.map(({ boundaryIndex }) => {
+			const strip = regionForMeasureBoundary(updated, 0, boundaryIndex)!;
+			return intersect(strip, region)!;
+		});
+		const seamCalls = recorder.calls.filter((call) => call.style === SEAM);
+		expect(seamCalls.map((c) => ({ x: c.x, y: c.y, width: c.right - c.x, height: c.bottom - c.y }))).toEqual(
+			expected
+		);
+		expect(recorder.calls.slice(-seamCalls.length)).toEqual(seamCalls);
+		expect(recorder.calls[0]!.style).not.toBe(SEAM);
+
+		// The neighbours' halves of those strips were never cleared, so they
+		// are never touched either.
+		for (const other of [0, 2]) {
+			const otherRegion = updated.measures[other]!.region;
+			expect(recorder.calls.filter((c) => c.x < otherRegion.x + otherRegion.width && c.right > otherRegion.x)).toEqual(
+				[]
+			);
+		}
+	});
+
+	it('markers follow setLayout to new geometry without another setSeamMarkers call', () => {
+		renderer.setSeamMarkers([{ staffIndex: 0, boundaryIndex: 2 }]);
+		const rescaled = layoutScore(score, { staffSpacePx: 20 });
+		renderer.setLayout(rescaled);
+		renderer.drawAll();
+		const seamCall = recorder.calls.find((call) => call.style === SEAM)!;
+		const strip = regionForMeasureBoundary(rescaled, 0, 2)!;
+		expect(seamCall.x).toBeCloseTo(strip.x, 6);
+		expect(seamCall.right).toBeCloseTo(strip.x + strip.width, 6);
+	});
+});
+
+describe('CanvasRenderer seam markers survive a scoped redraw, in real pixels (M5 Slice 6)', () => {
+	it("leaves every seam strip's pixels identical to a fresh whole-score draw after transposing a neighbouring note", () => {
+		// The op-level test above proves which calls a scoped redraw issues; this
+		// one proves what they add up to on a real rasterizer (node-canvas, the
+		// same backend `redraw.bench.ts` uses). No music font is registered, so
+		// glyphs fall back to a system font: irrelevant here, since only the
+		// strips' own columns are compared and those hold barlines and seam fill.
+		const score = createDemoScore();
+		const layout = layoutScore(score);
+		const seams = [
+			{ staffIndex: 0, boundaryIndex: 1 },
+			{ staffIndex: 0, boundaryIndex: 2 }
+		];
+		const width = Math.ceil(layout.width);
+		const height = Math.ceil(layout.height);
+
+		const scopedCanvas = createCanvas(width, height);
+		const scoped = new CanvasRenderer(scopedCanvas.getContext('2d') as unknown as CanvasRenderingContext2D, layout);
+		scoped.setSeamMarkers(seams);
+		scoped.drawAll();
+
+		const target = score.measures[1]!.notes[0]!;
+		const touched = score.transposeNote(target.id, 1)!;
+		const updated = relayoutMeasure(score, layout, touched)!;
+		scoped.setLayout(updated);
+		scoped.redrawMeasure(touched);
+
+		const freshCanvas = createCanvas(width, height);
+		const fresh = new CanvasRenderer(freshCanvas.getContext('2d') as unknown as CanvasRenderingContext2D, updated);
+		fresh.setSeamMarkers(seams);
+		fresh.drawAll();
+
+		// Pixel rows/columns a measure region's *fractional* edge passes
+		// through are skipped. A scoped redraw's background fill only partly
+		// covers such a pixel, blending over whatever was already there, so
+		// it never exactly matches a fresh draw even with no seams at all
+		// (measured: up to ~40 levels at the left edge of the redrawn region
+		// with zero markers set). That is pre-existing antialiasing slack of
+		// region-scoped redraw itself, not something seams introduce.
+		const edgeCols = new Set(updated.measures.flatMap((m) => [m.region.x, m.region.x + m.region.width].map(Math.floor)));
+		const edgeRows = new Set(updated.measures.flatMap((m) => [m.region.y, m.region.y + m.region.height].map(Math.floor)));
+
+		for (const { boundaryIndex } of seams) {
+			const strip = regionForMeasureBoundary(updated, 0, boundaryIndex)!;
+			const x = Math.floor(strip.x);
+			const y = Math.floor(strip.y);
+			const w = Math.ceil(strip.x + strip.width) - x;
+			const h = Math.ceil(strip.y + strip.height) - y;
+			const a = scopedCanvas.getContext('2d').getImageData(x, y, w, h).data;
+			const b = freshCanvas.getContext('2d').getImageData(x, y, w, h).data;
+			// The strip is actually there: a staff-gap pixel just right of the
+			// boundary is red-tinted, not plain white background.
+			const probe = ((Math.floor(h / 2) + 2) * w + w - 2) * 4;
+			expect(b[probe]! - b[probe + 2]!).toBeGreaterThan(50);
+			// And the scoped redraw left every other strip pixel exactly as a
+			// whole-score draw paints it.
+			let compared = 0;
+			for (let row = 0; row < h; row++) {
+				if (edgeRows.has(y + row)) continue;
+				for (let col = 0; col < w; col++) {
+					if (edgeCols.has(x + col)) continue;
+					const i = (row * w + col) * 4;
+					for (let channel = 0; channel < 4; channel++) expect(a[i + channel]).toBe(b[i + channel]);
+					compared++;
+				}
+			}
+			expect(compared).toBeGreaterThan(w * h * 0.5);
+		}
 	});
 });

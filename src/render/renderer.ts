@@ -11,6 +11,7 @@
 // The renderer holds no engraving knowledge. It executes the op list layout
 // produced, and the only decision it makes is what colour to paint an op.
 
+import { regionForMeasureBoundary } from '../layout/region-for-measure-boundary.js';
 import type { DrawOp, LaidOutScore, Rect } from '../layout/types.js';
 import type { NoteId } from '../model/score.js';
 import { BRAVURA_FAMILY, GLYPH_METRICS } from './glyph-metrics.js';
@@ -45,6 +46,20 @@ export interface CanvasRendererOptions {
 	 * `playbackCursor`: see `#paintMeasureRangeTint`'s own comment on why.
 	 */
 	readonly measureRange?: string;
+	/**
+	 * Fill colour for a seam marker strip (M5 Slice 6, see `setSeamMarkers`).
+	 * Translucent so the barline it sits on still shows through, and a red
+	 * distinct from every other highlight colour here, since a seam is a
+	 * host annotation, not an editing state.
+	 */
+	readonly seamMarker?: string;
+}
+
+/** One measure boundary to mark (M5 Slice 6). See `regionForMeasureBoundary`
+ *  for exactly which boundary `boundaryIndex` names. */
+export interface SeamMarker {
+	readonly staffIndex: number;
+	readonly boundaryIndex: number;
 }
 
 /** A contiguous run of measures on one staff (M5 Slice 4), inclusive at both
@@ -64,7 +79,8 @@ const DEFAULTS = {
 	background: '#ffffff',
 	selection: '#c2410c',
 	playbackCursor: '#0369a1',
-	measureRange: 'rgba(37, 99, 235, 0.12)'
+	measureRange: 'rgba(37, 99, 235, 0.12)',
+	seamMarker: 'rgba(220, 38, 38, 0.45)'
 } as const;
 
 export class CanvasRenderer {
@@ -81,6 +97,15 @@ export class CanvasRenderer {
 	/** The current measure range (M5 Slice 4), always stored normalized
 	 *  (`from <= to`), or `null` when no range is active. */
 	#measureRange: MeasureRange | null = null;
+	/** The host's seam marker list (M5 Slice 6), exactly as last handed to
+	 *  `setSeamMarkers`. Kept alongside `#seamStrips` so a `setLayout` can
+	 *  re-resolve the same boundaries against the new geometry. */
+	#seamMarkers: readonly SeamMarker[] = [];
+	/** `#seamMarkers` resolved to strips against the current layout, with
+	 *  boundaries that do not exist in it dropped. Cached rather than resolved
+	 *  per paint so a region-scoped redraw stays a cheap rect intersection per
+	 *  marker, not a measure search per marker. */
+	#seamStrips: readonly Rect[] = [];
 
 	/**
 	 * Measure indices painted by the most recent draw call, in the order they
@@ -111,7 +136,8 @@ export class CanvasRenderer {
 			background: options.background === undefined ? DEFAULTS.background : options.background,
 			selection: options.selection ?? DEFAULTS.selection,
 			playbackCursor: options.playbackCursor ?? DEFAULTS.playbackCursor,
-			measureRange: options.measureRange ?? DEFAULTS.measureRange
+			measureRange: options.measureRange ?? DEFAULTS.measureRange,
+			seamMarker: options.seamMarker ?? DEFAULTS.seamMarker
 		};
 	}
 
@@ -129,6 +155,7 @@ export class CanvasRenderer {
 	 */
 	setLayout(layout: LaidOutScore): void {
 		this.#layout = layout;
+		this.#seamStrips = this.#resolveSeamStrips();
 	}
 
 	get selectedNoteId(): NoteId | null {
@@ -257,6 +284,49 @@ export class CanvasRenderer {
 		return affected;
 	}
 
+	get seamMarkers(): readonly SeamMarker[] {
+		return this.#seamMarkers;
+	}
+
+	/**
+	 * Replace the seam marker list (M5 Slice 6): a thin vertical strip at each
+	 * listed measure boundary, laid over the score. `[]` clears them. Takes
+	 * effect on the next `drawAll()`, the same way `partDecorations` only ever
+	 * paint there; unlike `setSelection`/`setMeasureRange` there are no
+	 * affected measures to return, because a strip reaches outside every
+	 * measure's region (into the margin at a system start or the final
+	 * barline), so no set of `redrawMeasure` calls could fully erase a removed
+	 * one. Seams are set rarely (once per loaded scan mapping, say), so a full
+	 * repaint is the honest cost.
+	 *
+	 * Markers are render state only, like the selection: never part of the
+	 * model, never persisted, never exported. Boundaries that do not exist in
+	 * the current layout are kept in the list but simply not drawn, and every
+	 * `setLayout` re-resolves the list against the new geometry, so markers
+	 * follow a rescale or a re-cast without the host calling this again.
+	 *
+	 * Like `partDecorations`, strips live outside every measure's own `ops`
+	 * and `region`, so a marker never inflates a region. Unlike
+	 * `partDecorations`, a strip does overlap measure regions (it straddles
+	 * the barline it marks), so `redrawMeasure`/`redrawMeasures` must not just
+	 * leave markers alone: after repainting a measure they repaint the part of
+	 * every strip that falls inside that measure's region, clipped to it. The
+	 * part outside is never cleared, so it never needs repainting either.
+	 */
+	setSeamMarkers(boundaries: readonly SeamMarker[]): void {
+		this.#seamMarkers = boundaries.map(({ staffIndex, boundaryIndex }) => ({ staffIndex, boundaryIndex }));
+		this.#seamStrips = this.#resolveSeamStrips();
+	}
+
+	#resolveSeamStrips(): Rect[] {
+		const strips: Rect[] = [];
+		for (const { staffIndex, boundaryIndex } of this.#seamMarkers) {
+			const strip = regionForMeasureBoundary(this.#layout, staffIndex, boundaryIndex);
+			if (strip) strips.push(strip);
+		}
+		return strips;
+	}
+
 	/** Repaint the whole score. The baseline the region-scoped path is measured against. */
 	drawAll(): void {
 		this.lastRedrawnMeasures = [];
@@ -280,6 +350,12 @@ export class CanvasRenderer {
 		// own comment on why they live outside every measure's own region and
 		// therefore outside the region-scoped redraw path entirely.
 		this.#drawOps(this.#layout.partDecorations);
+		// Seam markers (M5 Slice 6): last, over every measure's ink, so a strip
+		// reads as an annotation laid on top of the barline it marks.
+		if (this.#seamStrips.length > 0) {
+			this.#ctx.fillStyle = this.#options.seamMarker;
+			for (const strip of this.#seamStrips) this.#ctx.fillRect(strip.x, strip.y, strip.width, strip.height);
+		}
 	}
 
 	/**
@@ -320,8 +396,34 @@ export class CanvasRenderer {
 		this.#ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;
 		this.#ctx.textBaseline = 'alphabetic';
 		this.#drawOps(measure.ops);
+		this.#paintSeamStripsWithin(measure.region);
 		this.lastRedrawnMeasures.push(index);
 		this.lastRedrawnRegions.push(measure.region);
+	}
+
+	/**
+	 * Repaint the part of every seam strip that overlaps `region` (M5 Slice 6),
+	 * after that region was just cleared and repainted. A strip is a plain
+	 * rectangle, so "clipped to the region" is a rectangle intersection, not a
+	 * canvas clip path: every call this makes stays inside `region`, keeping
+	 * a scoped redraw's "touches no pixel outside the measure" property exact.
+	 * Painted fresh over a freshly cleared background, so a translucent
+	 * `seamMarker` colour never accumulates across repeated redraws.
+	 */
+	#paintSeamStripsWithin(region: Rect): void {
+		let styled = false;
+		for (const strip of this.#seamStrips) {
+			const left = Math.max(strip.x, region.x);
+			const right = Math.min(strip.x + strip.width, region.x + region.width);
+			const top = Math.max(strip.y, region.y);
+			const bottom = Math.min(strip.y + strip.height, region.y + region.height);
+			if (right <= left || bottom <= top) continue;
+			if (!styled) {
+				this.#ctx.fillStyle = this.#options.seamMarker;
+				styled = true;
+			}
+			this.#ctx.fillRect(left, top, right - left, bottom - top);
+		}
 	}
 
 	#inMeasureRange(staffIndex: number, index: number): boolean {

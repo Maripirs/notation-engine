@@ -124,7 +124,10 @@
 			<code>EditHistory</code>, so Undo / Redo (or <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>,
 			<kbd>Shift</kbd>+<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>) step back and forth through
 			it with a whole-score re-layout, and Save downloads the current score as MusicXML and
-			clears the unsaved-changes flag.
+			clears the unsaved-changes flag. Show seam markers (M5 Slice 6) overlays red strips at a
+			few measure boundaries, one of them at a system break, the way an OMR host would mark
+			where stitched scan fragments meet; they are render-only, and survive a transpose's
+			scoped redraw of a neighbouring measure.
 		</p>
 		<div id="score-scroll">
 			<canvas id="score"></canvas>
@@ -134,6 +137,7 @@
 			<button id="up" disabled>&uarr; semitone</button>
 			<button id="full">Redraw whole score</button>
 			<button id="flash">Flash redrawn region</button>
+			<button id="seams">Show seam markers</button>
 			<button id="zoom-out">Zoom out</button>
 			<button id="zoom-in">Zoom in</button>
 			<button id="undo" disabled>Undo</button>

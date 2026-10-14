@@ -10,3 +10,4 @@ export {
 export type { HitResult, MeasureHitResult } from './hit-test.js';
 export { containsPoint, hitTest, hitTestMeasure } from './hit-test.js';
 export { regionForNote } from './region-for-note.js';
+export { regionForMeasureBoundary, SEAM_STRIP_WIDTH_STAFF_SPACES } from './region-for-measure-boundary.js';
