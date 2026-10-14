@@ -1100,8 +1100,6 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 		const staffTopYs: number[] = [];
 		for (let staffIndex = 0; staffIndex < staffCount; staffIndex++) {
 			const staff = score.staves[staffIndex]!;
-			const clef = staff.clef;
-			const lines = CLEF_LINES[clef];
 			const span = barlineSpan(staffIndex, staffCount, staffTopY, ss);
 			staffTopYs.push(staffTopY);
 
@@ -1110,6 +1108,9 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 			for (let col = 0; col < plan.length; col++) {
 				const measureIndex = plan[col]!;
 				const measure = staff.measures[measureIndex]!;
+				// Per measure, not per staff row (M5 Slice 5): a clef change can
+				// land anywhere in a system, so each measure resolves its own.
+				const clef = score.clefAt(measureIndex, staffIndex);
 				const laid = layoutMeasure(score, measure, {
 					ss,
 					staffTopY,
@@ -1120,7 +1121,7 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 					spacingScale: scales[staffIndex],
 					staffIndex,
 					clef,
-					lines,
+					lines: CLEF_LINES[clef],
 					columnWidth: columnWidths[col],
 					barlineTop: span.top,
 					barlineBottom: span.bottom
@@ -1352,7 +1353,7 @@ function probeMeasureWidth(
 	flags: { isSystemFirst: boolean; isScoreFirst: boolean; isLast: boolean },
 	spacingScale?: number
 ): number {
-	const clef = score.staves[staffIndex]!.clef;
+	const clef = score.clefAt(measure.index, staffIndex);
 	return layoutMeasure(score, measure, {
 		ss,
 		staffTopY: 0,
@@ -1461,7 +1462,7 @@ export function relayoutMeasure(
 	const system = staffSystems[systemIndex];
 	if (!staff || !measure || !previous || !system) return null;
 
-	const clef = staff.clef;
+	const clef = score.clefAt(measureIndex, staffIndex);
 	const ss = options.staffSpacePx ?? DEFAULTS.staffSpacePx;
 	// M2 Slice 6 fix: a shared end barline's own span (see `barlineSpan`) is a
 	// pure function of (staffIndex, staffCount, staffTopY, ss), exactly the
@@ -1535,9 +1536,11 @@ interface MeasureContext {
 	 *  `timeAt`/`endBarlineAt` call in this file reads this rather than the
 	 *  implicit-staff-0 default those methods otherwise fall back to. */
 	readonly staffIndex: number;
-	/** `staves[staffIndex]`'s own clef: drives `layoutClef`'s glyph and the
-	 *  key-signature octave table (`KEY_SIGNATURE_OCTAVES`); see `lines` for
-	 *  the derived line/ledger positions it also determines. */
+	/** The clef in force at *this measure* (`Score.clefAt`, M5 Slice 5; it
+	 *  was `staves[staffIndex]`'s single clef before a measure could change
+	 *  it): drives `layoutClef`'s glyph and the key-signature octave table
+	 *  (`KEY_SIGNATURE_OCTAVES`); see `lines` for the derived line/ledger
+	 *  positions it also determines. */
 	readonly clef: ClefType;
 	/** `CLEF_LINES[clef]`, precomputed once per measure rather than looked up
 	 *  repeatedly: every note/ledger/stem-direction calculation below reads
@@ -1599,6 +1602,10 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	const keyChangedHere = measure.index > 0 && keyFifths !== score.keyFifthsAt(measure.index - 1, ctx.staffIndex);
 	const timeChangedHere =
 		measure.index > 0 && !timeSignaturesEqual(time, score.timeAt(measure.index - 1, ctx.staffIndex));
+	// Same idea for a clef change (M5 Slice 5). `ctx.clef` is already this
+	// measure's own resolved clef (`Score.clefAt`), so only the comparison
+	// against the previous measure is new here.
+	const clefChangedHere = measure.index > 0 && ctx.clef !== score.clefAt(measure.index - 1, ctx.staffIndex);
 
 	// The clef, key signature and (for the score's true first measure, or any
 	// later measure whose time signature just changed) time signature belong
@@ -1628,6 +1635,17 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// trailed at the previous system's end. Flagged here as the scope this
 	// slice punts on; every change still lands with the right glyphs at the
 	// right measure, which is what the acceptance criteria ask for.
+	//
+	// A clef change (M5 Slice 5) follows exactly the same two-branch shape. At
+	// a system's first measure the ordinary header clef already reads
+	// `ctx.clef`, this measure's own resolved clef, so a change landing on a
+	// system break (or any later system after a change) shows the new clef
+	// with nothing extra. A change landing mid-system draws its own clef glyph
+	// first in the mid-system branch, ahead of any key/time courtesy (the
+	// clef has to come first: the key signature's accidental positions read
+	// that same clef), at `CHANGE_CLEF_SCALE` of full size, the conventional
+	// smaller "change clef". The same anticipatory-courtesy punt applies: no
+	// clef is trailed at the end of the previous system.
 	let cursor = startX;
 	if (ctx.isSystemFirst) {
 		cursor += SPACING.headerGap * ss;
@@ -1642,8 +1660,11 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		if (ctx.isScoreFirst || timeChangedHere) {
 			cursor = layoutTimeSignature(ops, cursor, time.beats, time.beatType, ctx);
 		}
-	} else if (keyChangedHere || timeChangedHere) {
+	} else if (clefChangedHere || keyChangedHere || timeChangedHere) {
 		cursor += SPACING.headerGap * ss;
+		if (clefChangedHere) {
+			cursor = layoutClef(ops, cursor, ctx, CHANGE_CLEF_SCALE);
+		}
 		if (keyChangedHere) {
 			cursor = layoutKeySignature(ops, cursor, keyFifths, ctx, score.keyFifthsAt(measure.index - 1, ctx.staffIndex));
 		}
@@ -2161,22 +2182,33 @@ function pushRepeatDots(ops: DrawOp[], x: number, ctx: MeasureContext): void {
  * (see `CLEF_LINES`'s own comment); this is the one place that difference
  * actually shows up.
  */
-function layoutClef(ops: DrawOp[], x: number, ctx: MeasureContext): number {
+function layoutClef(ops: DrawOp[], x: number, ctx: MeasureContext, scale = 1): number {
+	// Only a mid-system change clef (M5 Slice 5) passes a `scale`; a
+	// full-size header clef keeps the shared font size, with no `fontSizePx`
+	// override on its op at all, exactly as before. Scaling about the glyph's
+	// own origin keeps it anchored on the line its clef names.
+	const sized = scale === 1 ? {} : { fontSizePx: ctx.ss * STAFF_SPACES_PER_EM * scale };
 	if (ctx.clef === 'bass') {
 		// The F clef's origin sits on the line of the F it names, the second
 		// line from the top of a bass staff, with its two dots straddling it.
 		const y = staffY(diatonicIndex({ step: 'F', alter: 0, octave: 3 }), ctx);
-		ops.push({ kind: 'glyph', glyph: 'fClef', x, y });
-		return x + (GLYPH_METRICS.fClef.advance + SPACING.headerGap) * ctx.ss;
+		ops.push({ kind: 'glyph', glyph: 'fClef', x, y, ...sized });
+		return x + (GLYPH_METRICS.fClef.advance * scale + SPACING.headerGap) * ctx.ss;
 	}
 	const glyph: GlyphName = ctx.clef === 'treble8' ? 'gClef8vb' : 'gClef';
 	// The G clef's origin sits on the line of the G it names, the second line
 	// from the bottom of a treble staff, for both plain treble and treble8
 	// (they share the same staff position, see `CLEF_LINES`).
 	const y = staffY(diatonicIndex({ step: 'G', alter: 0, octave: 4 }), ctx);
-	ops.push({ kind: 'glyph', glyph, x, y });
-	return x + (GLYPH_METRICS[glyph].advance + SPACING.headerGap) * ctx.ss;
+	ops.push({ kind: 'glyph', glyph, x, y, ...sized });
+	return x + (GLYPH_METRICS[glyph].advance * scale + SPACING.headerGap) * ctx.ss;
 }
+
+/** How large a mid-system change clef draws relative to a full header clef
+ *  (M5 Slice 5). Engraving convention draws a clef change smaller than the
+ *  clef opening a system, typically two-thirds to three-quarters size; the
+ *  upper end keeps the "8" of a `gClef8vb` legible. */
+const CHANGE_CLEF_SCALE = 0.75;
 
 /**
  * Draw a key signature's accidentals, optionally preceded by whichever

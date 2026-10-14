@@ -213,6 +213,40 @@ describe('EditHistory', () => {
 		expect(relaidMeasure).toEqual(originalMeasure);
 	});
 
+	it('setClefRange records exactly one entry, and its undo restores every affected measure\'s clef', async () => {
+		const { EditHistory } = await import('./edit-history.js');
+		const history = new EditHistory(createFullDemoScore());
+		const measureCount = history.current.measures.length;
+		expect(measureCount).toBeGreaterThan(3);
+		const clefs = (score: Score) => score.measures.map((_m, i) => score.clefAt(i));
+		const before = clefs(history.current);
+
+		expect(history.record((s) => s.setClefRange(0, 1, 2, 'bass'))).toEqual({ from: 1, to: 2 });
+		expect(clefs(history.current).slice(0, 4)).toEqual([before[0], 'bass', 'bass', before[3]]);
+		// A no-op clef edit (the range is already bass) records nothing.
+		expect(history.record((s) => s.setClefRange(0, 1, 2, 'bass'))).toBeNull();
+
+		expect(history.undo()).not.toBeNull();
+		expect(history.canUndo).toBe(false);
+		expect(clefs(history.current)).toEqual(before);
+		expect(history.current.measures.every((m) => m.clef === undefined)).toBe(true);
+		expect(history.dirty).toBe(false);
+
+		history.redo();
+		expect(clefs(history.current).slice(1, 3)).toEqual(['bass', 'bass']);
+		expect(history.dirty).toBe(true);
+	});
+
+	it('Score.clone copies a measure\'s explicit clef without aliasing it', () => {
+		const source = createFullDemoScore();
+		source.setClefRange(0, 1, 1, 'bass');
+		const clone = source.clone();
+		expect(clone.clefAt(1)).toBe('bass');
+		assertScoresEquivalent(clone, source);
+		clone.setClefRange(0, 1, 1, 'treble8');
+		expect(source.clefAt(1)).toBe('bass');
+	});
+
 	it('owns its current score: the initial argument is never mutated', async () => {
 		const { EditHistory } = await import('./edit-history.js');
 		const initial = buildScore([[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'half']]]);

@@ -838,7 +838,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       (`createGrandStaffShowcaseScore`, from M4 Slice 1) highlights the
       contiguous range, and only the measures whose membership changed
       repaint.
-- [ ] **Slice 5 — Range clef change (E7 payload).** `Measure` gains an
+- [x] **Slice 5 — Range clef change (E7 payload).** `Measure` gains an
       optional `clef` field, `undefined` meaning "same as the previous
       measure" (or the staff's own `Staff.clef` for measure 0), with
       `Score.clefAt(staffIndex, measureIndex)` walking back to the nearest
@@ -2292,3 +2292,23 @@ divisi splits). Unscoped.
   Noted, not fixed: a small pre-existing gap in the barline joining the two
   grand-staff staves, and em dashes in three `musicxml-import.test.ts` test
   names.
+- 2026-10-14: M5 Slice 5 (range clef change) done, via subagent, reviewed
+  and re-verified in the main session. `Measure.clef` is an optional
+  per-measure override; `Score.clefAt(measureIndex, staffIndex = 0)` walks
+  back to `Staff.clef` (argument order matches `keyFifthsAt`/`timeAt`, not
+  the spec's `(staffIndex, measureIndex)`). `Score.setClefRange` normalizes
+  the range, clears explicit clefs inside it, restores the prior clef at
+  `to + 1`, and returns `null` for a no-op so `EditHistory.record` skips it.
+  Layout resolves the clef per measure in `layoutScore`, the width probe and
+  `relayoutMeasure`; a mid-system change draws a 0.75-scale clef inside the
+  change measure's own ops, and system headers show the resolved clef. As
+  with M1 Slice 7's key changes, no anticipatory clef at the previous
+  system's end. MusicXML export/import carry mid-score `<clef>` changes (a
+  clef between a measure's notes applies to the whole measure on import).
+  Demo: the grand-staff canvas has its own `EditHistory`, clef buttons and
+  Undo/Redo; Cmd/Ctrl+Z targets the last-clicked canvas. Verified headlessly
+  in Chrome, and manual browser check passed (user, 2026-10-14). 415 tests
+  pass; `check`/`build` green.
+  Noted, not fixed: the grand-staff showcase is two one-staff parts, so the
+  multi-staff `<clef number="2">` export path is covered only by a
+  hand-built test score.

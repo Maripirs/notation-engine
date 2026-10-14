@@ -2136,6 +2136,124 @@ describe('clefs (M2 Slice 3)', () => {
 	});
 });
 
+describe('clef changes (M5 Slice 5)', () => {
+	const ss = 10;
+	const options = { staffSpacePx: ss };
+	const CLEF_GLYPHS: ReadonlySet<GlyphName> = new Set<GlyphName>(['gClef', 'fClef', 'gClef8vb']);
+	/** Every clef glyph op in `ops`, narrowed so `fontSizePx` is readable. */
+	const clefOpsOf = (ops: readonly DrawOp[]) =>
+		ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && CLEF_GLYPHS.has(op.glyph)
+		);
+	const noteheadYs = (ops: readonly DrawOp[]) =>
+		ops.flatMap((op) => (op.kind === 'glyph' && op.glyph === 'noteheadBlack' ? [op.y] : []));
+
+	it('draws a smaller change clef inline at a mid-system change, and none at a later unchanged measure', () => {
+		const score = buildScore([
+			[['C4', 'quarter']],
+			{ notes: [['C4', 'quarter']], clef: 'bass' },
+			[['C4', 'quarter']]
+		]);
+		const layout = layoutScore(score, options);
+		expect(layout.systems[0]!.measureIndices).toEqual([0, 1, 2]);
+
+		expect(clefOpsOf(layout.measures[0]!.ops).map((op) => op.glyph)).toEqual(['gClef']);
+		expect(clefOpsOf(layout.measures[0]!.ops)[0]!.fontSizePx).toBeUndefined();
+
+		const changeClefs = clefOpsOf(layout.measures[1]!.ops);
+		expect(changeClefs.map((op) => op.glyph)).toEqual(['fClef']);
+		// A mid-system change clef draws at a reduced, explicit size, smaller
+		// than the shared font size every full-size header clef uses.
+		expect(changeClefs[0]!.fontSizePx).toBeDefined();
+		expect(changeClefs[0]!.fontSizePx!).toBeLessThan(layout.fontSizePx);
+
+		expect(clefOpsOf(layout.measures[2]!.ops)).toEqual([]);
+	});
+
+	it('shows the changed clef full size when the change lands on a system break, and on every later system', () => {
+		// An unreasonably tight budget forces every measure onto its own
+		// system, the same trick the key-change test above uses.
+		const score = buildScore([
+			[['C4', 'half'], ['D4', 'half']],
+			{ notes: [['C4', 'half'], ['D4', 'half']], clef: 'bass' },
+			[['C4', 'half'], ['D4', 'half']]
+		]);
+		const layout = layoutScore(score, { staffSpacePx: ss, systemWidthPx: 1 });
+		expect(layout.systems[1]!.measureIndices).toEqual([1]);
+		expect(layout.systems[2]!.measureIndices).toEqual([2]);
+
+		expect(clefOpsOf(layout.measures[0]!.ops).map((op) => op.glyph)).toEqual(['gClef']);
+		for (const index of [1, 2]) {
+			const clefs = clefOpsOf(layout.measures[index]!.ops);
+			// Exactly one clef: the system header, already the new clef, with no
+			// second (change) clef stacked after it.
+			expect(clefs.map((op) => op.glyph)).toEqual(['fClef']);
+			expect(clefs[0]!.fontSizePx).toBeUndefined();
+		}
+	});
+
+	it('moves noteheads and ledger lines to the new clef mid-staff', () => {
+		// The same C4 in one system: under treble it hangs one ledger line
+		// below the staff, under bass one ledger line above it. One
+		// `layoutScore` call, so both measures share the same vertical shift and
+		// their raw `y`s compare directly.
+		const score = buildScore([[['C4', 'quarter']], { notes: [['C4', 'quarter']], clef: 'bass' }]);
+		const layout = layoutScore(score, options);
+		const [trebleY] = noteheadYs(layout.measures[0]!.ops);
+		const [bassY] = noteheadYs(layout.measures[1]!.ops);
+		// Treble C4 sits a line below E4 (the bottom line), bass C4 a line
+		// above A3 (the top line): 4 staff spaces of staff plus a line's worth
+		// past each edge, 6 staff spaces in all.
+		expect(trebleY! - bassY!).toBeCloseTo(6 * ss, 6);
+
+		const ledgerYs = (ops: readonly DrawOp[]) =>
+			ops.flatMap((op) =>
+				op.kind === 'rect' && Math.abs(op.height - ED.legerLineThickness * ss) < 0.001 ? [op.y] : []
+			);
+		const staffTopY = layout.staffTopY;
+		expect(ledgerYs(layout.measures[0]!.ops)).toHaveLength(1);
+		expect(ledgerYs(layout.measures[0]!.ops)[0]!).toBeGreaterThan(staffTopY + 4 * ss);
+		expect(ledgerYs(layout.measures[1]!.ops)).toHaveLength(1);
+		expect(ledgerYs(layout.measures[1]!.ops)[0]!).toBeLessThan(staffTopY);
+	});
+
+	it('draws a key signature at a clef change in the new clef\'s own positions', () => {
+		// Measure 1 changes to bass and opens a system; its restated G-major
+		// F# must land on F3's line (where a bass-clef F#3 notehead sits), not
+		// treble's F5 position.
+		const score = buildScore(
+			[
+				[['G4', 'quarter']],
+				{ notes: [['F#3', 'quarter']], clef: 'bass' }
+			],
+			{ keyFifths: 1 }
+		);
+		const layout = layoutScore(score, { staffSpacePx: ss, systemWidthPx: 1 });
+		expect(layout.systems[1]!.measureIndices).toEqual([1]);
+		const ops = layout.measures[1]!.ops;
+		const sharpY = findGlyph(ops, 'accidentalSharp')!.y;
+		expect(sharpY).toBeCloseTo(noteheadYs(ops)[0]!, 6);
+	});
+
+	it('restores the earlier clef with its own change clef where a range reverts', () => {
+		const score = buildScore([[['C4', 'quarter']], [['C4', 'quarter']], [['C4', 'quarter']], [['C4', 'quarter']]]);
+		score.setClefRange(0, 1, 2, 'treble8');
+		const layout = layoutScore(score, options);
+		expect(clefOpsOf(layout.measures[1]!.ops).map((op) => op.glyph)).toEqual(['gClef8vb']);
+		expect(clefOpsOf(layout.measures[2]!.ops)).toEqual([]);
+		expect(clefOpsOf(layout.measures[3]!.ops).map((op) => op.glyph)).toEqual(['gClef']);
+	});
+
+	it('keeps a change measure self-contained for scoped redraw: relayoutMeasure reproduces its change clef', () => {
+		const score = buildScore([[['C4', 'quarter']], { notes: [['C4', 'quarter']], clef: 'bass' }]);
+		const layout = layoutScore(score, options);
+		score.transposeNote(score.measures[1]!.notes[0]!.id, 2);
+		const updated = relayoutMeasure(score, layout, 1, options);
+		expect(updated).not.toBeNull();
+		expect(clefOpsOf(updated!.measures[1]!.ops).map((op) => op.glyph)).toEqual(['fClef']);
+	});
+});
+
 describe('multi-staff redraw isolation (M2 Slice 3)', () => {
 	it('relayoutMeasure on one staff never touches another staff\'s measures, even when their indices collide', () => {
 		// Two staves, each with its own measure 0/1/2: staff-local indices

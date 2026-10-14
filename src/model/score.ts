@@ -193,6 +193,18 @@ export class Measure {
 	/** Same idea as `keyFifths`, for a time signature change. See `Score.timeAt`. */
 	time?: TimeSignature;
 	/**
+	 * A clef change taking effect starting at this measure (M5 Slice 5), the
+	 * same shape as `keyFifths`/`time`: `undefined` means "same clef as the
+	 * previous measure", or, for measure 0, the staff's own `Staff.clef`.
+	 * `Staff.clef` stays the staff's *initial* clef; an explicit value here on
+	 * measure 0 is an override of it, not a replacement, so `Staff.clef` never
+	 * has to be rewritten by an edit. Read through `Score.clefAt`, never this
+	 * field directly: every clef-dependent position (notehead lines, ledgers,
+	 * key signature octaves) needs the clef actually in force, and the
+	 * walk-back that answers that lives in one place.
+	 */
+	clef?: ClefType;
+	/**
 	 * The barline at the boundary *after* this measure: `'normal'`, `'double'`,
 	 * `'final'` or `'repeatEnd'`. `'repeatStart'` is deliberately not a valid
 	 * value here; see `startBarline` for why that one belongs to the measure it
@@ -474,7 +486,9 @@ export class Score {
 	/** `staves[0]`'s own clef, kept as a convenience accessor so code (and any
 	 *  external reader) written against "the score's clef" from before M2
 	 *  Slice 3 still resolves to something sensible; a genuinely multi-staff
-	 *  score should read `staves[i].clef` directly instead. */
+	 *  score should read `staves[i].clef` directly instead. Either way this
+	 *  is only the *initial* clef: since M5 Slice 5 a measure can change it
+	 *  mid-staff, so "the clef at measure N" is `clefAt`'s question. */
 	get clef(): ClefType {
 		return this.staves[0]!.clef;
 	}
@@ -615,6 +629,26 @@ export class Score {
 			if (explicit !== undefined) return explicit;
 		}
 		return this.time;
+	}
+
+	/**
+	 * The clef in force at `measureIndex` of `staffIndex` (M5 Slice 5): that
+	 * measure's own `clef` if it set one, otherwise the nearest earlier
+	 * measure's, otherwise the staff's own initial `Staff.clef`. The same
+	 * walk-back `keyFifthsAt`/`timeAt` already do, with the per-staff fallback
+	 * in place of a score-wide one, since a clef has always been per staff
+	 * (M2 Slice 3). Argument order matches those siblings (measure first,
+	 * staff defaulting to 0) rather than the plan's `(staffIndex,
+	 * measureIndex)` sketch, so every walk-back accessor reads the same way.
+	 */
+	clefAt(measureIndex: number, staffIndex = 0): ClefType {
+		const staff = this.staves[staffIndex];
+		const measures = staff?.measures ?? [];
+		for (let i = measureIndex; i >= 0; i--) {
+			const explicit = measures[i]?.clef;
+			if (explicit !== undefined) return explicit;
+		}
+		return staff?.clef ?? 'treble';
 	}
 
 	/**
@@ -905,6 +939,53 @@ export class Score {
 	}
 
 	/**
+	 * Change the clef of measures `from..to` (inclusive, either order) of
+	 * `staffIndex` to `clef` (M5 Slice 5, the second real edit op after
+	 * `transposeNote`).
+	 *
+	 * The range is made uniform: `from` gets an explicit `clef`, and any
+	 * explicit clef already set inside `from + 1..to` is cleared, so the whole
+	 * range reads `clef` through `clefAt`'s walk-back. The clef that was in
+	 * force at `to + 1` *before* the edit is captured first and, if that
+	 * measure exists, pinned there explicitly, so the change is scoped to the
+	 * range rather than leaking forward through the walk-back into every later
+	 * measure. A range running to the staff's end has no `to + 1` and simply
+	 * keeps the new clef to the end.
+	 *
+	 * Returns the `{ from, to }` measure range (normalized) that was changed,
+	 * or `null` if nothing did: an unknown staff, an out-of-range index, or a
+	 * range already entirely in `clef`. The `null` is what lets
+	 * `EditHistory.record` skip recording a no-op, the same signal
+	 * `transposeNote` gives. Unlike `transposeNote`, a caller cannot repaint
+	 * just the returned measures: a clef change moves every notehead in the
+	 * range and changes widths (a courtesy clef glyph at the change), so the
+	 * caller should re-run a full `layoutScore`.
+	 */
+	setClefRange(staffIndex: number, from: number, to: number, clef: ClefType): { from: number; to: number } | null {
+		const measures = this.staves[staffIndex]?.measures;
+		if (!measures) return null;
+		const lo = Math.min(from, to);
+		const hi = Math.max(from, to);
+		if (lo < 0 || hi >= measures.length) return null;
+
+		let unchanged = true;
+		for (let i = lo; i <= hi; i++) {
+			if (this.clefAt(i, staffIndex) !== clef) {
+				unchanged = false;
+				break;
+			}
+		}
+		if (unchanged) return null;
+
+		const following = measures[hi + 1];
+		const prior = following ? this.clefAt(hi + 1, staffIndex) : undefined;
+		measures[lo]!.clef = clef;
+		for (let i = lo + 1; i <= hi; i++) delete measures[i]!.clef;
+		if (following && prior !== undefined) following.clef = prior;
+		return { from: lo, to: hi };
+	}
+
+	/**
 	 * A deep, **id-preserving** copy of this score.
 	 *
 	 * "Id-preserving": every cloned `Note` keeps its exact `id`, and the private
@@ -948,6 +1029,7 @@ export class Score {
 			for (const measure of staff.measures) {
 				const measureCopy = new Measure(measure.index, measure.staffIndex);
 				if (measure.keyFifths !== undefined) measureCopy.keyFifths = measure.keyFifths;
+				if (measure.clef !== undefined) measureCopy.clef = measure.clef;
 				if (measure.time !== undefined) {
 					measureCopy.time = { beats: measure.time.beats, beatType: measure.time.beatType };
 				}
@@ -1039,6 +1121,8 @@ export interface MeasureBuildSpec {
 	readonly keyFifths?: number;
 	/** See `Measure.time`. Omit to keep whatever time signature was in force before this measure. */
 	readonly time?: TimeSignature;
+	/** See `Measure.clef` (M5 Slice 5). Omit to keep whatever clef was in force before this measure. */
+	readonly clef?: ClefType;
 	/** See `Measure.endBarline`. Omit for the default (`'normal'`, or `'final'` at the score's last measure). */
 	readonly endBarline?: BarlineType;
 	/** See `Measure.startBarline`. Omit for no repeat-start mark at this measure's own start. */
@@ -1104,6 +1188,7 @@ export function buildScore(
 		if (isMeasureBuildSpec(spec)) {
 			measure.keyFifths = spec.keyFifths;
 			measure.time = spec.time;
+			measure.clef = spec.clef;
 			measure.endBarline = spec.endBarline;
 			measure.startBarline = spec.startBarline;
 		}

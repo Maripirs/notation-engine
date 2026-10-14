@@ -21,6 +21,7 @@ import {
 	PlaybackEngine,
 	regionForNote,
 	relayoutMeasure,
+	type ClefType,
 	type LaidOutScore,
 	type NoteId
 } from '../src/index.js';
@@ -58,6 +59,9 @@ const playbackStopButton = document.querySelector<HTMLButtonElement>('#playback-
 const playbackPosition = document.querySelector<HTMLElement>('#playback-position')!;
 const playbackOnset = document.querySelector<HTMLElement>('#playback-onset')!;
 const staffSelectCursorButton = document.querySelector<HTMLButtonElement>('#staff-select-cursor-demo')!;
+const staffSelectUndoButton = document.querySelector<HTMLButtonElement>('#staff-select-undo')!;
+const staffSelectRedoButton = document.querySelector<HTMLButtonElement>('#staff-select-redo')!;
+const clefButtons = document.querySelectorAll<HTMLButtonElement>('button[data-clef]');
 const undoButton = document.querySelector<HTMLButtonElement>('#undo')!;
 const redoButton = document.querySelector<HTMLButtonElement>('#redo')!;
 const saveButton = document.querySelector<HTMLButtonElement>('#save')!;
@@ -286,6 +290,7 @@ function report(scopedMs: number, measureIndex: number): void {
 }
 
 canvas.addEventListener('pointerdown', (event) => {
+	activeHistoryCanvas = 'main';
 	// Pointer coordinates are relative to the viewport and in CSS pixels; layout
 	// works in CSS pixels relative to the canvas origin. The engine deliberately
 	// does not do this conversion, because only the host knows what else it has
@@ -320,14 +325,24 @@ canvas.addEventListener('pointerdown', (event) => {
 		: 'Nothing selected. Click a notehead or a rest.';
 });
 
+/**
+ * Which canvas's own `EditHistory` the keyboard undo/redo shortcuts step
+ * (M5 Slice 5 gave the grand-staff canvas below a history of its own): the
+ * one the user last clicked on, or used a history-changing button of. The
+ * main canvas by default, so the shortcuts keep their pre-slice behaviour
+ * until the grand-staff canvas is actually touched.
+ */
+let activeHistoryCanvas: 'main' | 'staffSelect' = 'main';
+
 window.addEventListener('keydown', (event) => {
 	// Cmd on macOS, Ctrl elsewhere; either is accepted on any platform rather
 	// than sniffing the OS. `event.key` is lowercase 'z' without Shift and
 	// usually uppercase 'Z' with it, so compare case-insensitively.
 	const modifier = event.metaKey || event.ctrlKey;
 	const key = event.key.toLowerCase();
-	if (modifier && key === 'z') stepHistory(event.shiftKey ? 'redo' : 'undo');
-	else if (modifier && key === 'y') stepHistory('redo');
+	const step = activeHistoryCanvas === 'main' ? stepHistory : stepStaffSelectHistory;
+	if (modifier && key === 'z') step(event.shiftKey ? 'redo' : 'undo');
+	else if (modifier && key === 'y') step('redo');
 	else if (event.key === 'ArrowUp') transposeSelected(1);
 	else if (event.key === 'ArrowDown') transposeSelected(-1);
 	else return;
@@ -336,8 +351,14 @@ window.addEventListener('keydown', (event) => {
 
 upButton.addEventListener('click', () => transposeSelected(1));
 downButton.addEventListener('click', () => transposeSelected(-1));
-undoButton.addEventListener('click', () => stepHistory('undo'));
-redoButton.addEventListener('click', () => stepHistory('redo'));
+undoButton.addEventListener('click', () => {
+	activeHistoryCanvas = 'main';
+	stepHistory('undo');
+});
+redoButton.addEventListener('click', () => {
+	activeHistoryCanvas = 'main';
+	stepHistory('redo');
+});
 saveButton.addEventListener('click', saveMusicXml);
 fullButton.addEventListener('click', () => {
 	lastFullDrawMs = drawAll();
@@ -617,12 +638,17 @@ playbackStopButton.addEventListener('click', () => {
 // its own layout and its own renderer. This canvas does not need to track the
 // window's width the way the main one does, so its `systemWidthPx` is just a
 // fixed constant rather than `systemWidthForViewport()`.
+//
+// M5 Slice 5 gives it its own `EditHistory` too (for range clef changes), with
+// the same ownership rule as the main canvas's `history`: no long-lived score
+// variable, every read through `staffSelectHistory.current`, and `let`
+// layout, since a clef change or an undo replaces the whole layout.
 const staffSelectCanvas = document.querySelector<HTMLCanvasElement>('#staff-select-demo')!;
 const staffSelectStatus = document.querySelector<HTMLElement>('#staff-select-status')!;
 
-const staffSelectScore = createGrandStaffShowcaseScore();
+const staffSelectHistory = new EditHistory(createGrandStaffShowcaseScore());
 const staffSelectLayoutOptions = { staffSpacePx: 11, systemWidthPx: 700 };
-const staffSelectLayout: LaidOutScore = layoutScore(staffSelectScore, staffSelectLayoutOptions);
+let staffSelectLayout: LaidOutScore = layoutScore(staffSelectHistory.current, staffSelectLayoutOptions);
 const staffSelectCtx = staffSelectCanvas.getContext('2d')!;
 const staffSelectRenderer = new CanvasRenderer(staffSelectCtx, staffSelectLayout, { background: '#ffffff' });
 
@@ -681,6 +707,7 @@ function describeRange(redrew: string[]): string {
 }
 
 staffSelectCanvas.addEventListener('pointerdown', (event) => {
+	activeHistoryCanvas = 'staffSelect';
 	const { x, y } = staffSelectPoint(event);
 	const measureHit = hitTestMeasure(staffSelectLayout, x, y);
 
@@ -710,7 +737,8 @@ staffSelectCanvas.addEventListener('pointerdown', (event) => {
 		staffSelectCanvas.setPointerCapture(event.pointerId);
 	}
 	staffSelectStatus.textContent = hit
-		? `Selected note ${hit.noteId} on staff ${hit.staffIndex} (${hit.staffIndex === 0 ? 'treble' : 'bass'}), ` +
+		? `Selected note ${hit.noteId} on staff ${hit.staffIndex} ` +
+			`(${staffSelectHistory.current.clefAt(hit.measureIndex, hit.staffIndex)} clef), ` +
 			`measure ${hit.measureIndex + 1}. Redrew ${redrew.length ? `${redrew.join(', ')} only` : 'nothing'}.`
 		: 'Nothing selected. Click a notehead or a rest, or shift-click/drag across measures. ' +
 			`Redrew ${redrew.length} measure(s).`;
@@ -750,9 +778,9 @@ staffSelectCanvas.addEventListener('pointercancel', endMeasureDrag);
 // on each staff plus the treble's second note stand in for a three-note
 // chord/voice-clash onset spanning both staves at once.
 const staffSelectChordNoteIds: NoteId[] = [
-	staffSelectScore.staves[0]!.measures[2]!.notes[0]!.id,
-	staffSelectScore.staves[0]!.measures[2]!.notes[1]!.id,
-	staffSelectScore.staves[1]!.measures[2]!.notes[0]!.id
+	staffSelectHistory.current.staves[0]!.measures[2]!.notes[0]!.id,
+	staffSelectHistory.current.staves[0]!.measures[2]!.notes[1]!.id,
+	staffSelectHistory.current.staves[1]!.measures[2]!.notes[0]!.id
 ];
 staffSelectCursorButton.addEventListener('click', () => {
 	const changed = staffSelectRenderer.setPlaybackCursor(staffSelectChordNoteIds);
@@ -763,6 +791,63 @@ staffSelectCursorButton.addEventListener('click', () => {
 		`Redrew ${changed.length} measure(s): ` +
 		changed.map(({ staffIndex, index }) => `staff ${staffIndex} measure ${index + 1}`).join(', ') +
 		'.';
+});
+
+// Range clef change (M5 Slice 5). Applies `setClefRange` to the current
+// measure range through `staffSelectHistory.record`, so the whole change, the
+// clef at the range's start and the restore after it, is one undo step. Then
+// a full `layoutScore`, not a scoped `relayoutMeasure`: a clef change moves
+// every notehead in the range and adds (or drops) a change-clef glyph, which
+// changes measure widths and can recast later systems. The renderer keeps its
+// measure range and note selection across `setLayout`, so both survive.
+
+/** Install a fresh full layout of `staffSelectHistory.current` and repaint.
+ *  Shared by a clef change and by undo/redo on this canvas. */
+function relayoutStaffSelect(): void {
+	staffSelectLayout = layoutScore(staffSelectHistory.current, staffSelectLayoutOptions);
+	staffSelectRenderer.setLayout(staffSelectLayout);
+	sizeStaffSelectCanvas();
+	staffSelectRenderer.drawAll();
+	staffSelectUndoButton.disabled = !staffSelectHistory.canUndo;
+	staffSelectRedoButton.disabled = !staffSelectHistory.canRedo;
+}
+
+function applyClefToRange(clef: ClefType): void {
+	activeHistoryCanvas = 'staffSelect';
+	const range = staffSelectRenderer.measureRange;
+	if (range === null) {
+		staffSelectStatus.textContent = 'Select a measure range first (shift-click or drag across measures).';
+		return;
+	}
+	const changed = staffSelectHistory.record((score) => score.setClefRange(range.staffIndex, range.from, range.to, clef));
+	if (changed === null) {
+		staffSelectStatus.textContent = `Measures ${range.from + 1}-${range.to + 1} are already in the ${clef} clef.`;
+		return;
+	}
+	relayoutStaffSelect();
+	staffSelectStatus.textContent =
+		`Set staff ${range.staffIndex} measures ${changed.from + 1}-${changed.to + 1} to the ${clef} clef. ` +
+		'Re-laid-out and repainted the whole score.';
+}
+
+function stepStaffSelectHistory(direction: 'undo' | 'redo'): void {
+	const restored = direction === 'undo' ? staffSelectHistory.undo() : staffSelectHistory.redo();
+	if (restored === null) return;
+	relayoutStaffSelect();
+	staffSelectStatus.textContent = `${direction === 'undo' ? 'Undid' : 'Redid'} clef change. ` +
+		'Re-laid-out and repainted the whole score.';
+}
+
+for (const button of clefButtons) {
+	button.addEventListener('click', () => applyClefToRange(button.dataset.clef as ClefType));
+}
+staffSelectUndoButton.addEventListener('click', () => {
+	activeHistoryCanvas = 'staffSelect';
+	stepStaffSelectHistory('undo');
+});
+staffSelectRedoButton.addEventListener('click', () => {
+	activeHistoryCanvas = 'staffSelect';
+	stepStaffSelectHistory('redo');
 });
 
 async function start(): Promise<void> {

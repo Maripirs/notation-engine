@@ -206,7 +206,7 @@ export function importMusicXml(xml: string): Score {
 			for (const attrs of children(measureEl, 'attributes')) {
 				const restated = childText(attrs, 'divisions');
 				if (restated !== undefined) divisions = Math.max(1, intText(restated, divisions));
-				applyAttributeChanges(attrs, measureObjs, m, score);
+				applyAttributeChanges(attrs, measureObjs, m, score, warnOnce);
 			}
 
 			for (const barlineEl of children(measureEl, 'barline')) {
@@ -235,20 +235,35 @@ export function importMusicXml(xml: string): Score {
 // --- Attributes: mid-score and per-part key/time changes ---------------------
 
 /**
- * Apply a measure's `<attributes>` key/time to the model.
+ * Apply a measure's `<attributes>` key/time/clef to the model.
  *
  * At measure 0 an `<attributes>` only records a *change* when its value differs
  * from the score-global one (this is how a per-staff key like the grand-staff
  * showcase's Eb-major bass under a D-major score comes back). At any later
  * measure, a `<key>`/`<time>` present at all is a change, recorded verbatim on
  * every staff of the part.
+ *
+ * A `<clef>` (M5 Slice 5) is per staff, addressed by its `number` attribute
+ * (1-based within the part, default 1), and lands on just that staff's
+ * `Measure.clef`. Measure 0's clefs are skipped here: the staves pass above
+ * already set them as each `Staff.clef`, the staff's initial clef. The model
+ * has no mid-measure clef position, so a `<clef>` between a measure's notes
+ * applies to that whole measure, a documented simplification.
  */
 function applyAttributeChanges(
 	attrs: XmlElement,
 	measureObjs: readonly Measure[],
 	measureIndex: number,
-	score: Score
+	score: Score,
+	warnOnce: WarnOnce
 ): void {
+	if (measureIndex !== 0) {
+		for (const clefEl of children(attrs, 'clef')) {
+			const k = Math.max(1, intText(clefEl.attrs.number, 1)) - 1;
+			const measure = measureObjs[k];
+			if (measure) measure.clef = mapClef(clefEl, warnOnce);
+		}
+	}
 	const keyEl = child(attrs, 'key');
 	if (keyEl) {
 		const fifthsText = childText(keyEl, 'fifths');

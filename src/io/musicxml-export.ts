@@ -276,7 +276,9 @@ function writePart(
  * (divisions, key, time, `<staves>` for a multi-staff part, one `<clef>` per
  * staff, in that DTD-mandated order). A later measure gets a fresh, minimal
  * `<attributes>` only when its own model object carries a key and/or time
- * change, and then only the changed elements: no divisions, no clef.
+ * change, or any of the part's staves changes clef here (M5 Slice 5), and
+ * then only the changed elements: no divisions, and a `<clef>` only for the
+ * staves whose clef actually changed.
  */
 function writeMeasureAttributes(
 	xml: XmlBuilder,
@@ -301,7 +303,7 @@ function writeMeasureAttributes(
 		xml.close('time');
 		if (multiStaff) xml.leaf('staves', String(part.staffIndices.length));
 		for (let k = 0; k < part.staffIndices.length; k++) {
-			writeClef(xml, score.staves[part.staffIndices[k]!]!.clef, k + 1);
+			writeClef(xml, score.clefAt(0, part.staffIndices[k]!), k + 1);
 		}
 		xml.close('attributes');
 		return;
@@ -311,7 +313,18 @@ function writeMeasureAttributes(
 	// staff. A change is `!== undefined`; the walk-back accessors are for
 	// "what is in force here", which is not the question at a change boundary.
 	const measure = score.staves[firstStaffIndex]!.measures[m]!;
-	if (measure.keyFifths === undefined && measure.time === undefined) return;
+	// Clef changes (M5 Slice 5) are per staff, unlike key/time, so every staff
+	// of the part is checked, each against its own previous measure's
+	// *resolved* clef: a `setClefRange` restore at `to + 1` writes an explicit
+	// clef equal to what was already in force, which is no change at all and
+	// emits nothing.
+	const clefChanges: { readonly clef: ClefType; readonly number: number }[] = [];
+	for (let k = 0; k < part.staffIndices.length; k++) {
+		const staffIndex = part.staffIndices[k]!;
+		const clef = score.clefAt(m, staffIndex);
+		if (clef !== score.clefAt(m - 1, staffIndex)) clefChanges.push({ clef, number: k + 1 });
+	}
+	if (measure.keyFifths === undefined && measure.time === undefined && clefChanges.length === 0) return;
 	xml.open('attributes');
 	if (measure.keyFifths !== undefined) {
 		xml.open('key');
@@ -324,6 +337,7 @@ function writeMeasureAttributes(
 		xml.leaf('beat-type', String(measure.time.beatType));
 		xml.close('time');
 	}
+	for (const change of clefChanges) writeClef(xml, change.clef, change.number);
 	xml.close('attributes');
 }
 
@@ -369,7 +383,7 @@ function writeMeasureNotes(
 		const measure = staff.measures[m]!;
 		const time = score.timeAt(m, staffIndex);
 		const fullMeasureDuration = Math.round(measureCapacityWholes(time) * 4 * divisions);
-		const middleLine = middleLineForClef(staff.clef);
+		const middleLine = middleLineForClef(score.clefAt(m, staffIndex));
 
 		for (const [, voiceNotes] of groupNotesByVoice(measure.notes)) {
 			if (!firstStream) {

@@ -9,8 +9,9 @@ import {
 	createTieShowcaseScore,
 	createTwoVoiceShowcaseScore
 } from '../demo-score.js';
-import { buildScore, parsePitch, Score } from '../model/index.js';
+import { assertScoresEquivalent, buildScore, parsePitch, Score } from '../model/index.js';
 import { exportMusicXml } from './musicxml-export.js';
+import { importMusicXml } from './musicxml-import.js';
 
 // --- Test-local XML tooling ----------------------------------------------
 //
@@ -306,6 +307,42 @@ describe('exportMusicXml', () => {
 		const firstMeasureNotes = blocksOf(blocksOf(xml, 'measure')[0]!, 'note');
 		expect(firstMeasureNotes[0]).toContain('<slur type="start" number="1"/>');
 		expect(firstMeasureNotes[3]).toContain('<slur type="stop" number="1"/>');
+	});
+
+	it('emits a per-staff <clef> in a minimal <attributes> wherever a staff\'s resolved clef changes (M5 Slice 5)', () => {
+		// One two-staff part (so the changed staff is addressed as `number="2"`),
+		// four measures per staff.
+		const score = new Score({ keyFifths: 0, time: { beats: 4, beatType: 4 } });
+		score.appendStaff('bass');
+		score.addPart([0, 1], 'Piano');
+		for (let m = 0; m < 4; m++) {
+			score.appendNote(score.appendMeasure(0), { pitch: parsePitch('C5'), value: 'whole' });
+			score.appendNote(score.appendMeasure(1), { pitch: parsePitch('C3'), value: 'whole' });
+		}
+		// The bass staff switches to treble for measure 1 only; measure 2's
+		// restore is a change back, measure 3 is no change at all.
+		score.setClefRange(1, 1, 1, 'treble');
+		const xml = exportMusicXml(score);
+		assertWellFormed(xml);
+
+		const measures = blocksOf(xml, 'measure');
+		const changeAttrs = blocksOf(measures[1]!, 'attributes')[0]!;
+		expect(changeAttrs).toContain('<clef number="2">');
+		expect(changeAttrs).not.toContain('<clef number="1">');
+		expect(changeAttrs).toContain('<sign>G</sign>');
+		expect(changeAttrs).not.toContain('<divisions>');
+
+		const restoreAttrs = blocksOf(measures[2]!, 'attributes')[0]!;
+		expect(restoreAttrs).toContain('<clef number="2">');
+		expect(restoreAttrs).toContain('<sign>F</sign>');
+
+		expect(blocksOf(measures[3]!, 'attributes')).toHaveLength(0);
+
+		// And the import side reads `number="2"` back onto the right staff.
+		const reimported = importMusicXml(xml);
+		assertScoresEquivalent(reimported, score);
+		expect([0, 1, 2, 3].map((m) => reimported.clefAt(m, 1))).toEqual(['bass', 'treble', 'bass', 'bass']);
+		expect([0, 1, 2, 3].map((m) => reimported.clefAt(m, 0))).toEqual(['treble', 'treble', 'treble', 'treble']);
 	});
 
 	it('emits a multi-staff part as one <part> with <staves>, per-staff <clef> and <staff>', () => {

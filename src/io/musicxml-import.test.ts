@@ -234,6 +234,29 @@ describe('importMusicXml — round-trips every showcase score', () => {
 	}
 });
 
+describe('importMusicXml: mid-score clef changes (M5 Slice 5)', () => {
+	it('round-trips a clef change on each staff of a grand staff, including the restore after it', () => {
+		const original = createGrandStaffShowcaseScore();
+		original.setClefRange(0, 1, 1, 'treble8');
+		original.setClefRange(1, 1, 2, 'treble');
+		const reimported = importMusicXml(exportMusicXml(original));
+		assertScoresEquivalent(reimported, original);
+		const clefsOf = (staffIndex: number) =>
+			reimported.staves[staffIndex]!.measures.map((_m, i) => reimported.clefAt(i, staffIndex));
+		expect(clefsOf(0).slice(0, 3)).toEqual(['treble', 'treble8', 'treble']);
+		expect(clefsOf(1).slice(0, 3)).toEqual(['bass', 'treble', 'treble']);
+	});
+
+	it('reads a measure-0 clef override back as the staff\'s own initial clef', () => {
+		const original = createDemoScore();
+		original.setClefRange(0, 0, 0, 'bass');
+		const reimported = importMusicXml(exportMusicXml(original));
+		assertScoresEquivalent(reimported, original);
+		expect(reimported.staves[0]!.clef).toBe('bass');
+		expect(reimported.clefAt(1)).toBe('treble');
+	});
+});
+
 describe('importMusicXml — tolerance for unsupported content', () => {
 	afterEach(() => vi.restoreAllMocks());
 

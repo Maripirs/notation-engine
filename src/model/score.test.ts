@@ -310,6 +310,98 @@ describe('key and time changes', () => {
 	});
 });
 
+describe('clef changes (M5 Slice 5)', () => {
+	const fourMeasures = () =>
+		buildScore([[['C4', 'quarter']], [['C4', 'quarter']], [['C4', 'quarter']], [['C4', 'quarter']], [['C4', 'quarter']]]);
+
+	it('clefAt walks back to the nearest explicit clef, falling back to the staff\'s own clef', () => {
+		const score = buildScore(
+			[
+				[['C4', 'quarter']],
+				{ notes: [['C4', 'quarter']], clef: 'bass' }, // bass from here on
+				[['C4', 'quarter']], // no change: still bass
+				{ notes: [['C4', 'quarter']], clef: 'treble' }, // reverts partway
+				[['C4', 'quarter']] // no change: treble again
+			],
+			{ clef: 'treble' }
+		);
+		expect([0, 1, 2, 3, 4].map((m) => score.clefAt(m))).toEqual(['treble', 'bass', 'bass', 'treble', 'treble']);
+	});
+
+	it('clefAt treats an explicit measure-0 clef as an override of Staff.clef, which stays the initial clef', () => {
+		const score = buildScore([{ notes: [['C4', 'quarter']], clef: 'treble8' }, [['C4', 'quarter']]], {
+			clef: 'bass'
+		});
+		expect(score.staves[0]!.clef).toBe('bass');
+		expect(score.clefAt(0)).toBe('treble8');
+		expect(score.clefAt(1)).toBe('treble8');
+	});
+
+	it('clefAt resolves a named staff independently of staff 0', () => {
+		const score = new Score();
+		score.appendMeasure();
+		score.appendMeasure();
+		score.appendStaff('bass');
+		score.appendMeasure(1);
+		score.appendMeasure(1).clef = 'treble';
+		expect(score.clefAt(1)).toBe('treble');
+		expect(score.clefAt(0, 1)).toBe('bass');
+		expect(score.clefAt(1, 1)).toBe('treble');
+	});
+
+	it('setClefRange changes the range and restores the prior clef right after it', () => {
+		const score = fourMeasures();
+		expect(score.setClefRange(0, 1, 2, 'bass')).toEqual({ from: 1, to: 2 });
+		expect([0, 1, 2, 3, 4].map((m) => score.clefAt(m))).toEqual(['treble', 'bass', 'bass', 'treble', 'treble']);
+	});
+
+	it('setClefRange accepts a reversed range and runs to the staff end with nothing to restore', () => {
+		const score = fourMeasures();
+		expect(score.setClefRange(0, 4, 2, 'treble8')).toEqual({ from: 2, to: 4 });
+		expect([0, 1, 2, 3, 4].map((m) => score.clefAt(m))).toEqual([
+			'treble',
+			'treble',
+			'treble8',
+			'treble8',
+			'treble8'
+		]);
+	});
+
+	it('setClefRange makes the range uniform, overriding an earlier change inside it, and keeps the clef after it', () => {
+		const score = fourMeasures();
+		score.setClefRange(0, 2, 2, 'bass'); // treble, treble, bass, treble, treble
+		score.setClefRange(0, 1, 3, 'treble8');
+		expect(score.measures[2]!.clef).toBeUndefined();
+		expect([0, 1, 2, 3, 4].map((m) => score.clefAt(m))).toEqual([
+			'treble',
+			'treble8',
+			'treble8',
+			'treble8',
+			'treble'
+		]);
+	});
+
+	it('setClefRange is a no-op (returns null) when the range is already in that clef or out of bounds', () => {
+		const score = fourMeasures();
+		expect(score.setClefRange(0, 0, 4, 'treble')).toBeNull();
+		expect(score.setClefRange(0, 3, 9, 'bass')).toBeNull();
+		expect(score.setClefRange(5, 0, 0, 'bass')).toBeNull();
+		expect(score.measures.every((m) => m.clef === undefined)).toBe(true);
+	});
+
+	it('setClefRange on one staff leaves another staff\'s clefs alone', () => {
+		const score = new Score();
+		score.appendMeasure();
+		score.appendMeasure();
+		score.appendStaff('bass');
+		score.appendMeasure(1);
+		score.appendMeasure(1);
+		score.setClefRange(1, 0, 0, 'treble');
+		expect([score.clefAt(0, 1), score.clefAt(1, 1)]).toEqual(['treble', 'bass']);
+		expect([score.clefAt(0), score.clefAt(1)]).toEqual(['treble', 'treble']);
+	});
+});
+
 describe('barlines', () => {
 	it('defaults to normal everywhere except a final barline at the score\'s true last measure', () => {
 		const score = buildScore([[['G4', 'quarter']], [['G4', 'quarter']], [['G4', 'quarter']]]);

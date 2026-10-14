@@ -10,8 +10,9 @@
 // derived-on-demand:
 //
 //   - Note ids (freshly minted by whichever `Score` built the note).
-//   - Raw `Measure.keyFifths` / `Measure.time` / `Measure.endBarline` fields:
-//     the *resolved* value from `keyFifthsAt` / `timeAt` / `endBarlineAt` is
+//   - Raw `Measure.keyFifths` / `Measure.time` / `Measure.clef` /
+//     `Measure.endBarline` fields: the *resolved* value from `keyFifthsAt` /
+//     `timeAt` / `clefAt` / `endBarlineAt` is
 //     compared instead, so "last measure, endBarline unset -> resolves to
 //     final" and "last measure, endBarline explicitly final" count as equal.
 //   - Beaming and stem directions (recomputed by layout, never stored).
@@ -57,8 +58,13 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 	for (let s = 0; s < expected.staves.length; s++) {
 		const actualStaff = actual.staves[s]!;
 		const expectedStaff = expected.staves[s]!;
-		if (actualStaff.clef !== expectedStaff.clef) {
-			fail(`staves[${s}].clef`, actualStaff.clef, expectedStaff.clef);
+		// The staff's starting clef as `clefAt(0)` resolves it, not the raw
+		// `Staff.clef`: since M5 Slice 5 a `measures[0].clef` override is the
+		// same music as that clef set on the staff itself (and is what an
+		// export/import round trip turns it into). With no measures `clefAt`
+		// falls back to `Staff.clef`, so an empty staff still compares it.
+		if (actual.clefAt(0, s) !== expected.clefAt(0, s)) {
+			fail(`staves[${s}].clef`, actual.clefAt(0, s), expected.clefAt(0, s));
 		}
 		if (actualStaff.measures.length !== expectedStaff.measures.length) {
 			fail(`staves[${s}].measures.length`, actualStaff.measures.length, expectedStaff.measures.length);
@@ -68,6 +74,7 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 			const where = `staves[${s}].measures[${m}]`;
 
 			assertEqual(`${where} keyFifthsAt`, actual.keyFifthsAt(m, s), expected.keyFifthsAt(m, s));
+			assertEqual(`${where} clefAt`, actual.clefAt(m, s), expected.clefAt(m, s));
 			assertEqual(`${where} timeAt`, formatTime(actual.timeAt(m, s)), formatTime(expected.timeAt(m, s)));
 			assertEqual(`${where} endBarlineAt`, actual.endBarlineAt(m, s), expected.endBarlineAt(m, s));
 			assertEqual(

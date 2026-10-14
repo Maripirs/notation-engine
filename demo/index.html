@@ -173,11 +173,20 @@
 			no audio attached, to confirm the highlight lands on the right staff without needing a
 			second <code>PlaybackEngine</code>. M5 Slice 4 adds measure-range selection: shift-click a
 			second measure, or drag across measures, to tint a contiguous range on one staff. Only
-			the measures that join or leave the range repaint.
+			the measures that join or leave the range repaint. M5 Slice 5 adds range clef changes:
+			with a range selected, a clef button changes those measures' clef (drawing a smaller
+			change clef where it lands mid-system, and restoring the old clef right after the range),
+			and this canvas's own Undo restores it in one step. <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>
+			steps whichever canvas you last clicked.
 		</p>
 		<canvas id="staff-select-demo" class="demo-canvas"></canvas>
 		<div class="controls">
 			<button id="staff-select-cursor-demo">Highlight sample chord across staves</button>
+			<button data-clef="treble">Treble clef</button>
+			<button data-clef="bass">Bass clef</button>
+			<button data-clef="treble8">Treble 8vb clef</button>
+			<button id="staff-select-undo" disabled>Undo</button>
+			<button id="staff-select-redo" disabled>Redo</button>
 		</div>
 		<p id="staff-select-status">Click a notehead or a rest on either staff to select it, or shift-click/drag across measures to select a range.</p>
 
