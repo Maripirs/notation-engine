@@ -48,12 +48,15 @@
 // `<direction>` read after a `<backup>` sits at the backed-up time.
 
 import {
+	ARTICULATIONS,
 	Measure,
 	measureCapacityWholes,
 	NO_PASSTHROUGH,
 	NOTE_VALUE_WHOLES,
 	Score,
+	type Articulation,
 	type ClefType,
+	type Fermata,
 	type MeasurePassthrough,
 	type Note,
 	type NoteId,
@@ -954,6 +957,8 @@ function buildNote(
 	}
 
 	const statedDots = Math.min(2, children(noteEl, 'dot').length) as 0 | 1 | 2;
+	const notationsEls = children(noteEl, 'notations');
+	const marks = readMarks(notationsEls);
 
 	let note: Note;
 	// `<rest measure="yes"/>` (M6 Slice 1): a rest that fills its measure
@@ -966,14 +971,30 @@ function buildNote(
 	// rest always validates; see `NoteSpec.measureRestWholes` for the shape.
 	if (restEl && restEl.attrs.measure === 'yes') {
 		const measureRestWholes = measureCapacityWholes(score.timeAt(measureIndex, globalStaffIndex));
-		note = score.appendNote(targetMeasure, { pitch: null, value: 'whole', voice, measureRestWholes });
+		note = score.appendNote(targetMeasure, {
+			pitch: null,
+			value: 'whole',
+			voice,
+			measureRestWholes,
+			articulations: marks.articulations,
+			fermata: marks.fermata
+		});
 	} else {
 		const typeText = childText(noteEl, 'type');
 		const { value, dots } =
 			typeText !== undefined && isNoteValue(typeText)
 				? { value: typeText, dots: statedDots }
 				: deriveValueFromDuration(childText(noteEl, 'duration'), divisions, tuplet, statedDots, report, typeText);
-		note = score.appendNote(targetMeasure, { pitch, value, voice, dots, tuplet, chordWithPrevious });
+		note = score.appendNote(targetMeasure, {
+			pitch,
+			value,
+			voice,
+			dots,
+			tuplet,
+			chordWithPrevious,
+			articulations: marks.articulations,
+			fermata: marks.fermata
+		});
 	}
 	// A member keeps pointing a further `<chord/>` at the same chord: the
 	// measure, staff and voice are the anchor's either way.
@@ -984,7 +1005,6 @@ function buildNote(
 	let tieStart = false;
 	let tieStop = false;
 	const tieEls = children(noteEl, 'tie');
-	const notationsEls = children(noteEl, 'notations');
 	if (tieEls.length > 0) {
 		tieStart = tieEls.some((t) => t.attrs.type === 'start');
 		tieStop = tieEls.some((t) => t.attrs.type === 'stop');
@@ -1017,10 +1037,59 @@ function buildNote(
 		tieStart,
 		tieStop,
 		slurStarts,
-		slurStops
+		slurStops,
+		ownedMarks: marks.owned
 	});
 	return { k, note };
 }
+
+/** `<articulations>` children the model reads (M6 Slice 5); any other kind
+ *  (`breath-mark`, `caesura`, `spiccato`, `stress`, ...) stays passthrough. */
+const ARTICULATION_OWNED: ReadonlySet<string> = new Set<string>(ARTICULATIONS);
+
+/**
+ * The articulations and fermata a note's `<notations>` carry, and the exact
+ * elements they were read from (`owned`), which `finalizeNotePassthrough`
+ * then leaves out of the payload. Owned by identity rather than by name so a
+ * duplicate the model cannot hold (a second `<staccato/>`, a second
+ * `<fermata>` on one note) stays passthrough instead of being lost. A
+ * fermata is read only in its normal shape (empty text or `normal`); an
+ * angled, square or other shape is not modelled and stays passthrough whole.
+ * The marks' own XML attributes (`placement`, `default-y`, a marcato's
+ * `type="up"`) are not kept: layout decides placement by engraving rule, the
+ * same loss as on every other modelled element (plan.md Slice 3 log).
+ */
+function readMarks(notationsEls: readonly XmlElement[]): {
+	readonly articulations: readonly Articulation[];
+	readonly fermata: Fermata | null;
+	readonly owned: ReadonlySet<XmlElement>;
+} {
+	const articulations: Articulation[] = [];
+	let fermata: Fermata | null = null;
+	let owned: Set<XmlElement> | undefined;
+	for (const notationsEl of notationsEls) {
+		for (const c of notationsEl.children) {
+			if (c.name === 'articulations') {
+				for (const a of c.children) {
+					if (!ARTICULATION_OWNED.has(a.name)) continue;
+					const kind = a.name as Articulation;
+					if (articulations.includes(kind)) continue;
+					articulations.push(kind);
+					(owned ??= new Set()).add(a);
+				}
+			} else if (c.name === 'fermata' && fermata === null) {
+				const shape = c.text.trim();
+				const type = c.attrs.type ?? 'upright';
+				if ((shape !== '' && shape !== 'normal') || (type !== 'upright' && type !== 'inverted')) continue;
+				fermata = type;
+				(owned ??= new Set()).add(c);
+			}
+		}
+	}
+	return { articulations, fermata, owned: owned ?? NO_OWNED_MARKS };
+}
+
+const NO_OWNED_MARKS: ReadonlySet<XmlElement> = new Set();
 
 /**
  * Settle a built note's `Note.passthrough` once ties and slurs are linked
@@ -1035,6 +1104,8 @@ function buildNote(
  *     end that found no partner, or a `continue`/`let-ring` one, is kept,
  *     since export regenerates only the ties and slurs the model holds. A
  *     `<notations>` left empty is not kept; export writes the model's own.
+ *     The articulations and fermata `readMarks` took are left out too (M6
+ *     Slice 5), an `<articulations>` cut down to its unread kinds;
  *     `<tuplet>` is kept too: the model holds the ratio (`<time-modification>`)
  *     but not where a bracket starts and stops, so export writes the source's
  *     brackets back and regenerates its own only for a run with none;
@@ -1070,11 +1141,20 @@ function finalizeNotePassthrough(record: BuiltNoteRecord, score: Score, report: 
 			keep(c);
 			report.keep('tie');
 		} else if (c.name === 'notations') {
-			const unowned = c.children.filter((n) => {
-				if (n.name === 'tied') return !tieEndOwned(n.attrs.type);
-				if (n.name === 'slur') return !isPairedSlur(record, n);
-				return true;
-			});
+			const unowned: OpaqueElement[] = [];
+			for (const n of c.children) {
+				if (n.name === 'tied' && tieEndOwned(n.attrs.type)) continue;
+				if (n.name === 'slur' && isPairedSlur(record, n)) continue;
+				if (record.ownedMarks.has(n)) continue;
+				if (n.name === 'articulations' && n.children.some((a) => record.ownedMarks.has(a))) {
+					// Cut down to the kinds the model does not hold; export merges
+					// the rest back into the `<articulations>` it writes.
+					const rest = n.children.filter((a) => !record.ownedMarks.has(a));
+					if (rest.length > 0) unowned.push(Object.freeze({ ...n, children: Object.freeze(rest) }));
+					continue;
+				}
+				unowned.push(n);
+			}
 			if (unowned.length === 0) continue;
 			keep(Object.freeze({ ...c, children: Object.freeze(unowned) }));
 			for (const n of unowned) report.keep(n.name);
@@ -1159,6 +1239,9 @@ type BuiltNoteRecord = {
 	readonly tieStop: boolean;
 	readonly slurStarts: readonly SlurEnd[];
 	readonly slurStops: readonly SlurEnd[];
+	/** The `<articulations>` children and `<fermata>` read into the model
+	 *  (`readMarks`), left out of the note's passthrough. */
+	readonly ownedMarks: ReadonlySet<XmlElement>;
 };
 
 /**

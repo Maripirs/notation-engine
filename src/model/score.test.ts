@@ -3,6 +3,8 @@ import { formatPitch, parsePitch } from './pitch.js';
 import { assertScoresEquivalent } from './score-equivalence.js';
 import {
 	buildScore,
+	eventArticulations,
+	eventFermata,
 	measureCapacityWholes,
 	measureDurationWholes,
 	Note,
@@ -1039,5 +1041,38 @@ describe('chords (M6 Slice 2)', () => {
 		expect(formatPitch(e!.pitch!)).toBe('F4');
 		expect(formatPitch(c!.pitch!)).toBe('C4');
 		expect(formatPitch(g!.pitch!)).toBe('G4');
+	});
+});
+
+describe('articulations and fermatas on Note (M6 Slice 5)', () => {
+	it('normalizes marks into ARTICULATIONS order without duplicates, and defaults to none', () => {
+		const note = new Note('n1', { pitch: parsePitch('C4'), value: 'quarter', articulations: ['accent', 'staccato', 'accent'] });
+		expect(note.articulations).toEqual(['staccato', 'accent']);
+		expect(note.fermata).toBeNull();
+		const plain = new Note('n2', { pitch: null, value: 'quarter' });
+		expect(plain.articulations).toEqual([]);
+	});
+
+	it('puts buildScore marks on a chord\'s anchor, and reads the chord\'s union per event', () => {
+		const score = buildScore([[[['C4', 'E4'], 'half', { articulations: ['tenuto'], fermata: 'upright' }], [null, 'half']]]);
+		const [anchor, member] = score.measures[0]!.notes;
+		expect(anchor!.articulations).toEqual(['tenuto']);
+		expect(member!.articulations).toEqual([]);
+		member!.articulations = ['accent'];
+		member!.fermata = 'inverted';
+		const [chord] = noteEvents(score.measures[0]!.notes);
+		expect(eventArticulations(chord!)).toEqual(['tenuto', 'accent']);
+		expect(eventFermata(chord!)).toBe('upright');
+	});
+
+	it('keeps marks through clone (undo) and compares them in equivalence', () => {
+		const score = buildScore([[['C4', 'whole', { articulations: ['staccato'], fermata: 'inverted' }]]]);
+		const copy = score.clone();
+		const note = copy.measures[0]!.notes[0]!;
+		expect(note.articulations).toEqual(['staccato']);
+		expect(note.fermata).toBe('inverted');
+		assertScoresEquivalent(copy, score);
+		note.fermata = null;
+		expect(() => assertScoresEquivalent(copy, score)).toThrow(/fermata/);
 	});
 });

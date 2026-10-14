@@ -874,6 +874,84 @@ export function createChordShowcaseScore(): Score {
 	);
 }
 
+/**
+ * M6 Slice 5's showcase: articulations and fermatas, placed by the standard
+ * rules (see `layoutEventMarks` in `layout.ts`). In order:
+ *
+ * 1. Staccato opposite the stem: above a stem-down B4 and C5, below a
+ *    stem-up E4 and G4 (G4 sits on a line, so its dot skips the space the
+ *    notehead half-fills and the next line, landing in the space below the
+ *    staff).
+ * 2. Tenuto, accent, staccatissimo, then a marcato on a stem-up note, which
+ *    still goes above (beyond the stem tip).
+ * 3. Stacks: staccato then accent outward; tenuto then accent; the combined
+ *    tenuto-staccato (detached-legato); marcato above with staccato below.
+ * 4. Beamed staccato eighths (the marks follow each note's side of the beam's
+ *    one shared direction) and accented chords, one mark per chord.
+ * 5. Ledger lines: an accent and a staccato above a stem-down A5/C6 (the
+ *    marks clear the ledger lines by being beyond the head), staccatos below
+ *    a stem-up C4/A3.
+ * 6. Fermatas: over a note, over a chord, over a rest, and an inverted one
+ *    below the staff.
+ * 7. Two voices: voice 1's marks above (beyond its up stems), voice 2's below.
+ */
+export function createArticulationShowcaseScore(): Score {
+	return buildScore(
+		[
+			{
+				keyFifths: 0,
+				notes: [
+					['B4', 'quarter', { articulations: ['staccato'] }],
+					['C5', 'quarter', { articulations: ['staccato'] }],
+					['E4', 'quarter', { articulations: ['staccato'] }],
+					['G4', 'quarter', { articulations: ['staccato'] }]
+				]
+			},
+			[
+				['D5', 'quarter', { articulations: ['tenuto'] }],
+				['F4', 'quarter', { articulations: ['accent'] }],
+				['A4', 'quarter', { articulations: ['staccatissimo'] }],
+				['E4', 'quarter', { articulations: ['strong-accent'] }]
+			],
+			[
+				['C5', 'quarter', { articulations: ['staccato', 'accent'] }],
+				['F4', 'quarter', { articulations: ['tenuto', 'accent'] }],
+				['A4', 'quarter', { articulations: ['detached-legato'] }],
+				['G4', 'quarter', { articulations: ['strong-accent', 'staccato'] }]
+			],
+			[
+				['E4', 'eighth', { articulations: ['staccato'] }],
+				['F4', 'eighth', { articulations: ['staccato'] }],
+				['G4', 'eighth', { articulations: ['staccato'] }],
+				['A4', 'eighth', { articulations: ['staccato'] }],
+				[['C4', 'E4', 'G4'], 'quarter', { articulations: ['accent'] }],
+				[['C5', 'E5', 'G5'], 'quarter', { articulations: ['staccato', 'accent'] }]
+			],
+			[
+				['A5', 'quarter', { articulations: ['accent'] }],
+				['C6', 'quarter', { articulations: ['staccato'] }],
+				['C4', 'quarter', { articulations: ['staccato'] }],
+				['A3', 'quarter', { articulations: ['tenuto'] }]
+			],
+			[
+				['G4', 'quarter', { fermata: 'upright' }],
+				[['E4', 'G4', 'C5'], 'quarter', { fermata: 'upright' }],
+				[null, 'quarter', { fermata: 'upright' }],
+				['D4', 'quarter', { fermata: 'inverted' }]
+			],
+			[
+				['E5', 'quarter', { voice: 1, articulations: ['staccato'] }],
+				['D5', 'quarter', { voice: 1, articulations: ['accent'] }],
+				['C5', 'half', { voice: 1, articulations: ['tenuto'], fermata: 'upright' }],
+				['G4', 'quarter', { voice: 2, articulations: ['staccato'] }],
+				['F4', 'quarter', { voice: 2, articulations: ['accent'] }],
+				['E4', 'half', { voice: 2, articulations: ['tenuto'], fermata: 'inverted' }]
+			]
+		],
+		{ keyFifths: 0, time: { beats: 4, beatType: 4 } }
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
@@ -916,7 +994,9 @@ function appendMeasures(score: Score, source: Score): void {
 				tuplet: note.tuplet ?? undefined,
 				voice: note.voice,
 				measureRestWholes: note.measureRestWholes,
-				chordWithPrevious: note.chordWithPrevious
+				chordWithPrevious: note.chordWithPrevious,
+				articulations: note.articulations,
+				fermata: note.fermata
 			});
 			copiedIdOf.set(note.id, copiedNote.id);
 		}
@@ -939,8 +1019,8 @@ function appendMeasures(score: Score, source: Score): void {
  * barline showcase, M2 Slice 1's two-voice showcase and M2 Slice 2's voice-
  * collision showcase, so a human can see all eight render without disturbing
  * `createDemoScore`'s frozen shape (see the comment on it above). M6 Slice 2's
- * chord showcase follows them, last so every earlier measure keeps the index
- * it always had.
+ * chord showcase follows them, then M6 Slice 5's articulation showcase, each
+ * last when added so every earlier measure keeps the index it always had.
  */
 export function createFullDemoScore(): Score {
 	const score = createDemoScore();
@@ -953,5 +1033,6 @@ export function createFullDemoScore(): Score {
 	appendMeasures(score, createTwoVoiceShowcaseScore());
 	appendMeasures(score, createVoiceClashShowcaseScore());
 	appendMeasures(score, createChordShowcaseScore());
+	appendMeasures(score, createArticulationShowcaseScore());
 	return score;
 }

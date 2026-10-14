@@ -90,12 +90,12 @@ describe('passthrough on a Note', () => {
 			'C',
 			1,
 			'quarter',
-			`<stem>up</stem><notehead>diamond</notehead><notations><tied type="start"/><articulations><staccato/></articulations><fermata/></notations>` +
+			`<stem>up</stem><notehead>diamond</notehead><notations><tied type="start"/><articulations><staccato/><breath-mark/></articulations><fermata>angled</fermata></notations>` +
 				`<lyric number="1"><syllabic>single</syllabic><text>la</text></lyric>`
 		) +
 			n('C', 1, 'quarter', '<notations><tied type="stop"/></notations>') +
 			n('E', 1, 'quarter', '<notations><technical><fingering>3</fingering></technical></notations>') +
-			`<note><chord/><pitch><step>G</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><notations><articulations><accent/></articulations></notations></note>` +
+			`<note><chord/><pitch><step>G</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><notations><articulations><stress/></articulations></notations></note>` +
 			`<note><rest><display-step>B</display-step><display-octave>4</display-octave></rest><duration>1</duration><voice>1</voice><type>quarter</type></note>`
 	]);
 
@@ -103,8 +103,13 @@ describe('passthrough on a Note', () => {
 		const { score, root } = roundTrip(xml);
 		const notes = score.staves[0]!.measures[0]!.notes;
 		expect(notes[0]!.passthrough.map((e) => e.name)).toEqual(['notehead', 'notations', 'lyric']);
-		// Only what the model does not own: the linked `<tied>` is the model's.
+		// Only what the model does not own: the linked `<tied>` is the model's,
+		// and so is the `<staccato/>` (M6 Slice 5), leaving the `<articulations>`
+		// cut down to its breath mark; an angled fermata is not modelled.
 		expect(notes[0]!.passthrough[1]!.children.map((c) => c.name)).toEqual(['articulations', 'fermata']);
+		expect(notes[0]!.passthrough[1]!.children[0]!.children.map((c) => c.name)).toEqual(['breath-mark']);
+		expect(notes[0]!.articulations).toEqual(['staccato']);
+		expect(notes[0]!.fermata).toBeNull();
 		expect(notes[1]!.passthrough).toEqual([]);
 
 		const written = children(measuresOf(root)[0]!, 'note');
@@ -112,6 +117,8 @@ describe('passthrough on a Note', () => {
 		// <notations> as the passthrough, <lyric> after <notations>.
 		expect(names(written[0]!)).toEqual(['pitch', 'duration', 'tie', 'voice', 'type', 'stem', 'notehead', 'notations', 'lyric']);
 		expect(names(child(written[0]!, 'notations')!)).toEqual(['tied', 'articulations', 'fermata']);
+		// The model's staccato and the passthrough breath mark are one element again.
+		expect(names(child(child(written[0]!, 'notations')!, 'articulations')!)).toEqual(['staccato', 'breath-mark']);
 	});
 
 	it('gives each chord member its own payload', () => {
@@ -366,3 +373,76 @@ function onsetOf(anchor: MeasurePassthrough): string {
 // shape, so a parsed element is stored with no conversion.
 const _sameShape: OpaqueElement = parseXml('<x/>');
 void _sameShape;
+
+describe('articulations and fermatas (M6 Slice 5): promoted out of passthrough', () => {
+	it('reads the modelled kinds into the note, keeps the rest as passthrough, and writes both back as one element', () => {
+		const diagnostics = createImportDiagnostics();
+		const xml = onePart([
+			n('C', 1, 'quarter', '<notations><articulations><accent placement="above"/><staccato placement="below"/><caesura/></articulations></notations>') +
+				n('D', 1, 'quarter', '<notations><articulations><strong-accent type="up"/><tenuto/></articulations><fermata type="inverted"/></notations>') +
+				n('E', 1, 'quarter', '<notations><articulations><staccatissimo/><detached-legato/></articulations></notations>') +
+				`<note><rest/><duration>1</duration><voice>1</voice><type>quarter</type><notations><fermata type="upright"/></notations></note>`
+		]);
+		const score = importMusicXml(xml, { diagnostics });
+		const [c, d, e, rest] = score.staves[0]!.measures[0]!.notes;
+		// Stored in `ARTICULATIONS` order, whatever the source order.
+		expect(c!.articulations).toEqual(['staccato', 'accent']);
+		expect(d!.articulations).toEqual(['tenuto', 'strong-accent']);
+		expect(d!.fermata).toBe('inverted');
+		expect(e!.articulations).toEqual(['staccatissimo', 'detached-legato']);
+		expect(rest!.fermata).toBe('upright');
+		// Only the caesura is left over, in a cut-down `<articulations>`.
+		expect(c!.passthrough.map((el) => el.name)).toEqual(['notations']);
+		expect(names(c!.passthrough[0]!.children[0]!)).toEqual(['caesura']);
+		expect([d, e, rest].every((note) => note!.passthrough.length === 0)).toBe(true);
+		expect(diagnostics.passthrough.get('articulations')).toBe(1);
+		expect(diagnostics.passthrough.has('fermata')).toBe(false);
+
+		const { root } = roundTrip(xml);
+		const written = children(measuresOf(root)[0]!, 'note');
+		const notationsOf = (i: number): XmlElement => child(written[i]!, 'notations')!;
+		expect(names(child(notationsOf(0), 'articulations')!)).toEqual(['staccato', 'accent', 'caesura']);
+		expect(names(notationsOf(1))).toEqual(['articulations', 'fermata']);
+		expect(child(notationsOf(1), 'fermata')!.attrs.type).toBe('inverted');
+		expect(child(notationsOf(3), 'fermata')!.attrs.type).toBe('upright');
+	});
+
+	it('keeps a mark on the chord member it was written on', () => {
+		const xml = onePart([
+			n('C', 1, 'quarter') +
+				`<note><chord/><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><notations><articulations><staccato/></articulations><fermata/></notations></note>` +
+				n('D', 3, 'half', '', 1).replace('<type>half</type>', '<type>half</type><dot/>')
+		]);
+		const { score, root } = roundTrip(xml);
+		const [anchor, member] = score.staves[0]!.measures[0]!.notes;
+		expect(anchor!.articulations).toEqual([]);
+		expect(member!.articulations).toEqual(['staccato']);
+		expect(member!.fermata).toBe('upright');
+		const written = children(measuresOf(root)[0]!, 'note');
+		expect(child(written[0]!, 'notations')).toBeUndefined();
+		expect(names(child(written[1]!, 'notations')!)).toEqual(['articulations', 'fermata']);
+	});
+
+	it('leaves a duplicate mark and a non-normal fermata shape in passthrough rather than losing them', () => {
+		const xml = onePart([
+			n('C', 4, 'whole', '<notations><articulations><staccato/><staccato/></articulations><fermata>square</fermata><fermata/></notations>')
+		]);
+		const { score, root } = roundTrip(xml);
+		const note = score.staves[0]!.measures[0]!.notes[0]!;
+		expect(note.articulations).toEqual(['staccato']);
+		expect(note.fermata).toBe('upright');
+		const notations = child(children(measuresOf(root)[0]!, 'note')[0]!, 'notations')!;
+		expect(names(child(notations, 'articulations')!)).toEqual(['staccato', 'staccato']);
+		expect(children(notations, 'fermata').map((f) => f.text)).toEqual(['', 'square']);
+	});
+
+	it('round-trips a whole-measure rest with a fermata', () => {
+		const xml = onePart([
+			`<note><rest measure="yes"/><duration>4</duration><voice>1</voice><notations><fermata type="upright"/></notations></note>`
+		]);
+		const { score } = roundTrip(xml);
+		const rest = score.staves[0]!.measures[0]!.notes[0]!;
+		expect(rest.isMeasureRest).toBe(true);
+		expect(rest.fermata).toBe('upright');
+	});
+});

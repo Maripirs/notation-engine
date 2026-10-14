@@ -20,6 +20,7 @@ export const NOTATION_ENGINE_VERSION = '0.0.1';
 
 export {
 	createAccidentalShowcaseScore,
+	createArticulationShowcaseScore,
 	createChordShowcaseScore,
 	createDemoScore,
 	createDurationShowcaseScore,

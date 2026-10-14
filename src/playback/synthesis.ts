@@ -117,7 +117,9 @@ export function playOnsetEvent(
 	const { audioContext } = options;
 	const attackSeconds = options.attackSeconds ?? DEFAULT_ATTACK_SECONDS;
 	const releaseSeconds = options.releaseSeconds ?? DEFAULT_RELEASE_SECONDS;
-	const peakGain = options.gain ?? DEFAULT_GAIN;
+	// An accented attack (M6 Slice 5, `OnsetEvent.velocity`) is louder by
+	// scaling the peak; this synth has no other velocity response.
+	const peakGain = (options.gain ?? DEFAULT_GAIN) * (event.velocity ?? 1);
 
 	const startSeconds = event.startSeconds;
 	const endSeconds = event.startSeconds + event.durationSeconds;

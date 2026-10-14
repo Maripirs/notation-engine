@@ -24,7 +24,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { layoutScore } from '../layout/index.js';
-import { assertScoresEquivalent, EditHistory, type Score } from '../model/index.js';
+import { ARTICULATIONS, assertScoresEquivalent, EditHistory, type Score } from '../model/index.js';
 import { exportMusicXml } from './musicxml-export.js';
 import { createImportDiagnostics, importMusicXml } from './musicxml-import.js';
 import { descendants, parseXml, type XmlElement } from './xml.js';
@@ -143,6 +143,29 @@ describe('SFCC corpus: import + layout', () => {
 			);
 			expect(layout.measures.length).toBeGreaterThan(0);
 
+			// Marks promoted into the model (M6 Slice 5), per kind. Every source
+			// mark of a modelled kind must have landed in the model (the corpus
+			// has no duplicates on one note and no non-normal fermata shapes,
+			// the two cases `readMarks` leaves in passthrough), and none is
+			// still tallied as passthrough.
+			const marks: Record<string, number> = {};
+			for (const staff of score.staves) {
+				for (const measure of staff.measures) {
+					for (const note of measure.notes) {
+						for (const kind of note.articulations) marks[kind] = (marks[kind] ?? 0) + 1;
+						if (note.fermata) marks[`fermata ${note.fermata}`] = (marks[`fermata ${note.fermata}`] ?? 0) + 1;
+					}
+				}
+			}
+			for (const kind of ARTICULATIONS) {
+				expect(marks[kind] ?? 0).toBe(descendants(source, kind).length);
+			}
+			expect((marks['fermata upright'] ?? 0) + (marks['fermata inverted'] ?? 0)).toBe(
+				descendants(source, 'fermata').length
+			);
+			expect(passthrough.articulations).toBeUndefined();
+			expect(passthrough.fermata).toBeUndefined();
+
 			expect({
 				sourceNotes,
 				modelNotes,
@@ -157,6 +180,7 @@ describe('SFCC corpus: import + layout', () => {
 				),
 				dropped,
 				passthrough,
+				marks: sorted(new Map(Object.entries(marks))),
 				fallbacks: diagnostics.fallbacks.map(
 					(f) => `${f.kind} ${f.partId} m${f.measureNumber}: ${f.detail}`
 				)

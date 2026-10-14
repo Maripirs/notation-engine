@@ -1008,7 +1008,7 @@ element by Slice 3 and stays there.
       pattern differs from treble/bass), a mid-staff bass -> tenor ->
       bass range, and the Les Djinns C3 warning gone from the corpus
       test. Demo: switch a range to tenor clef and back.
-- [ ] **Slice 5: Articulations + fermatas.** Model staccato, staccatissimo,
+- [x] **Slice 5: Articulations + fermatas.** Model staccato, staccatissimo,
       accent, strong accent (marcato), tenuto and fermata on `Note`
       (promoted out of passthrough); layout places each on the notehead
       side opposite the stem (fermata always above the staff), stacking
@@ -2822,3 +2822,77 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   (only import and `buildScore` create one; `setClefRange` clears them); a
   redundant change to the clef already in force is kept in the model but
   not drawn; multiple changes at one column draw only the last.
+- 2026-10-14: M6 Slice 5 (articulations + fermatas) done, via subagent.
+  Model: `Articulation` (`staccato`, `staccatissimo`, `tenuto`,
+  `detached-legato`, `accent`, `strong-accent`) and `Fermata` (`upright` |
+  `inverted`, normal shape only) on `Note` (`articulations`, always in
+  `ARTICULATIONS` order without duplicates via `normalizeArticulations`;
+  `fermata`, `null` for none), in `NoteSpec`, `Score.clone`, `buildScore`
+  extras (`articulations`, `fermata`, set on a chord's anchor only) and
+  `assertScoresEquivalent` (compared per head). Chords: a mark stays on the
+  head it was written on, so a round trip keeps it there; everything that
+  interprets marks reads the event's union (`eventArticulations`,
+  `eventFermata`, exported from model). The corpus only has marks on chord
+  anchors.
+  Import: `readMarks` promotes the six kinds out of `<articulations>` and
+  the first normal-shape `<fermata>` (empty text or `normal`), owning them
+  by element identity, so a duplicate mark or a second/angled/square
+  fermata stays passthrough; other kinds (`breath-mark`, `caesura`,
+  `spiccato`, `stress`, ...) stay too, in an `<articulations>` cut down to
+  them. The marks' XML attributes (`placement`, `default-y`, a marcato's
+  `type`) are not kept, the same loss as other modelled elements. Export
+  writes `<articulations>` (model kinds, then any passthrough kinds merged
+  into the same element) and `<fermata type>` inside `<notations>`.
+  Corpus: `articulations` and `fermata` gone from every `passthrough`
+  tally (Brahms 872/11, Coleridge-Taylor 51, Faure 305, Gardiner 152, Frost
+  Myth 5/3, Elgar 622/6, Fay's Song 59); the snapshot gains a per-file
+  `marks` tally, and the test asserts every source mark of a modelled kind
+  landed in the model (e.g. Brahms staccato 844, staccatissimo 6, tenuto
+  22, fermata 10 upright + 1 inverted; Elgar accent 168, tenuto 132; Faure
+  one detached-legato). Lossless round trip, re-import equivalence and the
+  transpose+undo check all unchanged and green.
+  Layout (`layoutEventMarks`, run last in `layoutMeasure` so stems, beams,
+  measure-rest centring, ties and slurs exist): side opposite the stem,
+  above for a rest or whole note; multi-voice uses the voice's side (odd
+  above, even below), i.e. the stem end, stacking beyond the stem tip/beam
+  (`layoutBeamGroup` now reports tips) and centring on the stem; marcato
+  always above. Stack order is `ARTICULATIONS` (staccato/tenuto nearest).
+  Staccato and tenuto snap into the nearest space clear of the head
+  (`IN_STAFF_CLEARANCE` 0.25), stepping out once if that is a staff or
+  ledger line; taller marks (accent, marcato, staccatissimo wedge, the
+  combined tenuto-staccato glyph) stack at `ARTICULATION_CLEARANCE` 0.35 and
+  move outside the staff if they would cross it. Fermata above the staff
+  and everything at its x (heads, stem tip, marks, any tie/slur curve's
+  control-point hull), inverted mirrored below, centred on the note or the
+  (centred) rest. A chord gets each mark once, on its normal column. Mark
+  ops carry the carrying head's id (selection tints them) and sit in the
+  measure's own ops, so `measureRegion` covers them. Bravura `artic*`
+  above/below glyphs, `articTenutoStaccato*` and `fermataAbove/Below` added
+  to the glyph script and regenerated (additions only).
+  Playback (`timeline.ts`, documented constants): staccato sounds 0.5 of the
+  written span, staccatissimo 0.25, detached-legato 0.75, tenuto unchanged
+  (unmarked notes are already full length); accent/marcato set
+  `OnsetEvent.velocity` 1.3/1.5, which `playOnsetEvent` multiplies into its
+  peak gain (the synth's only velocity notion). Fermata: the score's fermata
+  spans (merged across voices/staves) become a time warp stretching each
+  span 2x (`FERMATA_FACTOR`), so every voice sounding there is held and
+  everything after starts later.
+  Demo: `createArticulationShowcaseScore` (7 measures: each side, each kind,
+  stacks, beamed staccatos, chords, ledger notes, fermatas on note/chord/
+  rest plus an inverted one, two voices) appended to `createFullDemoScore`
+  and exported. Verified headlessly: the demo in system Chrome, and Brahms
+  m241-250 rendered offline at staff space 18 via node-canvas (piano
+  staccato chords, a fermata on a whole-measure rest, chord fermatas).
+  Tests: 522 -> 551 (14 in new `src/layout/articulation-layout.test.ts`,
+  import/export 5, model 3, playback 6, renderer region 1); `check`/`build`
+  green. Bench scoped edit 0.346/0.294/0.277/0.337 ms at 4/16/64/124
+  measures, full redraw 30.2 ms at 124, i.e. unchanged.
+  Noticed, not fixed: source `placement` is ignored, so an OMR mark read
+  above a stem-up note moves below it; the whole-note rule is "above"
+  (per the slice spec) rather than following a virtual stem; marks are not
+  placed inside a slur and slurs do not avoid marks (only the fermata clears
+  curves); a tall mark on the stem side between a high ledger note and the
+  staff (multi-voice) is not checked against ledger lines; a staccato on a
+  tied-into segment shortens only that segment, leaving a gap mid-tie;
+  fermata over a barline (`<barline><fermata>`) stays passthrough; no edit
+  op adds or removes a mark yet.

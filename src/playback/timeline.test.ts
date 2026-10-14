@@ -199,3 +199,83 @@ describe('computePlaybackTimeline: chords (M6 Slice 2)', () => {
 		expect(events.at(-1)!.startSeconds).toBeCloseTo(2, 10);
 	});
 });
+
+describe('computePlaybackTimeline: articulations and fermatas (M6 Slice 5)', () => {
+	// 120bpm: a quarter is 0.5s.
+	it('shortens a staccato to half and a staccatissimo to a quarter of its length, onsets unchanged', () => {
+		const score = buildScore([
+			[
+				['C4', 'quarter', { articulations: ['staccato'] }],
+				['D4', 'quarter', { articulations: ['staccatissimo'] }],
+				['E4', 'quarter', { articulations: ['tenuto'] }],
+				[['F4', 'A4'], 'quarter', { articulations: ['staccato'] }]
+			]
+		]);
+		const events = computePlaybackTimeline(score);
+		expect(events.map((event) => event.startSeconds)).toEqual([0, 0.5, 1, 1.5, 1.5]);
+		expect(events.map((event) => event.durationSeconds)).toEqual([0.25, 0.125, 0.5, 0.25, 0.25]);
+	});
+
+	it('applies a mark written on a chord member to every head', () => {
+		const score = buildScore([[[['C4', 'E4'], 'half'], [null, 'half']]]);
+		const [, member] = score.measures[0]!.notes;
+		member!.articulations = ['staccato'];
+		expect(computePlaybackTimeline(score).map((event) => event.durationSeconds)).toEqual([0.5, 0.5]);
+	});
+
+	it('marks an accented attack louder, a marcato louder still', () => {
+		const score = buildScore([
+			[
+				['C4', 'quarter', { articulations: ['accent'] }],
+				['D4', 'quarter', { articulations: ['strong-accent'] }],
+				['E4', 'half']
+			]
+		]);
+		expect(computePlaybackTimeline(score).map((event) => event.velocity)).toEqual([1.3, 1.5, undefined]);
+	});
+
+	it('lengthens a fermata note 2x and pushes everything after it later, in every voice', () => {
+		const score = buildScore([
+			[
+				['C5', 'quarter', { voice: 1 }],
+				['D5', 'quarter', { voice: 1, fermata: 'upright' }],
+				['E5', 'half', { voice: 1 }],
+				// Voice 2 has an eighth pair under the fermata quarter.
+				['C4', 'quarter', { voice: 2 }],
+				['D4', 'eighth', { voice: 2 }],
+				['E4', 'eighth', { voice: 2 }],
+				['F4', 'half', { voice: 2 }]
+			],
+			[['G4', 'whole']]
+		]);
+		const events = computePlaybackTimeline(score);
+		const at = (name: string) => events.find((event) => formatPitch(event.pitch) === name)!;
+		expect(at('C5').startSeconds).toBe(0);
+		expect(at('D5').startSeconds).toBe(0.5);
+		expect(at('D5').durationSeconds).toBe(1);
+		expect(at('E5').startSeconds).toBe(1.5);
+		// Voice 2's eighths inside the fermata span are stretched with it.
+		expect(at('D4').startSeconds).toBe(0.5);
+		expect(at('D4').durationSeconds).toBe(0.5);
+		expect(at('E4').startSeconds).toBe(1);
+		expect(at('F4').startSeconds).toBe(1.5);
+		// The next measure starts 0.5s later than unwarped.
+		expect(at('G4').startSeconds).toBe(2.5);
+	});
+
+	it('stretches a fermata rest, and stretches once when several voices share one fermata', () => {
+		const score = buildScore([
+			[
+				['C4', 'half', { voice: 1 }],
+				[null, 'half', { voice: 1, fermata: 'upright' }],
+				['E4', 'half', { voice: 2 }],
+				['F4', 'half', { voice: 2, fermata: 'inverted' }]
+			],
+			[['G4', 'whole']]
+		]);
+		const events = computePlaybackTimeline(score);
+		const at = (name: string) => events.find((event) => formatPitch(event.pitch) === name)!;
+		expect(at('F4').durationSeconds).toBe(2);
+		expect(at('G4').startSeconds).toBe(3);
+	});
+});

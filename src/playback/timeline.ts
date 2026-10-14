@@ -1,4 +1,14 @@
-import { measureCapacityWholes, noteEvents, type NoteId, type Pitch, type Score, type Staff } from '../model/index.js';
+import {
+	eventArticulations,
+	eventFermata,
+	measureCapacityWholes,
+	noteEvents,
+	type Articulation,
+	type NoteId,
+	type Pitch,
+	type Score,
+	type Staff
+} from '../model/index.js';
 import { durationToSeconds } from './tempo.js';
 
 /**
@@ -20,6 +30,58 @@ export interface OnsetEvent {
 	readonly pitch: Pitch;
 	readonly startSeconds: number;
 	readonly durationSeconds: number;
+	/**
+	 * Loudness relative to an ordinary note (M6 Slice 5): present only for an
+	 * accented attack (`ACCENT_VELOCITY`, `MARCATO_VELOCITY`), absent meaning
+	 * 1. `playOnsetEvent` scales its peak gain by it; the synth has no other
+	 * notion of velocity, so this is the whole of it.
+	 */
+	readonly velocity?: number;
+}
+
+/**
+ * How articulations and fermatas change playback (M6 Slice 5). Deliberately
+ * a few fixed factors, not a performance model:
+ *
+ *  - A staccato note sounds for `STACCATO_FRACTION` of its written length, a
+ *    staccatissimo for `STACCATISSIMO_FRACTION`, a detached-legato (tenuto
+ *    plus staccato) for `DETACHED_LEGATO_FRACTION`; the rest of its time is
+ *    silence, so the next onset is unchanged. A tenuto plays its full length,
+ *    which is what every unmarked note already does in this synth (no gap
+ *    between notes), so it changes nothing.
+ *  - An accent multiplies the attack's `velocity` by `ACCENT_VELOCITY`, a
+ *    marcato by `MARCATO_VELOCITY`.
+ *  - A fermata stretches the span its note or rest occupies by
+ *    `FERMATA_FACTOR`, for the *whole score*, not just its own voice: every
+ *    voice on every staff sounding during that span is held with it, and
+ *    everything after it starts later by the added time. Overlapping fermata
+ *    spans (the usual case: every part has one on the same chord) are merged
+ *    first so they stretch once, not once per voice.
+ *
+ * A mark on a chord applies to every head (`eventArticulations`/
+ * `eventFermata`). Within a tie chain, each tied segment uses its own
+ * event's marks, so a staccato on the last note of a tie shortens only that
+ * segment's share.
+ */
+export const STACCATO_FRACTION = 0.5;
+export const STACCATISSIMO_FRACTION = 0.25;
+export const DETACHED_LEGATO_FRACTION = 0.75;
+export const ACCENT_VELOCITY = 1.3;
+export const MARCATO_VELOCITY = 1.5;
+export const FERMATA_FACTOR = 2;
+
+/** The fraction of its written length an event with these marks sounds for. */
+function soundingFraction(marks: readonly Articulation[]): number {
+	if (marks.includes('staccatissimo')) return STACCATISSIMO_FRACTION;
+	if (marks.includes('staccato')) return STACCATO_FRACTION;
+	if (marks.includes('detached-legato')) return DETACHED_LEGATO_FRACTION;
+	return 1;
+}
+
+function attackVelocity(marks: readonly Articulation[]): number {
+	if (marks.includes('strong-accent')) return MARCATO_VELOCITY;
+	if (marks.includes('accent')) return ACCENT_VELOCITY;
+	return 1;
 }
 
 /**
@@ -63,6 +125,46 @@ function measureStartsWholes(score: Score): number[] {
 		cursor += longest > 0 ? longest : measureCapacityWholes(score.timeAt(index));
 	}
 	return starts;
+}
+
+/**
+ * The score's fermata spans as a time warp: `warp(x)` maps a written
+ * position (wholes from the top of the score) to a played one, adding
+ * `FERMATA_FACTOR - 1` times however much of every fermata span lies before
+ * `x`. Spans are merged first (see the constants' comment above), so two
+ * voices' fermatas on one chord stretch it once. Identity (`x => x`) when the
+ * score has none, the common case.
+ */
+function fermataWarp(score: Score, measureStarts: readonly number[]): (x: number) => number {
+	const spans: [number, number][] = [];
+	for (const staff of score.staves) {
+		for (const measure of staff.measures) {
+			const cursors = new Map<number, number>();
+			for (const chord of noteEvents(measure.notes)) {
+				const anchor = chord[0]!;
+				const start = cursors.get(anchor.voice) ?? measureStarts[measure.index]!;
+				const end = start + anchor.durationWholes;
+				cursors.set(anchor.voice, end);
+				if (eventFermata(chord) !== null && end > start) spans.push([start, end]);
+			}
+		}
+	}
+	if (spans.length === 0) return (x) => x;
+	spans.sort((a, b) => a[0] - b[0]);
+	const merged: [number, number][] = [];
+	for (const [start, end] of spans) {
+		const last = merged[merged.length - 1];
+		if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+		else merged.push([start, end]);
+	}
+	return (x) => {
+		let added = 0;
+		for (const [start, end] of merged) {
+			if (x <= start) break;
+			added += (Math.min(x, end) - start) * (FERMATA_FACTOR - 1);
+		}
+		return x + added;
+	};
 }
 
 function voicesInStaff(staff: Staff): number[] {
@@ -121,6 +223,10 @@ function voicesInStaff(staff: Staff): number[] {
  * keeps one open event per head, each extended only by its own head's tie
  * target.
  *
+ * Articulations and fermatas (M6 Slice 5) shape the result as described at
+ * `STACCATO_FRACTION`: positions are first computed in written wholes, then
+ * passed through the fermata warp, then turned into seconds.
+ *
  * The returned array's order falls out of construction (staves in
  * `score.staves` order, each staff's voices in first-seen order, each
  * voice's notes in measure-then-position order) rather than from an explicit
@@ -135,6 +241,8 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 	const bpm = score.tempoBpm;
 	const events: OnsetEvent[] = [];
 	const measureStarts = measureStartsWholes(score);
+	const warp = fermataWarp(score, measureStarts);
+	const seconds = (wholes: number): number => durationToSeconds(wholes, bpm);
 
 	for (const staff of score.staves) {
 		for (const voice of voicesInStaff(staff)) {
@@ -156,12 +264,18 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 					const anchor = chord[0]!;
 					if (anchor.voice !== voice) continue;
 					const stillOpen = new Map<NoteId, number>();
+					// Played span of this event (the fermata warp applied), and
+					// how much of it sounds (a staccato's shortening).
+					const marks = eventArticulations(chord);
+					const startSeconds = seconds(warp(cursorWholes));
+					const spanSeconds = seconds(warp(cursorWholes + anchor.durationWholes)) - startSeconds;
+					const velocity = attackVelocity(marks);
 
 					for (const note of chord) {
 						if (note.isRest) continue;
 						// A member's own `value` only picks its notehead; the
 						// chord's duration is the anchor's.
-						const noteDurationSeconds = durationToSeconds(anchor.durationWholes, bpm);
+						const noteDurationSeconds = spanSeconds * soundingFraction(marks);
 						const openIndex = openByTarget.get(note.id);
 
 						let eventIndex: number;
@@ -174,8 +288,9 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 								noteId: note.id,
 								// Non-null: rests were skipped above.
 								pitch: note.pitch!,
-								startSeconds: durationToSeconds(cursorWholes, bpm),
-								durationSeconds: noteDurationSeconds
+								startSeconds,
+								durationSeconds: noteDurationSeconds,
+								...(velocity !== 1 ? { velocity } : {})
 							});
 							eventIndex = events.length - 1;
 						}

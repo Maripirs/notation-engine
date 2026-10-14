@@ -21,6 +21,7 @@ import { buildScore, Score } from '../model/score.js';
 import type { NoteId } from '../model/score.js';
 import type { DrawOp, LaidOutScore, Rect } from '../layout/types.js';
 import { CanvasRenderer } from './renderer.js';
+import { GLYPH_METRICS } from './glyph-metrics.js';
 
 interface Recorded {
 	readonly call: 'fillRect' | 'clearRect' | 'fillText';
@@ -1124,6 +1125,44 @@ describe('CanvasRenderer seam markers survive a scoped redraw, in real pixels (M
 				}
 			}
 			expect(compared).toBeGreaterThan(w * h * 0.5);
+		}
+	});
+});
+
+describe('CanvasRenderer: articulations and fermatas in a scoped redraw (M6 Slice 5)', () => {
+	it('repaints a note\'s fermata and accent inside its measure\'s cleared region after an edit', () => {
+		const score = buildScore(
+			[[['C5', 'whole']], [['G5', 'whole', { articulations: ['accent'], fermata: 'upright' }]], [['C5', 'whole']]],
+			{ keyFifths: 0 }
+		);
+		const layout = layoutScore(score);
+		const recorder = recordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, layout);
+		renderer.drawAll();
+		recorder.calls.length = 0;
+
+		const target = score.measures[1]!.notes[0]!;
+		const touched = score.transposeNote(target.id, 2);
+		const updated = relayoutMeasure(score, layout, touched!);
+		expect(updated).not.toBeNull();
+		renderer.setLayout(updated!);
+		renderer.redrawMeasure(touched!);
+
+		const measure = updated!.measures[1]!;
+		const marks = measure.ops.filter(
+			(op): op is Extract<DrawOp, { kind: 'glyph' }> =>
+				op.kind === 'glyph' && (op.glyph.startsWith('artic') || op.glyph.startsWith('fermata'))
+		);
+		expect(marks.map((op) => op.glyph)).toEqual(['articAccentAbove', 'fermataAbove']);
+		const clear = recorder.calls[0]!;
+		for (const op of marks) {
+			// Painted by this redraw...
+			expect(recorder.calls.some((call) => call.call === 'fillText' && call.x === op.x && call.y === op.y)).toBe(true);
+			// ...entirely inside the area it cleared first.
+			const { bBoxSW, bBoxNE } = GLYPH_METRICS[op.glyph];
+			expect(op.y - bBoxNE[1] * updated!.staffSpacePx).toBeGreaterThanOrEqual(clear.y);
+			expect(op.y - bBoxSW[1] * updated!.staffSpacePx).toBeLessThanOrEqual(clear.bottom);
+			expect(within(measure.region, { ...clear, x: op.x, right: op.x + bBoxNE[0] * updated!.staffSpacePx })).toBe(true);
 		}
 	});
 });

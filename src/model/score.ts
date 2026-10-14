@@ -103,6 +103,42 @@ export interface ClefChange {
  *  costs no allocation per measure. */
 export const NO_CLEF_CHANGES: readonly ClefChange[] = Object.freeze([]);
 
+/**
+ * An articulation mark on a note (M6 Slice 5), named as MusicXML's
+ * `<articulations>` children are. `'strong-accent'` is the marcato (the
+ * vertical wedge); `'detached-legato'` is the combined tenuto-over-staccato
+ * mark (one Bravura glyph, and both meanings in playback). Other MusicXML
+ * articulation kinds (`breath-mark`, `caesura`, `spiccato`, `stress`, ...)
+ * are not modelled: import keeps them as passthrough.
+ */
+export type Articulation = 'staccato' | 'staccatissimo' | 'accent' | 'strong-accent' | 'tenuto' | 'detached-legato';
+
+/** Every `Articulation`, in the order layout stacks them outward from the
+ *  notehead (Gould, *Behind Bars*: the "short" marks staccato/tenuto sit
+ *  nearest, accents outside them). Also the canonical order equivalence and
+ *  export use, so a set of marks has one spelling. */
+export const ARTICULATIONS: readonly Articulation[] = Object.freeze([
+	'staccato',
+	'staccatissimo',
+	'tenuto',
+	'detached-legato',
+	'accent',
+	'strong-accent'
+]);
+
+/**
+ * A fermata (MusicXML `<fermata type="upright|inverted">`, normal shape
+ * only). `'upright'` is the usual arch-over-dot drawn above the staff;
+ * `'inverted'` is the same mark flipped, drawn below the staff (the way a
+ * lower voice's fermata is engraved, and how OMR reports one read there).
+ * Angled/square/other shapes are not modelled and stay passthrough.
+ */
+export type Fermata = 'upright' | 'inverted';
+
+/** The empty `Note.articulations`, shared (and frozen) so the common case
+ *  costs no allocation per note. */
+export const NO_ARTICULATIONS: readonly Articulation[] = Object.freeze([]);
+
 export interface NoteSpec {
 	/** `null` means a rest. Rests are notes with no pitch rather than a separate type,
 	 *  because every other property (duration, voice, position in the measure, being
@@ -183,6 +219,24 @@ export interface NoteSpec {
 	 * pitched note in the same voice (`Score.appendNote` throws otherwise).
 	 */
 	readonly chordWithPrevious?: boolean;
+	/**
+	 * Articulation marks on this note (M6 Slice 5), in any order, without
+	 * duplicates (the constructor normalizes both away into `ARTICULATIONS`
+	 * order). Valid on a rest too (MusicXML allows it), though only a fermata
+	 * is usual there.
+	 *
+	 * Chords: a mark belongs to the head it was written on (MusicXML puts it
+	 * on one `<note>` of the chord, usually the first, but OMR and other
+	 * encoders vary), and stays there so a round trip keeps it where it was.
+	 * Everything that *interprets* marks reads the chord's union instead
+	 * (`eventArticulations`): layout draws each mark once per chord, at the
+	 * stem-opposite end, and playback shortens every head of a staccato chord.
+	 */
+	readonly articulations?: readonly Articulation[];
+	/** A fermata over (or under) this note or rest; see `Fermata`. As with
+	 *  `articulations`, it sits on the head it was written on, and layout and
+	 *  playback read the chord's union (`eventFermata`). */
+	readonly fermata?: Fermata | null;
 	/** See `Note.passthrough`. */
 	readonly passthrough?: readonly OpaqueElement[];
 }
@@ -204,6 +258,11 @@ export class Note {
 	/** See `NoteSpec.chordWithPrevious`. `false` for a chord's anchor and for
 	 *  every ordinary note or rest. */
 	readonly chordWithPrevious: boolean;
+	/** See `NoteSpec.articulations`. Always in `ARTICULATIONS` order with no
+	 *  duplicates; replaced wholesale (never mutated), so a clone may share it. */
+	articulations: readonly Articulation[];
+	/** See `NoteSpec.fermata`. `null` for none. */
+	fermata: Fermata | null;
 	/**
 	 * Unmodelled children of this note's `<note>` (M6 Slice 3, see
 	 * `passthrough.ts`), in source order: `<lyric>`, `<notehead>`, `<cue>`, a
@@ -226,6 +285,8 @@ export class Note {
 		this.tiedToId = spec.tiedToId ?? null;
 		this.measureRestWholes = spec.measureRestWholes ?? null;
 		this.chordWithPrevious = spec.chordWithPrevious ?? false;
+		this.articulations = normalizeArticulations(spec.articulations);
+		this.fermata = spec.fermata ?? null;
 		this.passthrough = spec.passthrough ?? NO_PASSTHROUGH;
 		if (this.measureRestWholes !== null && this.pitch !== null) {
 			throw new Error(`Note ${id}: measureRestWholes is only valid on a rest (pitch: null)`);
@@ -266,6 +327,39 @@ export class Note {
 		const tupletMultiplier = this.tuplet ? this.tuplet.normalNotes / this.tuplet.actualNotes : 1;
 		return NOTE_VALUE_WHOLES[this.value] * dotMultiplier * tupletMultiplier;
 	}
+}
+
+/** `marks` deduplicated and in `ARTICULATIONS` order; the shared empty array
+ *  when there are none. */
+export function normalizeArticulations(marks: readonly Articulation[] | undefined): readonly Articulation[] {
+	if (!marks || marks.length === 0) return NO_ARTICULATIONS;
+	return Object.freeze(ARTICULATIONS.filter((kind) => marks.includes(kind)));
+}
+
+/**
+ * The articulations of one event (a single note or rest, or every head of a
+ * chord as `noteEvents` groups them): the union over its heads, in
+ * `ARTICULATIONS` order. What layout draws once per chord and what playback
+ * applies to every head, whichever head a mark was written on (see
+ * `NoteSpec.articulations`).
+ */
+export function eventArticulations(event: readonly Note[]): readonly Articulation[] {
+	if (event.length === 1) return event[0]!.articulations;
+	let any = false;
+	for (const note of event) if (note.articulations.length > 0) any = true;
+	if (!any) return NO_ARTICULATIONS;
+	return normalizeArticulations(event.flatMap((note) => note.articulations));
+}
+
+/** One event's fermata (see `eventArticulations`): the first head's that has
+ *  one, upright winning if heads disagree (a chord has one fermata). */
+export function eventFermata(event: readonly Note[]): Fermata | null {
+	let found: Fermata | null = null;
+	for (const note of event) {
+		if (note.fermata === 'upright') return 'upright';
+		if (note.fermata !== null) found = note.fermata;
+	}
+	return found;
 }
 
 export class Measure {
@@ -1303,6 +1397,8 @@ export class Score {
 						tuplet: note.tuplet === null ? undefined : { ...note.tuplet },
 						measureRestWholes: note.measureRestWholes,
 						chordWithPrevious: note.chordWithPrevious,
+						articulations: note.articulations,
+						fermata: note.fermata,
 						passthrough: note.passthrough
 					});
 					// Set directly, not through the spec's `tiedToId` (which would
@@ -1372,7 +1468,16 @@ export class Score {
 export type MeasureSpec = readonly (readonly [
 	pitch: string | readonly string[] | null,
 	value: NoteValue,
-	extra?: { dots?: 0 | 1 | 2; tuplet?: TupletRatio; tiedToNext?: boolean; voice?: number }
+	extra?: {
+		dots?: 0 | 1 | 2;
+		tuplet?: TupletRatio;
+		tiedToNext?: boolean;
+		voice?: number;
+		/** M6 Slice 5; on a chord, set on the anchor only (see `NoteSpec.articulations`). */
+		articulations?: readonly Articulation[];
+		/** M6 Slice 5; on a chord, set on the anchor only. */
+		fermata?: Fermata;
+	}
 ])[];
 
 /**
@@ -1479,7 +1584,11 @@ export function buildScore(
 					dots: extra?.dots,
 					tuplet: extra?.tuplet,
 					voice: extra?.voice,
-					chordWithPrevious: i > 0
+					chordWithPrevious: i > 0,
+					// Marks are the chord's, so only the anchor carries them:
+					// the shape an exporter (and MuseScore) writes.
+					articulations: i === 0 ? extra?.articulations : undefined,
+					fermata: i === 0 ? extra?.fermata : undefined
 				});
 				builtNotes.push(note);
 				if (extra?.tiedToNext) tieRequests.push(note);

@@ -199,4 +199,13 @@ describe('playOnsetEvent', () => {
 		expect(calls[2]!.time).toBeCloseTo(5.005, 10);
 		expect(calls[3]).toEqual({ call: 'linearRampToValueAtTime', value: 0, time: 5.03 });
 	});
+
+	it('scales the peak gain by an accented event\'s velocity (M6 Slice 5)', () => {
+		const { audioContext, gains } = mockAudioContext();
+		const event: OnsetEvent = { noteId: 'n1' as OnsetEvent['noteId'], pitch: A4, startSeconds: 10, durationSeconds: 2, velocity: 1.5 };
+		playOnsetEvent(event, { audioContext, attackSeconds: 0.01, releaseSeconds: 0.05, gain: 0.2 });
+		const peak = gains[0]!.gain.calls[1]!;
+		expect(peak.call).toBe('linearRampToValueAtTime');
+		expect(peak.value).toBeCloseTo(0.3, 10);
+	});
 });

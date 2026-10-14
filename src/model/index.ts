@@ -11,10 +11,12 @@ export {
 } from './pitch.js';
 
 export type {
+	Articulation,
 	BarlineType,
 	ClefChange,
 	ClefType,
 	CrossStaffBeam,
+	Fermata,
 	MeasureSpec,
 	MeasureValidation,
 	NoteId,
@@ -33,13 +35,18 @@ export { NO_PASSTHROUGH, opaqueElementKey } from './passthrough.js';
 export { EditHistory } from './edit-history.js';
 export type { EditHistoryOptions } from './edit-history.js';
 export {
+	ARTICULATIONS,
 	buildScore,
+	eventArticulations,
+	eventFermata,
 	Measure,
 	measureCapacityWholes,
 	measureDurationWholes,
 	Note,
 	NOTE_VALUE_WHOLES,
+	NO_ARTICULATIONS,
 	NO_CLEF_CHANGES,
+	normalizeArticulations,
 	noteEvents,
 	Score,
 	Staff,

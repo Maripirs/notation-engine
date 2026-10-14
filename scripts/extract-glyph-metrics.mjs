@@ -92,7 +92,25 @@ const GLYPHS = [
 	// distort its square corners for anything but its one native span.
 	'brace',
 	'bracketTop',
-	'bracketBottom'
+	'bracketBottom',
+	// Articulations and fermatas (M6 Slice 5). SMuFL draws each in an
+	// "above" and a "below" form (an accent's wedge or a fermata's arch
+	// flips), so layout picks the one for the side it places the mark on.
+	// `articTenutoStaccato*` is MusicXML's `detached-legato`.
+	'articStaccatoAbove',
+	'articStaccatoBelow',
+	'articStaccatissimoAbove',
+	'articStaccatissimoBelow',
+	'articTenutoAbove',
+	'articTenutoBelow',
+	'articTenutoStaccatoAbove',
+	'articTenutoStaccatoBelow',
+	'articAccentAbove',
+	'articAccentBelow',
+	'articMarcatoAbove',
+	'articMarcatoBelow',
+	'fermataAbove',
+	'fermataBelow'
 ];
 
 // Engraving defaults are line thicknesses and extensions the font *recommends*

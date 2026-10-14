@@ -4,6 +4,13 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
 {
   "dropped": {},
   "fallbacks": [],
+  "marks": {
+    "fermata inverted": 1,
+    "fermata upright": 10,
+    "staccatissimo": 6,
+    "staccato": 844,
+    "tenuto": 22,
+  },
   "measureRests": 392,
   "modelNotes": 8405,
   "parts": [
@@ -16,11 +23,9 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
   ],
   "passthrough": {
     "arpeggiate": 10,
-    "articulations": 872,
     "attributes": 8,
     "cue": 4,
     "dynamics": 153,
-    "fermata": 11,
     "grace": 11,
     "identification": 1,
     "ornaments": 3,
@@ -52,6 +57,11 @@ exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 
     "note-value P4 m29: unsupported <type>breve</type>, duration 16 at divisions 2",
     "note-value P4 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
   ],
+  "marks": {
+    "accent": 29,
+    "staccato": 1,
+    "strong-accent": 21,
+  },
   "measureRests": 1,
   "modelNotes": 676,
   "parts": [
@@ -62,7 +72,6 @@ exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 
     "(group): [0, 1, 2, 3]",
   ],
   "passthrough": {
-    "articulations": 51,
     "cue": 2,
     "dynamics": 31,
     "identification": 1,
@@ -79,6 +88,13 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
 {
   "dropped": {},
   "fallbacks": [],
+  "marks": {
+    "accent": 20,
+    "detached-legato": 1,
+    "staccatissimo": 1,
+    "staccato": 269,
+    "tenuto": 14,
+  },
   "measureRests": 151,
   "modelNotes": 4543,
   "parts": [
@@ -90,7 +106,6 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
     "(group): [0, 1, 2, 3]",
   ],
   "passthrough": {
-    "articulations": 305,
     "attributes": 7,
     "cue": 1,
     "dynamics": 119,
@@ -116,6 +131,10 @@ exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
 {
   "dropped": {},
   "fallbacks": [],
+  "marks": {
+    "accent": 151,
+    "staccato": 1,
+  },
   "measureRests": 201,
   "modelNotes": 3516,
   "parts": [
@@ -128,7 +147,6 @@ exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
   ],
   "passthrough": {
     "arpeggiate": 28,
-    "articulations": 152,
     "attributes": 6,
     "dynamics": 55,
     "identification": 1,
@@ -147,6 +165,14 @@ exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`]
 {
   "dropped": {},
   "fallbacks": [],
+  "marks": {
+    "accent": 168,
+    "fermata upright": 6,
+    "staccatissimo": 46,
+    "staccato": 268,
+    "strong-accent": 8,
+    "tenuto": 132,
+  },
   "measureRests": 104,
   "modelNotes": 3751,
   "parts": [
@@ -158,9 +184,7 @@ exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`]
     "(group): [0, 1, 2, 3]",
   ],
   "passthrough": {
-    "articulations": 622,
     "dynamics": 38,
-    "fermata": 6,
     "identification": 1,
     "octave-shift": 4,
     "ornaments": 106,
@@ -183,6 +207,11 @@ exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
 {
   "dropped": {},
   "fallbacks": [],
+  "marks": {
+    "accent": 6,
+    "staccato": 51,
+    "strong-accent": 2,
+  },
   "measureRests": 4,
   "modelNotes": 798,
   "parts": [
@@ -193,7 +222,6 @@ exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
     "(group): [0, 1, 2, 3]",
   ],
   "passthrough": {
-    "articulations": 59,
     "dynamics": 4,
     "identification": 1,
     "technical": 6,
@@ -211,6 +239,13 @@ exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] =
 {
   "dropped": {},
   "fallbacks": [],
+  "marks": {
+    "accent": 1,
+    "fermata inverted": 1,
+    "fermata upright": 2,
+    "strong-accent": 1,
+    "tenuto": 3,
+  },
   "measureRests": 318,
   "modelNotes": 1584,
   "parts": [
@@ -222,9 +257,7 @@ exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] =
     "(group): [0, 1, 2, 3, 4]",
   ],
   "passthrough": {
-    "articulations": 5,
     "dynamics": 73,
-    "fermata": 3,
     "identification": 1,
     "ornaments": 11,
     "staff-details": 5,

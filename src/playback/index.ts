@@ -1,5 +1,14 @@
 export { durationToSeconds } from './tempo.js';
-export { computePlaybackTimeline, type OnsetEvent } from './timeline.js';
+export {
+	ACCENT_VELOCITY,
+	computePlaybackTimeline,
+	DETACHED_LEGATO_FRACTION,
+	FERMATA_FACTOR,
+	MARCATO_VELOCITY,
+	STACCATISSIMO_FRACTION,
+	STACCATO_FRACTION,
+	type OnsetEvent
+} from './timeline.js';
 export {
 	LookaheadScheduler,
 	type LookaheadSchedulerOptions,

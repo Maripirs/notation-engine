@@ -174,6 +174,10 @@ function assertNoteEquivalent(
 	// Chord membership (M6 Slice 2): the same heads in the same order but
 	// regrouped into different chords would sound and draw differently.
 	assertEqual(`${where} chordWithPrevious`, actualNote.chordWithPrevious, expectedNote.chordWithPrevious);
+	// Marks (M6 Slice 5) are compared per head, as written: a round trip must
+	// keep a mark on the chord member it came from, not just on the chord.
+	assertEqual(`${where} articulations`, actualNote.articulations.join(','), expectedNote.articulations.join(','));
+	assertEqual(`${where} fermata`, actualNote.fermata, expectedNote.fermata);
 	assertEqual(`${where} passthrough`, notePayloadKey(actualNote.passthrough), notePayloadKey(expectedNote.passthrough));
 
 	// Tie linkage: both must either start no tie, or start one that lands on a

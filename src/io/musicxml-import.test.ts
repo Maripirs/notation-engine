@@ -3,6 +3,7 @@ import { layoutScore } from '../layout/index.js';
 import {
 	createAccidentalShowcaseScore,
 	createBarlineShowcaseScore,
+	createArticulationShowcaseScore,
 	createChordShowcaseScore,
 	createClefShowcaseScore,
 	createCrossStaffBeamShowcaseScore,
@@ -626,10 +627,9 @@ describe('importMusicXml: drop and passthrough diagnostics (M6 Slices 1, 3)', ()
 		expect(sorted(diagnostics.passthrough)).toEqual({
 			// The tempo direction is exactly export's own shape in the first
 			// measure, so it is `Score.tempoBpm`, not passthrough.
-			articulations: 1,
+			// (Its staccato and fermata are modelled since M6 Slice 5.)
 			dynamics: 1,
 			ending: 1,
-			fermata: 1,
 			florble: 1,
 			grace: 1,
 			lyric: 1,
@@ -713,5 +713,16 @@ describe('importMusicXml: chords (M6 Slice 2)', () => {
 	it('round-trips the chord showcase', () => {
 		const original = createChordShowcaseScore();
 		assertScoresEquivalent(importMusicXml(exportMusicXml(original)), original);
+	});
+
+	it('round-trips the articulation showcase, marks and fermatas included (M6 Slice 5)', () => {
+		const original = createArticulationShowcaseScore();
+		const xml = exportMusicXml(original);
+		const reimported = importMusicXml(xml);
+		assertScoresEquivalent(reimported, original);
+		expect(exportMusicXml(reimported)).toBe(xml);
+		// Equivalence compares marks; check it would notice a lost one.
+		reimported.staves[0]!.measures[0]!.notes[0]!.articulations = [];
+		expect(() => assertScoresEquivalent(reimported, original)).toThrow(/articulations/);
 	});
 });

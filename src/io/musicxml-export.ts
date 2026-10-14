@@ -801,7 +801,7 @@ interface NoteContext {
  * would guess, so the sequence below is deliberate and load-bearing:
  * pitch-or-rest, duration, `<tie>` (the sounding element), voice, type, dots,
  * time-modification, stem, staff, beam, then `<notations>` (the visual
- * elements, `<tied>`/`<tuplet>`/`<slur>`). Anything absent is simply skipped.
+ * elements, `<tied>`/`<tuplet>`/`<slur>`, then `<articulations>`/`<fermata>`). Anything absent is simply skipped.
  *
  * `Note.passthrough` (M6 Slice 3) is slotted into that same order
  * (`NOTE_ORDER`): a `<cue/>` first, a `<notehead>` after `<stem>`, a `<lyric>`
@@ -931,10 +931,18 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 		tupletRunStart ||
 		tupletRunStop ||
 		slurStops.length > 0 ||
-		slurStarts.length > 0;
+		slurStarts.length > 0 ||
+		note.articulations.length > 0 ||
+		note.fermata !== null;
 	slots.before('notations');
 	if (hasNotations) {
 		const merged = notationsExtras[0];
+		// A passthrough `<articulations>` holds the kinds the model does not
+		// (M6 Slice 5's import cut it down), so when the model writes its own
+		// they become one element again, as in the source; `<notations>`'
+		// children are an unordered choice, so nothing else needs slotting.
+		const extraArticulations =
+			note.articulations.length > 0 ? merged?.children.find((c) => c.name === 'articulations') : undefined;
 		xml.open('notations', merged?.attrs);
 		if (tiedInto) xml.selfClose('tied', { type: 'stop' });
 		if (note.tiedToId !== null) xml.selfClose('tied', { type: 'start' });
@@ -942,7 +950,14 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 		if (tupletRunStop) xml.selfClose('tuplet', { type: 'stop', number: '1' });
 		for (const number of slurStops) xml.selfClose('slur', { type: 'stop', number: String(number) });
 		for (const number of slurStarts) xml.selfClose('slur', { type: 'start', number: String(number) });
-		if (merged) for (const c of merged.children) xml.element(c);
+		if (note.articulations.length > 0) {
+			xml.open('articulations', extraArticulations?.attrs);
+			for (const kind of note.articulations) xml.selfClose(kind);
+			if (extraArticulations) for (const c of extraArticulations.children) xml.element(c);
+			xml.close('articulations');
+		}
+		if (note.fermata !== null) xml.selfClose('fermata', { type: note.fermata });
+		if (merged) for (const c of merged.children) if (c !== extraArticulations) xml.element(c);
 		xml.close('notations');
 		for (let i = 1; i < notationsExtras.length; i++) xml.element(notationsExtras[i]!);
 	} else {

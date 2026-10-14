@@ -18,8 +18,20 @@
 // region-scoped redraw possible at all; that property still holds; it just no
 // longer comes from a naive fixed-plus-linear formula.
 
-import type { ClefType, CrossStaffBeam, Measure, Note, NoteId, NoteValue, Part, Score, Slur, TimeSignature } from '../model/score.js';
-import { noteEvents } from '../model/score.js';
+import type {
+	Articulation,
+	ClefType,
+	CrossStaffBeam,
+	Measure,
+	Note,
+	NoteId,
+	NoteValue,
+	Part,
+	Score,
+	Slur,
+	TimeSignature
+} from '../model/score.js';
+import { eventArticulations, eventFermata, noteEvents } from '../model/score.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
 	ENGRAVING_DEFAULTS as ED,
@@ -1881,6 +1893,15 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// stem per chord, so a beamed chord's stem is looked up by the anchor
 	// `BeamGroup.notes` lists, never by a member.
 	const stems = new Map<NoteId, ChordStem>();
+	// Where each beamed event's stem ends (its beam's y), keyed like `stems`,
+	// filled in by `layoutBeamGroup`; an unbeamed stem's tip is derived from
+	// its `ChordStem` instead. Read by the articulation pass, which stacks a
+	// stem-side mark beyond the tip.
+	const stemTips = new Map<NoteId, number>();
+	// Events carrying an articulation or fermata (M6 Slice 5), laid out at the
+	// very end (`layoutEventMarks`), once stems, beams, measure-rest centring,
+	// ties and slurs have all settled the ink a mark has to clear.
+	const markedEvents: MarkedEvent[] = [];
 
 	// Onset-aligned columns (see `measureColumns`): every voice's notes land
 	// on a shared x wherever they share a beat. `columnOffsetPx` turns each
@@ -2065,6 +2086,15 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			);
 
 			if (note.isMeasureRest) measureRestSpans.push({ opStart, opEnd: ops.length, noteIndex });
+			if (eventArticulations(chord).length > 0 || eventFermata(chord) !== null) {
+				markedEvents.push({
+					chord,
+					heads: laid.heads.map(([, placement]) => placement),
+					stem: laid.stem,
+					ctx: noteCtx,
+					restOp: note.pitch === null ? opStart : null
+				});
+			}
 			shiftAccumByVoice.set(voice, shiftAccum + clashShift + laid.collisionShift);
 			previousInkRightByVoice.set(voice, laid.inkRight);
 			columnInkRightSoFar =
@@ -2091,8 +2121,8 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			cursor + columnsWidthPx + clefInsertPx + Math.max(0, ...finalShiftByVoice.values())
 		);
 	}
-	for (const group of beamGroups) layoutBeamGroup(ops, group, stems, ctx);
-	for (const { group, beamY } of crossStaffGroups) layoutBeamGroup(ops, group, stems, ctx, beamY);
+	for (const group of beamGroups) layoutBeamGroup(ops, group, stems, ctx, undefined, stemTips);
+	for (const { group, beamY } of crossStaffGroups) layoutBeamGroup(ops, group, stems, ctx, beamY, stemTips);
 	// The measure's note area ends at the shared columns' own total width,
 	// plus whichever voice's own collision-avoidance shift (above) reached
 	// furthest past it. A single voice's shift is the only one that can ever
@@ -2134,6 +2164,14 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// Before the staff lines below are `unshift`ed in, which would shift the
 	// op indices `measureRestSpans` recorded.
 	centreMeasureRests(ops, notes, measureRestSpans, contentStartX, barlineX, ss);
+	// A marked rest's glyph box, read now: the staff lines `unshift`ed below
+	// would shift the op index recorded for it, and centring has just moved a
+	// measure rest to where its fermata must be centred.
+	const restBoxes = new Map<MarkedEvent, Rect>();
+	for (const event of markedEvents) {
+		const op = event.restOp === null ? undefined : ops[event.restOp];
+		if (op && op.kind === 'glyph') restBoxes.set(event, glyphBounds(op.glyph, op.x, op.y, ss));
+	}
 	// This measure's own portion of a shared multi-staff barline (M2 Slice 4),
 	// falling back to the ordinary single-staff band when this staff has
 	// nothing above or below it to share a barline with (`barlineTop`/
@@ -2311,6 +2349,23 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		const y1 = endPoint ? endPoint.y : roofY;
 
 		pushSlurSegment(ops, x0, y0, x1, y1, roofY, slur.startNoteId, ctx);
+	}
+
+	// Articulations and fermatas (M6 Slice 5), last, so every obstacle they
+	// stack beyond already exists. Their glyph ops land in this measure's own
+	// `ops`, so `measureRegion` below grows to cover them and a region-scoped
+	// redraw repaints them like any other ink.
+	if (markedEvents.length > 0) {
+		const curves = ops.filter((op): op is Extract<DrawOp, { kind: 'curve' }> => op.kind === 'curve');
+		for (const event of markedEvents) {
+			const anchor = event.chord[0]!;
+			const tip =
+				event.stem === null
+					? null
+					: (stemTips.get(anchor.id) ??
+						event.stem.nearY + (event.heads[0]!.up ? -STEM_LENGTH * ss : STEM_LENGTH * ss));
+			layoutEventMarks(ops, event, restBoxes.get(event) ?? null, tip, curves, multiVoice);
+		}
 	}
 
 	return {
@@ -3504,7 +3559,8 @@ function layoutBeamGroup(
 	group: BeamGroup,
 	stems: ReadonlyMap<NoteId, ChordStem>,
 	ctx: MeasureContext,
-	fixedBeamY?: number
+	fixedBeamY?: number,
+	tips?: Map<NoteId, number>
 ): void {
 	const { ss } = ctx;
 	// Each member's stem geometry as `layoutNote` decided it, keyed by the
@@ -3526,6 +3582,9 @@ function layoutBeamGroup(
 
 	const stemThickness = ED.stemThickness * ss;
 	for (const { note, stem } of members) {
+		// Every stem of the group ends at the beam's outer edge (the primary
+		// beam is drawn inward from `beamY`, see `barY` below).
+		tips?.set(note.id, beamY);
 		ops.push({
 			kind: 'rect',
 			x: stem.left,
@@ -3615,6 +3674,198 @@ function pushBeamSegment(
  * `null`), so it falls back to `stemDirectionForNotes` on its own diatonic
  * index, the same single-note rule a stem would have used.
  */
+/** One event `layoutMeasure` defers to `layoutEventMarks` (M6 Slice 5). */
+interface MarkedEvent {
+	readonly chord: readonly Note[];
+	/** Every head's final placement; empty for a rest. */
+	readonly heads: readonly NotePlacement[];
+	readonly stem: ChordStem | null;
+	/** The clef context the event was laid out against (mid-measure clef
+	 *  changes give a note its own), for staff positions and ledger lines. */
+	readonly ctx: MeasureContext;
+	/** A rest's glyph op index (valid until the staff lines are unshifted). */
+	readonly restOp: number | null;
+}
+
+/** Bravura's glyph per articulation, in its above-the-note and below-the-note
+ *  forms (an accent's wedge or a marcato's roof points away from the note). */
+const ARTICULATION_GLYPHS: Readonly<Record<Articulation, { readonly above: GlyphName; readonly below: GlyphName }>> = {
+	staccato: { above: 'articStaccatoAbove', below: 'articStaccatoBelow' },
+	staccatissimo: { above: 'articStaccatissimoAbove', below: 'articStaccatissimoBelow' },
+	tenuto: { above: 'articTenutoAbove', below: 'articTenutoBelow' },
+	'detached-legato': { above: 'articTenutoStaccatoAbove', below: 'articTenutoStaccatoBelow' },
+	accent: { above: 'articAccentAbove', below: 'articAccentBelow' },
+	'strong-accent': { above: 'articMarcatoAbove', below: 'articMarcatoBelow' }
+};
+
+/** The flat marks small enough to sit inside a staff space (Gould, *Behind
+ *  Bars*: staccato and tenuto go in the space next to the notehead, never on
+ *  a line). Everything else (accent, marcato, the staccatissimo wedge, and
+ *  the combined tenuto-staccato glyph, all about a space tall) cannot fit
+ *  between two lines, so it goes outside the staff whenever it would
+ *  otherwise cross one. */
+const IN_STAFF_ARTICULATIONS: ReadonlySet<Articulation> = new Set(['staccato', 'tenuto']);
+
+/** Minimum gap, staff spaces, between a mark and whatever it stacks beyond:
+ *  the notehead, the stem tip or beam, or the previous mark. */
+const ARTICULATION_CLEARANCE = 0.35;
+/** The smaller gap a staccato or tenuto snapped into a staff space needs:
+ *  the space right next to a space-note's head leaves a staccato dot only
+ *  ~0.33 spaces of air, and that adjacent space is exactly where Gould puts
+ *  it, so a larger figure would push every such dot one space too far. */
+const IN_STAFF_CLEARANCE = 0.25;
+/** Gap, staff spaces, between a fermata and the staff or the highest ink
+ *  under it (a fermata sits clear of everything, like a tempo mark). */
+const FERMATA_CLEARANCE = 0.5;
+
+/**
+ * Draw one event's articulations and fermata (M6 Slice 5), following the
+ * standard engraving rules (Gould, *Behind Bars*, "Articulation"):
+ *
+ *  - Side: opposite the stem (above a stem-down note, below a stem-up one);
+ *    above a rest or a stemless whole note. With two or more voices on the
+ *    staff the side is the voice's, odd voices above and even below, which is
+ *    their stem side, so there the marks stack beyond the stem tip (or beam)
+ *    and centre on the stem. A marcato always goes above.
+ *  - Order: outward from the note in `ARTICULATIONS` order, so staccato and
+ *    tenuto sit nearest and accents outside them.
+ *  - Staccato and tenuto are centred in the nearest staff space
+ *    clear of the notehead, stepping one further out when that would put them
+ *    on a staff or ledger line. Taller marks (accent, marcato, staccatissimo)
+ *    stack at `ARTICULATION_CLEARANCE` from what is below them, and move
+ *    outside the staff if they would cross its lines.
+ *  - A fermata (`'upright'`) goes above the staff and above everything at its
+ *    x (heads, a stem tip, the marks just placed, a tie or slur curve),
+ *    centred on the note or rest; an `'inverted'` one mirrors that below.
+ *
+ * A chord gets each mark once (`eventArticulations`), centred on its normal
+ * (stem) column and stacked beyond its outermost head. Each mark's op carries
+ * the id of the head the mark was written on, so selecting it tints the mark.
+ */
+function layoutEventMarks(
+	ops: DrawOp[],
+	event: MarkedEvent,
+	restBox: Rect | null,
+	stemTipY: number | null,
+	curves: readonly Extract<DrawOp, { kind: 'curve' }>[],
+	multiVoice: boolean
+): void {
+	const { chord, heads, stem, ctx } = event;
+	const { ss } = ctx;
+	const anchor = chord[0]!;
+	const staffTop = ctx.staffTopY;
+	const staffBottom = ctx.staffTopY + 4 * ss;
+
+	// The event's own ink extent, and the x a mark centres on.
+	let top: number;
+	let bottom: number;
+	let headCentreX: number;
+	let stemUp: boolean | null = null;
+	let lowLine = ctx.lines.bottomLine;
+	let highLine = ctx.lines.topLine;
+	if (heads.length === 0) {
+		if (!restBox) return;
+		top = restBox.y;
+		bottom = restBox.y + restBox.height;
+		headCentreX = restBox.x + restBox.width / 2;
+	} else {
+		const headGlyph = heads[0]!.headGlyph;
+		const { bBoxSW, bBoxNE } = GLYPH_METRICS[headGlyph];
+		const ys = heads.map((head) => head.y);
+		top = Math.min(...ys) - bBoxNE[1] * ss;
+		bottom = Math.max(...ys) - bBoxSW[1] * ss;
+		stemUp = heads[0]!.up;
+		// The normal column: a displaced head of a second sits right of an up
+		// stem and left of a down one, so the other side's x is the column.
+		const xs = heads.map((head) => head.noteX);
+		const normalX = stemUp === false ? Math.max(...xs) : Math.min(...xs);
+		headCentreX = normalX + ((bBoxSW[0] + bBoxNE[0]) / 2) * ss;
+		// Ledger lines reach from the staff out to the outermost heads.
+		const ds = heads.map((head) => head.d);
+		lowLine = Math.min(lowLine, ...ds);
+		highLine = Math.max(highLine, ...ds);
+	}
+	const stemX = stem ? stem.left + (ED.stemThickness * ss) / 2 : null;
+
+	// Each side's current outer edge (canvas y): where the next mark on that
+	// side stacks from. The stem side starts at the stem's tip.
+	let aboveEdge = stemUp === true && stemTipY !== null ? Math.min(top, stemTipY) : top;
+	let belowEdge = stemUp === false && stemTipY !== null ? Math.max(bottom, stemTipY) : bottom;
+
+	const override = voiceStemOverride(anchor.voice, multiVoice);
+	const side: 'above' | 'below' = override ? (override === 'up' ? 'above' : 'below') : stemUp === true ? 'below' : 'above';
+
+	const positionOfY = (y: number): number => ctx.lines.bottomLine + (staffBottom - y) / (ss / 2);
+	const isLine = (p: number): boolean =>
+		p >= lowLine && p <= highLine && (((p - ctx.lines.bottomLine) % 2) + 2) % 2 === 0;
+	const carrierOf = (has: (note: Note) => boolean): NoteId => (chord.find(has) ?? anchor).id;
+
+	for (const kind of eventArticulations(chord)) {
+		const markSide = kind === 'strong-accent' ? 'above' : side;
+		const above = markSide === 'above';
+		// Canvas y grows downward, so "outward" above is negative.
+		const out = above ? -1 : 1;
+		const glyph = ARTICULATION_GLYPHS[kind][markSide];
+		const { bBoxSW, bBoxNE } = GLYPH_METRICS[glyph];
+		const height = (bBoxNE[1] - bBoxSW[1]) * ss;
+		const edge = above ? aboveEdge : belowEdge;
+		let centreY: number;
+		if (IN_STAFF_ARTICULATIONS.has(kind)) {
+			// The nearest half-space position (outward) whose mark clears the
+			// edge, then one further out if that is a staff or ledger line.
+			const wanted = positionOfY(edge + out * (IN_STAFF_CLEARANCE * ss + height / 2));
+			let p = above ? Math.ceil(wanted - 1e-6) : Math.floor(wanted + 1e-6);
+			if (isLine(p)) p += above ? 1 : -1;
+			centreY = staffY(p, ctx);
+		} else {
+			let near = edge + out * ARTICULATION_CLEARANCE * ss;
+			const far = near + out * height;
+			const crossesStaff = Math.max(near, far) > staffTop && Math.min(near, far) < staffBottom;
+			if (crossesStaff) {
+				near = above
+					? Math.min(near, staffTop - ARTICULATION_CLEARANCE * ss)
+					: Math.max(near, staffBottom + ARTICULATION_CLEARANCE * ss);
+			}
+			centreY = near + (out * height) / 2;
+		}
+		// At the stem end (multi-voice) a mark centres on the stem, otherwise
+		// on the notehead.
+		const atStem = stemX !== null && (above ? stemUp === true : stemUp === false);
+		const centreX = atStem ? stemX : headCentreX;
+		ops.push({
+			kind: 'glyph',
+			glyph,
+			x: centreX - ((bBoxSW[0] + bBoxNE[0]) / 2) * ss,
+			y: centreY + ((bBoxSW[1] + bBoxNE[1]) / 2) * ss,
+			noteId: carrierOf((note) => note.articulations.includes(kind))
+		});
+		if (above) aboveEdge = Math.min(aboveEdge, centreY - height / 2);
+		else belowEdge = Math.max(belowEdge, centreY + height / 2);
+	}
+
+	const fermata = eventFermata(chord);
+	if (fermata !== null) {
+		const upright = fermata === 'upright';
+		const glyph: GlyphName = upright ? 'fermataAbove' : 'fermataBelow';
+		const { bBoxSW, bBoxNE } = GLYPH_METRICS[glyph];
+		// Any tie or slur curve passing over this x: its control points
+		// bound it (see `measureRegion`), a conservative but simple clearance.
+		let extreme = upright ? Math.min(staffTop, aboveEdge) : Math.max(staffBottom, belowEdge);
+		for (const curve of curves) {
+			if (headCentreX < Math.min(curve.x0, curve.x1) || headCentreX > Math.max(curve.x0, curve.x1)) continue;
+			extreme = upright
+				? Math.min(extreme, curve.y0, curve.cy0, curve.cy1, curve.y1)
+				: Math.max(extreme, curve.y0, curve.cy0, curve.cy1, curve.y1);
+		}
+		const x = headCentreX - ((bBoxSW[0] + bBoxNE[0]) / 2) * ss;
+		// The glyph's ink bottom (upright) or top (inverted) at the clearance.
+		const y = upright
+			? extreme - FERMATA_CLEARANCE * ss + bBoxSW[1] * ss
+			: extreme + FERMATA_CLEARANCE * ss + bBoxNE[1] * ss;
+		ops.push({ kind: 'glyph', glyph, x, y, noteId: carrierOf((note) => note.fermata !== null) });
+	}
+}
+
 function tieCurvesBelow(point: NotePlacement, middleLine: number): boolean {
 	return point.tieBelow ?? point.up ?? stemDirectionForNotes([point.d], middleLine) === 'up';
 }

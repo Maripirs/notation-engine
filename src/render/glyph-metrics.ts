@@ -391,6 +391,132 @@ export const GLYPH_METRICS = {
 		bBoxNE: [1.876, 0],
 		anchors: {}
 	},
+	articStaccatoAbove: {
+		name: 'articStaccatoAbove',
+		codepoint: 0xE4A2,
+		description: 'Staccato above',
+		advance: 0.336,
+		bBoxSW: [0, 0],
+		bBoxNE: [0.336, 0.336],
+		anchors: {}
+	},
+	articStaccatoBelow: {
+		name: 'articStaccatoBelow',
+		codepoint: 0xE4A3,
+		description: 'Staccato below',
+		advance: 0.336,
+		bBoxSW: [0, -0.336],
+		bBoxNE: [0.336, 0],
+		anchors: {}
+	},
+	articStaccatissimoAbove: {
+		name: 'articStaccatissimoAbove',
+		codepoint: 0xE4A6,
+		description: 'Staccatissimo above',
+		advance: 0.408,
+		bBoxSW: [0.004, -0.008],
+		bBoxNE: [0.4, 1.172],
+		anchors: {}
+	},
+	articStaccatissimoBelow: {
+		name: 'articStaccatissimoBelow',
+		codepoint: 0xE4A7,
+		description: 'Staccatissimo below',
+		advance: 0.408,
+		bBoxSW: [0.004, -1.18],
+		bBoxNE: [0.4, 0],
+		anchors: {}
+	},
+	articTenutoAbove: {
+		name: 'articTenutoAbove',
+		codepoint: 0xE4A4,
+		description: 'Tenuto above',
+		advance: 1.352,
+		bBoxSW: [-0.004, 0],
+		bBoxNE: [1.352, 0.192],
+		anchors: {}
+	},
+	articTenutoBelow: {
+		name: 'articTenutoBelow',
+		codepoint: 0xE4A5,
+		description: 'Tenuto below',
+		advance: 1.352,
+		bBoxSW: [-0.004, -0.192],
+		bBoxNE: [1.352, 0],
+		anchors: {}
+	},
+	articTenutoStaccatoAbove: {
+		name: 'articTenutoStaccatoAbove',
+		codepoint: 0xE4B2,
+		description: 'Louré (tenuto-staccato) above',
+		advance: 1.356,
+		bBoxSW: [-0.004, 0],
+		bBoxNE: [1.352, 0.96],
+		anchors: {}
+	},
+	articTenutoStaccatoBelow: {
+		name: 'articTenutoStaccatoBelow',
+		codepoint: 0xE4B3,
+		description: 'Louré (tenuto-staccato) below',
+		advance: 1.352,
+		bBoxSW: [-0.004, -0.968],
+		bBoxNE: [1.352, 0],
+		anchors: {}
+	},
+	articAccentAbove: {
+		name: 'articAccentAbove',
+		codepoint: 0xE4A0,
+		description: 'Accent above',
+		advance: 1.356,
+		bBoxSW: [0, 0.004],
+		bBoxNE: [1.356, 0.98],
+		anchors: {}
+	},
+	articAccentBelow: {
+		name: 'articAccentBelow',
+		codepoint: 0xE4A1,
+		description: 'Accent below',
+		advance: 1.356,
+		bBoxSW: [0, -0.976],
+		bBoxNE: [1.356, 0],
+		anchors: {}
+	},
+	articMarcatoAbove: {
+		name: 'articMarcatoAbove',
+		codepoint: 0xE4AC,
+		description: 'Marcato above',
+		advance: 0.944,
+		bBoxSW: [-0.004, -0.004],
+		bBoxNE: [0.94, 1.012],
+		anchors: {}
+	},
+	articMarcatoBelow: {
+		name: 'articMarcatoBelow',
+		codepoint: 0xE4AD,
+		description: 'Marcato below',
+		advance: 0.944,
+		bBoxSW: [-0.004, -1.016],
+		bBoxNE: [0.94, 0],
+		anchors: {}
+	},
+	fermataAbove: {
+		name: 'fermataAbove',
+		codepoint: 0xE4C0,
+		description: 'Fermata above',
+		advance: 2.42,
+		bBoxSW: [0.012, -0.012],
+		bBoxNE: [2.42, 1.316],
+		anchors: {}
+	},
+	fermataBelow: {
+		name: 'fermataBelow',
+		codepoint: 0xE4C1,
+		description: 'Fermata below',
+		advance: 2.42,
+		bBoxSW: [0.012, -1.328],
+		bBoxNE: [2.42, 0],
+		anchors: {}
+	},
 } as const satisfies Record<string, GlyphMetrics>;
 
 /** Name of any glyph this engine knows how to draw. */
