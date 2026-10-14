@@ -782,7 +782,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       score on screen (manual, this repo's established
       no-browser-automation approach for anything needing a real external
       renderer).
-- [ ] **Slice 2 — MusicXML import.** `importMusicXml(xml: string): Score`
+- [x] **Slice 2 — MusicXML import.** `importMusicXml(xml: string): Score`
       in `src/io/`, parsing the `score-partwise` subset slice 1 emits plus
       tolerant handling of what Audiveris adds that this model does not
       represent (`<lyric>`, `<direction>` dynamics, `<articulations>`,
@@ -2211,3 +2211,28 @@ divisi splits). Unscoped.
   two-voice measure's `<stem>`/`<beam>` directions follow pitch, not
   layout's voice-1-up/voice-2-down override. Demo check outstanding: the
   "Download MusicXML" button in `npm run dev` was not built.
+- 2026-09-07: M5 Slice 2 (MusicXML import) done, via subagent, reviewed and
+  re-verified in the main session. New `src/io/xml.ts`: a small shipped
+  dependency-free XML parser (`parseXml` -> immutable `XmlElement` tree),
+  because the Node test env and a framework-agnostic runtime both lack
+  `DOMParser`; skips prolog/comments/PIs/DOCTYPE (internal subset included),
+  handles both quote styles, named + numeric entities, CDATA, and throws on
+  malformed input. `importMusicXml(xml): Score` reads the `score-partwise`
+  subset export emits plus Audiveris-tolerant extras: part-list names and
+  brace/bracket `part-group` spans, `<staves>`-driven staff allocation,
+  clef mapping, score-global + per-part + mid-score key/time, tempo from
+  `<metronome>`/`<sound tempo>`, notes bucketed by `<staff>`/`<voice>` in
+  document order (`<backup>` ignored, `<forward>` synthesized as a rest),
+  all five barline shapes, two-pass tie and slur linking. Unknown elements
+  `console.warn` once each; only malformed XML or a non-`<score-partwise>`
+  root throws. New `src/model/score-equivalence.ts` (`assertScoresEquivalent`, in
+  `model` rather than `io` so Slice 3's `EditHistory` can use it)
+  compares musical content only (resolved key/time/barline accessors,
+  per-voice note buckets, tie linkage, slurs by position, named parts and
+  part-groups as sets; excludes note ids, beaming, and `crossStaffBeams`,
+  the last a documented round-trip gap since export has no element for it).
+  366 tests pass (up from 327: +17 xml, +22 import); `check`/`build` green.
+  `TupletRatio` is now re-exported from `src/model/index.ts` (an M5 Slice 1
+  omission). All 14 showcase/demo scores round-trip
+  (`import(export(s))` musically equal to `s`), the sole exception being
+  `createCrossStaffBeamShowcaseScore`'s cross-staff beam link.

@@ -23,8 +23,10 @@ export type {
 	ScoreOptions,
 	Slur,
 	SlurSpec,
-	TimeSignature
+	TimeSignature,
+	TupletRatio
 } from './score.js';
+export { assertScoresEquivalent } from './score-equivalence.js';
 export {
 	buildScore,
 	Measure,
