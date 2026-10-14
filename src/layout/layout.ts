@@ -1679,6 +1679,10 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	if (measure.startBarline === 'repeatStart') {
 		cursor = layoutRepeatStartBarline(ops, cursor, staffTopY, ctx);
 	}
+	// Where this measure's own music may begin, past any clef/key/time/repeat
+	// header: the left edge a whole-measure rest is centred against (see
+	// `centreMeasureRests`).
+	const contentStartX = cursor;
 	cursor += SPACING.measureLeadIn * ss;
 
 	// Two voices in one staff (M2 Slice 1): a measure's notes no longer form
@@ -1822,6 +1826,10 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// now N-way.
 	let atPrevColumnByVoice = new Map<number, { d: number; noteX: number }>();
 	let atThisColumnByVoice = new Map<number, { d: number; noteX: number }>();
+	// Whole-measure rests are laid out in their column like any rest, then
+	// moved to the measure's centre once the barline's x is known; this
+	// remembers which ops and hit box each one produced.
+	const measureRestSpans: MeasureRestSpan[] = [];
 
 	for (const column of columns) {
 		const key = onsetKey(column.onset);
@@ -1879,6 +1887,8 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 						? ownPreviousInkRight
 						: Math.max(ownPreviousInkRight, columnInkRightSoFar);
 
+			const opStart = ops.length;
+			const noteIndex = notes.length;
 			const laid = layoutNote(
 				ops,
 				notes,
@@ -1892,6 +1902,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 				multiVoice
 			);
 
+			if (note.isMeasureRest) measureRestSpans.push({ opStart, opEnd: ops.length, noteIndex });
 			shiftAccumByVoice.set(voice, shiftAccum + clashShift + laid.collisionShift);
 			previousInkRightByVoice.set(voice, laid.inkRight);
 			columnInkRightSoFar =
@@ -1945,6 +1956,9 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	}
 	const barlineX = cursor;
 	const measureWidth = barlineX + mainThickness - startX;
+	// Before the staff lines below are `unshift`ed in, which would shift the
+	// op indices `measureRestSpans` recorded.
+	centreMeasureRests(ops, notes, measureRestSpans, contentStartX, barlineX, ss);
 	// This measure's own portion of a shared multi-staff barline (M2 Slice 4),
 	// falling back to the ordinary single-staff band when this staff has
 	// nothing above or below it to share a barline with (`barlineTop`/
@@ -2427,6 +2441,52 @@ function restVoiceOffsetSpaces(voice: number, multiVoice: boolean): number {
 	return voice % 2 === 1
 		? -REST_VOICE_OFFSET_SPACES * Math.ceil(voice / 2)
 		: REST_VOICE_OFFSET_SPACES * (voice / 2);
+}
+
+/** The ops (`[opStart, opEnd)`) and `notes` entry one whole-measure rest
+ *  produced in `layoutMeasure`, so `centreMeasureRests` can move them. */
+interface MeasureRestSpan {
+	readonly opStart: number;
+	readonly opEnd: number;
+	readonly noteIndex: number;
+}
+
+/**
+ * Move each whole-measure rest (`Note.isMeasureRest`) so its glyph sits
+ * centred between the end of the measure's header and its barline, the
+ * standard engraving for a bar of silence (Gould, "Behind Bars": the
+ * semibreve rest is centred in the bar whatever the time signature).
+ *
+ * Done as a translation after the fact rather than by giving the rest a
+ * special x up front: its column still has to take part in the ordinary
+ * onset-column spacing (so the measure gets its natural width and any other
+ * voice's notes keep their positions), and the barline's final x is only
+ * known once column-width sharing has run, after every note is placed.
+ */
+function centreMeasureRests(
+	ops: DrawOp[],
+	notes: LaidOutNote[],
+	spans: readonly MeasureRestSpan[],
+	leftX: number,
+	rightX: number,
+	ss: number
+): void {
+	const { bBoxSW, bBoxNE } = GLYPH_METRICS.restWhole;
+	for (const span of spans) {
+		const glyphOp = ops[span.opStart];
+		if (!glyphOp || glyphOp.kind !== 'glyph') continue;
+		const inkCentreX = glyphOp.x + ((bBoxSW[0] + bBoxNE[0]) / 2) * ss;
+		const dx = (leftX + rightX) / 2 - inkCentreX;
+		for (let i = span.opStart; i < span.opEnd; i++) {
+			const op = ops[i]!;
+			ops[i] =
+				op.kind === 'curve'
+					? { ...op, x0: op.x0 + dx, cx0: op.cx0 + dx, cx1: op.cx1 + dx, x1: op.x1 + dx }
+					: { ...op, x: op.x + dx };
+		}
+		const laidOut = notes[span.noteIndex];
+		if (laidOut) notes[span.noteIndex] = { ...laidOut, bounds: { ...laidOut.bounds, x: laidOut.bounds.x + dx } };
+	}
 }
 
 function layoutNote(

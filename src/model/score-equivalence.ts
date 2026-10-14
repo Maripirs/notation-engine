@@ -139,6 +139,9 @@ function assertNoteEquivalent(
 	assertEqual(`${where} value`, actualNote.value, expectedNote.value);
 	assertEqual(`${where} dots`, actualNote.dots, expectedNote.dots);
 	assertEqual(`${where} tuplet`, tupletKey(actualNote), tupletKey(expectedNote));
+	// A whole-measure rest is its own thing, not "a whole rest that happens to
+	// fill a 4/4 bar": the flag and the duration it fills both have to survive.
+	assertEqual(`${where} measureRestWholes`, actualNote.measureRestWholes, expectedNote.measureRestWholes);
 
 	// Tie linkage: both must either start no tie, or start one that lands on a
 	// note of the same pitch.

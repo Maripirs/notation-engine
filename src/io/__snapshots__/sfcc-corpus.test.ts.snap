@@ -1,0 +1,224 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
+{
+  "dropped": {
+    "arpeggiate": 10,
+    "articulations": 872,
+    "chord": 1831,
+    "cue": 3,
+    "dynamics": 153,
+    "fermata": 11,
+    "grace": 11,
+    "identification": 1,
+    "ornaments": 3,
+    "technical": 38,
+    "wedge": 479,
+  },
+  "fallbacks": [],
+  "measureRests": 392,
+  "modelNotes": 6574,
+  "parts": [
+    "Part 1: [0]",
+    "Part 2: [1]",
+    "Part 3: [2]",
+    "Part 4: [3]",
+    "Part 5: [4, 5]",
+    "(group): [0, 1, 2, 3]",
+  ],
+  "sourceForwards": 0,
+  "sourceNotes": 8416,
+  "sourceParts": 5,
+  "staves": 6,
+}
+`;
+
+exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 1`] = `
+{
+  "dropped": {
+    "articulations": 51,
+    "chord": 124,
+    "cue": 2,
+    "dynamics": 31,
+    "identification": 1,
+    "wedge": 180,
+  },
+  "fallbacks": [
+    "note-value P1 m14: unsupported <type>breve</type>, duration 16 at divisions 2",
+    "note-value P1 m29: unsupported <type>breve</type>, duration 16 at divisions 2",
+    "note-value P1 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
+    "note-value P2 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
+    "note-value P3 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
+    "note-value P4 m14: unsupported <type>breve</type>, duration 16 at divisions 2",
+    "note-value P4 m29: unsupported <type>breve</type>, duration 16 at divisions 2",
+    "note-value P4 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
+  ],
+  "measureRests": 1,
+  "modelNotes": 552,
+  "parts": [
+    "Part 1: [0]",
+    "Part 2: [1]",
+    "Part 3: [2]",
+    "Part 4: [3]",
+    "(group): [0, 1, 2, 3]",
+  ],
+  "sourceForwards": 0,
+  "sourceNotes": 676,
+  "sourceParts": 4,
+  "staves": 4,
+}
+`;
+
+exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`] = `
+{
+  "dropped": {
+    "articulations": 305,
+    "chord": 868,
+    "cue": 1,
+    "dynamics": 119,
+    "grace": 8,
+    "identification": 1,
+    "octave-shift": 7,
+    "ornaments": 1,
+    "technical": 17,
+    "wedge": 140,
+  },
+  "fallbacks": [
+    "clef P4 m66: sign C line 3",
+  ],
+  "measureRests": 151,
+  "modelNotes": 3675,
+  "parts": [
+    "Part 1: [0]",
+    "Part 2: [1]",
+    "Part 3: [2]",
+    "Part 4: [3]",
+    "Part 5: [4, 5]",
+    "(group): [0, 1, 2, 3]",
+  ],
+  "sourceForwards": 0,
+  "sourceNotes": 4551,
+  "sourceParts": 5,
+  "staves": 6,
+}
+`;
+
+exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
+{
+  "dropped": {
+    "arpeggiate": 28,
+    "articulations": 152,
+    "chord": 797,
+    "dynamics": 55,
+    "identification": 1,
+    "staff-details": 8,
+    "technical": 1,
+    "wedge": 162,
+  },
+  "fallbacks": [],
+  "measureRests": 201,
+  "modelNotes": 2719,
+  "parts": [
+    "Part 1: [0]",
+    "Part 2: [1]",
+    "Part 3: [2]",
+    "Part 4: [3]",
+    "Part 5: [4, 5]",
+    "(group): [0, 1, 2, 3]",
+  ],
+  "sourceForwards": 0,
+  "sourceNotes": 3516,
+  "sourceParts": 5,
+  "staves": 6,
+}
+`;
+
+exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`] = `
+{
+  "dropped": {
+    "articulations": 622,
+    "chord": 1018,
+    "dynamics": 38,
+    "fermata": 6,
+    "identification": 1,
+    "octave-shift": 4,
+    "ornaments": 106,
+    "staff-details": 4,
+    "technical": 14,
+    "wedge": 108,
+  },
+  "fallbacks": [],
+  "measureRests": 104,
+  "modelNotes": 2733,
+  "parts": [
+    "Part 1: [0]",
+    "Part 2: [1]",
+    "Part 3: [2]",
+    "Part 4: [3]",
+    "Part 5: [4, 5]",
+    "(group): [0, 1, 2, 3]",
+  ],
+  "sourceForwards": 0,
+  "sourceNotes": 3751,
+  "sourceParts": 5,
+  "staves": 6,
+}
+`;
+
+exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
+{
+  "dropped": {
+    "articulations": 59,
+    "chord": 70,
+    "dynamics": 4,
+    "identification": 1,
+    "technical": 6,
+    "wedge": 158,
+  },
+  "fallbacks": [],
+  "measureRests": 4,
+  "modelNotes": 728,
+  "parts": [
+    "Part 1: [0]",
+    "Part 2: [1]",
+    "Part 3: [2]",
+    "Part 4: [3]",
+    "(group): [0, 1, 2, 3]",
+  ],
+  "sourceForwards": 0,
+  "sourceNotes": 798,
+  "sourceParts": 4,
+  "staves": 4,
+}
+`;
+
+exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] = `
+{
+  "dropped": {
+    "articulations": 5,
+    "chord": 226,
+    "dynamics": 73,
+    "fermata": 3,
+    "identification": 1,
+    "ornaments": 11,
+    "staff-details": 5,
+    "technical": 3,
+    "wedge": 122,
+  },
+  "fallbacks": [],
+  "measureRests": 318,
+  "modelNotes": 1358,
+  "parts": [
+    "Part 1: [0]",
+    "Part 2: [1]",
+    "Part 3: [2]",
+    "Part 4: [3]",
+    "Part 5: [4]",
+    "(group): [0, 1, 2, 3, 4]",
+  ],
+  "sourceForwards": 0,
+  "sourceNotes": 1584,
+  "sourceParts": 5,
+  "staves": 5,
+}
+`;

@@ -113,6 +113,29 @@ export interface NoteSpec {
 	 * lives in a measure not yet built when the source note is created.
 	 */
 	readonly tiedToId?: NoteId | null;
+	/**
+	 * Marks a whole-measure rest (MusicXML `<rest measure="yes"/>`): a rest
+	 * that fills its measure whatever the time signature, drawn as the whole
+	 * rest glyph centred in the measure (the standard engraving, so a 3/4 or
+	 * 6/8 bar of silence still shows the semibreve rest, never a dotted half).
+	 * The number is the duration it fills, in wholes, i.e. the capacity of the
+	 * time signature in force at its measure (`measureCapacityWholes`).
+	 *
+	 * Stored as a number rather than a bare flag because a `Note` does not
+	 * know which measure it is in, yet `durationWholes` (summed by validation,
+	 * playback timing and layout spacing alike) has to report the right
+	 * length without every one of those sites learning a special case. The
+	 * cost is that the number is a snapshot: whoever creates the rest (the
+	 * importer) computes it from `Score.timeAt`, and nothing re-derives it if
+	 * the time signature later changes. No edit op changes a time signature
+	 * yet; the one that does will have to refresh this.
+	 *
+	 * Only meaningful on a rest (`pitch: null`); `Note`'s constructor throws
+	 * otherwise. `value` is still set (to `'whole'` by the importer) because
+	 * glyph lookup, beaming and export all key off it, but `durationWholes`
+	 * ignores `value`/`dots`/`tuplet` when this is set.
+	 */
+	readonly measureRestWholes?: number | null;
 }
 
 export class Note {
@@ -127,6 +150,8 @@ export class Note {
 	 *  only when changed through `Score.setTie` (or `Score.appendNote`'s own
 	 *  spec-time wiring), never by assigning this field directly. */
 	tiedToId: NoteId | null;
+	/** See `NoteSpec.measureRestWholes`. `null` for every ordinary note or rest. */
+	readonly measureRestWholes: number | null;
 
 	constructor(id: NoteId, spec: NoteSpec) {
 		this.id = id;
@@ -136,6 +161,15 @@ export class Note {
 		this.dots = spec.dots ?? 0;
 		this.tuplet = spec.tuplet ?? null;
 		this.tiedToId = spec.tiedToId ?? null;
+		this.measureRestWholes = spec.measureRestWholes ?? null;
+		if (this.measureRestWholes !== null && this.pitch !== null) {
+			throw new Error(`Note ${id}: measureRestWholes is only valid on a rest (pitch: null)`);
+		}
+	}
+
+	/** Whether this is a whole-measure rest; see `NoteSpec.measureRestWholes`. */
+	get isMeasureRest(): boolean {
+		return this.measureRestWholes !== null;
 	}
 
 	get isRest(): boolean {
@@ -155,6 +189,9 @@ export class Note {
 	 * signature's capacity.
 	 */
 	get durationWholes(): number {
+		// A whole-measure rest fills its measure, not its notated value: a 3/4
+		// bar's measure rest is drawn as a whole rest but lasts three quarters.
+		if (this.measureRestWholes !== null) return this.measureRestWholes;
 		// Each dot adds half of the previous augmentation: 2 - 2^-dots gives
 		// 1 (no dots), 1.5 (one dot), 1.75 (two dots).
 		const dotMultiplier = 2 - 2 ** -this.dots;
@@ -1041,7 +1078,8 @@ export class Score {
 						value: note.value,
 						voice: note.voice,
 						dots: note.dots,
-						tuplet: note.tuplet === null ? undefined : { ...note.tuplet }
+						tuplet: note.tuplet === null ? undefined : { ...note.tuplet },
+						measureRestWholes: note.measureRestWholes
 					});
 					// Set directly, not through the spec's `tiedToId` (which would
 					// run `#linkTie`): see this method's own doc comment.

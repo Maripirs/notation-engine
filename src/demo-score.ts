@@ -825,7 +825,8 @@ function appendMeasures(score: Score, source: Score): void {
 				value: note.value,
 				dots: note.dots,
 				tuplet: note.tuplet ?? undefined,
-				voice: note.voice
+				voice: note.voice,
+				measureRestWholes: note.measureRestWholes
 			});
 			copiedIdOf.set(note.id, copiedNote.id);
 		}

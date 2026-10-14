@@ -482,7 +482,9 @@ function writeNote(
 	xml.open('note');
 
 	if (note.pitch === null) {
-		xml.selfClose('rest');
+		// A whole-measure rest (M6 Slice 1) says so, so a reader fills the bar
+		// with it whatever the time signature, rather than trusting a `<type>`.
+		xml.selfClose('rest', note.isMeasureRest ? { measure: 'yes' } : undefined);
 	} else {
 		xml.open('pitch');
 		xml.leaf('step', note.pitch.step);
@@ -491,7 +493,8 @@ function writeNote(
 		xml.close('pitch');
 	}
 
-	xml.leaf('duration', String(Math.round(note.durationWholes * 4 * ctx.divisions)));
+	const quarters = noteDurationQuarters(note);
+	xml.leaf('duration', String((quarters.num * ctx.divisions) / quarters.den));
 
 	const tiedInto = score.tiedFromNote(note.id) !== undefined;
 	if (tiedInto) xml.selfClose('tie', { type: 'stop' });
@@ -500,8 +503,12 @@ function writeNote(
 	xml.leaf('voice', String(note.voice));
 	// `NoteValue` and MusicXML's `<type>` names coincide exactly, rests
 	// included: a real file carries `<type>` on a rest too, so this does not
-	// special-case them.
-	xml.leaf('type', note.value);
+	// special-case them. The one exception is a whole-measure rest: its
+	// `value` is a drawing convention (`'whole'`), not its length, so writing
+	// `<type>whole</type>` into a 3/4 bar would state a duration the
+	// `<duration>` contradicts. MusicXML makes `<type>` optional for exactly
+	// this case, and MuseScore omits it too.
+	if (!note.isMeasureRest) xml.leaf('type', note.value);
 	for (let d = 0; d < note.dots; d++) xml.selfClose('dot');
 
 	if (note.tuplet) {
@@ -654,11 +661,30 @@ const DOT_MULTIPLIER: Readonly<Record<0 | 1 | 2, Rational>> = {
 /** A note's duration in quarter notes, exact, dots and tuplet ratio folded in
  *  the same way `Note.durationWholes` folds them, but as a reduced fraction. */
 function noteDurationQuarters(note: Note): Rational {
+	if (note.measureRestWholes !== null) return quartersFromWholes(note.measureRestWholes);
 	let quarters = mul(QUARTERS_PER_VALUE[note.value], DOT_MULTIPLIER[note.dots]);
 	if (note.tuplet) {
 		quarters = mul(quarters, { num: note.tuplet.normalNotes, den: note.tuplet.actualNotes });
 	}
 	return quarters;
+}
+
+/**
+ * A whole-measure rest's length, which the model holds as a float (a time
+ * signature's `beats / beatType`, e.g. 0.375 for 3/8), back as an exact
+ * fraction of quarters: the smallest denominator that makes it whole. Any
+ * real time signature's beat type is a small power of two (or, rarely, some
+ * other small integer), so the search ends almost at once; the cap only
+ * guards a corrupt value from looping, falling back to the float rounded at
+ * 1/1024 of a quarter.
+ */
+function quartersFromWholes(wholes: number): Rational {
+	const quarters = wholes * 4;
+	for (let den = 1; den <= 1024; den++) {
+		const num = Math.round(quarters * den);
+		if (Math.abs(num / den - quarters) < 1e-9) return reduce({ num, den });
+	}
+	return reduce({ num: Math.round(quarters * 1024), den: 1024 });
 }
 
 /**

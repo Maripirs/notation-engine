@@ -17,6 +17,13 @@
 //     a genuinely unrecognized element name is `console.warn`ed once and then
 //     ignored. The only hard errors are XML that is not well-formed and a
 //     document whose root is not `<score-partwise>`.
+//   - Every drop and every lossy fallback can instead be *counted* (M6 Slice
+//     1): a caller passing `{ diagnostics }` gets a per-element-name tally of
+//     what was dropped plus one event per fallback, and no `console.warn` at
+//     all (the caller asked to handle them). See `ImportDiagnostics` for
+//     exactly what is and is not tallied. This is what the real-corpus test
+//     snapshots, so every later slice that models or passes through an element
+//     shows up as that element's count falling.
 //
 // `<backup>` and `<forward>` are ignored for ordering. The model has no
 // simultaneity to reconstruct: each `(staff, voice)` is a flat list whose notes'
@@ -29,6 +36,7 @@
 
 import {
 	Measure,
+	measureCapacityWholes,
 	NOTE_VALUE_WHOLES,
 	Score,
 	type ClefType,
@@ -42,13 +50,60 @@ import {
 import { child, childText, children, descendants, parseXml, type XmlElement } from './xml.js';
 
 /**
+ * What an import lost, for a caller that wants to know (a corpus regression
+ * test, a "this file had N things the editor cannot show" banner).
+ *
+ * `dropped` maps an element name to how many times it was dropped. The unit
+ * is "the topmost element that was lost": a `<direction>`'s content is
+ * tallied by its `<direction-type>` children (`dynamics`, `wedge`, `words`,
+ * ...) because `direction` alone would lump everything Slice 6 cares about
+ * together; a `<notations>` is tallied by its children (`articulations`,
+ * `fermata`, ...) because `tied`/`slur` inside it *are* read; and a whole
+ * `<note>` dropped for being a chord member or a grace note is tallied once,
+ * as `chord` or `grace`, not as its pitch, duration and so on.
+ *
+ * Deliberately *not* tallied: elements the engine regenerates from the model
+ * rather than reads (`<stem>`, `<beam>`, `<accidental>`, `<notations><tuplet>`,
+ * `<backup>`; see `REGENERATED_*`), and a `<direction>`'s own placement
+ * metadata (`<offset>`, `<staff>`, `<voice>`), which belongs to whatever
+ * direction-type it carries rather than being content of its own.
+ *
+ * `fallbacks` lists, in document order, every place the importer kept
+ * something but had to guess (an unmappable duration read as a quarter, an
+ * unrecognized clef read as treble), with where it happened.
+ */
+export interface ImportDiagnostics {
+	readonly dropped: Map<string, number>;
+	readonly fallbacks: ImportFallback[];
+}
+
+export interface ImportFallback {
+	readonly kind: 'note-value' | 'clef';
+	/** The `<part id>` and the `<measure number>` attribute, verbatim, so a
+	 *  report points at the source file rather than at model indices. */
+	readonly partId: string;
+	readonly measureNumber: string;
+	readonly detail: string;
+}
+
+export interface ImportOptions {
+	/** Collect drops and fallbacks here instead of `console.warn`ing them. */
+	readonly diagnostics?: ImportDiagnostics;
+}
+
+/** An empty `ImportDiagnostics`, ready to pass to `importMusicXml`. */
+export function createImportDiagnostics(): ImportDiagnostics {
+	return { dropped: new Map(), fallbacks: [] };
+}
+
+/**
  * Parse a MusicXML `score-partwise` document into a `Score`.
  *
  * Throws if `xml` is not well-formed, or if its root element is not
  * `<score-partwise>` (a `<score-timewise>` document has to be converted to
  * partwise first; nothing here does that conversion).
  */
-export function importMusicXml(xml: string): Score {
+export function importMusicXml(xml: string, options: ImportOptions = {}): Score {
 	const root = parseXml(xml);
 	if (root.name !== 'score-partwise') {
 		const hint =
@@ -58,14 +113,14 @@ export function importMusicXml(xml: string): Score {
 		throw new Error(`importMusicXml: expected a <score-partwise> root element, got <${root.name}>${hint}`);
 	}
 
-	const warned = new Set<string>();
-	const warnOnce = (key: string, message: string): void => {
-		if (warned.has(key)) return;
-		warned.add(key);
-		console.warn(message);
-	};
-
+	const report = new ImportReporter(options.diagnostics);
 	const score = new Score();
+
+	// Top-level metadata (`<work>`, `<identification>`, `<defaults>`,
+	// `<credit>`, ...) has no home in the model at all.
+	for (const el of root.children) {
+		if (el.name !== 'part-list' && el.name !== 'part') report.drop(el.name);
+	}
 
 	// --- Part list: names and bracket/brace groupings -----------------------
 	const partNameById = new Map<string, string>();
@@ -86,7 +141,9 @@ export function importMusicXml(xml: string): Score {
 				scorePartOrder.push(id);
 				const name = childText(el, 'part-name');
 				if (name !== undefined && name !== '') partNameById.set(id, name);
+				for (const c of el.children) if (c.name !== 'part-name') report.drop(c.name);
 			} else if (el.name === 'part-group') {
+				for (const c of el.children) if (c.name !== 'group-symbol') report.drop(c.name);
 				const number = el.attrs.number ?? '1';
 				if (el.attrs.type === 'start') {
 					const symbol: 'brace' | 'bracket' =
@@ -137,7 +194,10 @@ export function importMusicXml(xml: string): Score {
 			for (const clefEl of children(firstAttrs, 'clef')) {
 				const k = Math.max(1, intText(clefEl.attrs.number, 1)) - 1;
 				const staff = score.staves[baseStaffIndex + k];
-				if (staff) staff.clef = mapClef(clefEl, warnOnce);
+				if (staff) {
+					report.at(id, firstMeasureNumber(partEl));
+					staff.clef = mapClef(clefEl, report);
+				}
 			}
 		}
 
@@ -157,22 +217,34 @@ export function importMusicXml(xml: string): Score {
 		if (time) score.time = time;
 	}
 	const tempo = findTempo(root);
-	if (tempo !== undefined) score.tempoBpm = tempo;
+	if (tempo !== undefined) score.tempoBpm = tempo.bpm;
 
 	// --- Recreate the part grouping --------------------------------------
-	// Same order the export writes it: every named <score-part> first (each an
-	// addPart with its own staff indices), then every <part-group> span (an
-	// unnamed addPart over every staff it covers). This reproduces a
-	// showcase's `score.parts` shape exactly; `score-equivalence.ts` ignores
-	// the synthetic "Part N" names export invents for unnamed staves, so
-	// re-adding them here is harmless and keeps this loop rule-free.
+	// Same order the export writes it: one `Part` per <score-part> that has a
+	// matching <part> (each an addPart with its own staff indices, named when
+	// the file names it), then every <part-group> span (an unnamed addPart
+	// over every staff it covers). This reproduces a showcase's `score.parts`
+	// shape exactly; `score-equivalence.ts` ignores the synthetic "Part N"
+	// names export invents for unnamed staves, so re-adding them here is
+	// harmless and keeps this loop rule-free.
+	//
+	// The `Score` constructor seeds one default part (`{ staffIndices: [0] }`)
+	// so a hand-built single-staff score has a part without asking. An import
+	// states its own parts, so that seed is dropped first, the same thing
+	// `Score.clone` does. Leaving it in is what made a 5-part file (Brahms
+	// "Der Abend") come back as 7 `Part`s: the seed, the 5 real parts and the
+	// bracket group. The part-group itself is a `Part` on purpose (it is how
+	// the model records a bracket; see `computePartGroupDecorations`), so the
+	// honest count for such a file is 5 instrument parts plus 1 group.
 	const staffIndicesOfScorePart = (scorePartIndex: number): number[] => {
 		const info = partInfoById.get(scorePartOrder[scorePartIndex] ?? '');
 		return info ? range(info.baseStaffIndex, info.staffCount) : [];
 	};
+	if (scorePartOrder.some((id) => partInfoById.has(id))) score.parts.length = 0;
 	for (let i = 0; i < scorePartOrder.length; i++) {
-		const name = partNameById.get(scorePartOrder[i]!);
-		if (name !== undefined) score.addPart(staffIndicesOfScorePart(i), name);
+		const staffIndices = staffIndicesOfScorePart(i);
+		if (staffIndices.length === 0) continue;
+		score.addPart(staffIndices, partNameById.get(scorePartOrder[i]!));
 	}
 	for (const span of groupSpans) {
 		const staffIndices: number[] = [];
@@ -196,6 +268,7 @@ export function importMusicXml(xml: string): Score {
 		for (let m = 0; m < measureCount; m++) {
 			const measureEl = measureEls[m]!;
 			const isLastMeasure = m === measureCount - 1;
+			report.at(info.id, measureEl.attrs.number ?? String(m + 1));
 
 			// One Measure object per staff this part owns, at this column.
 			const measureObjs: Measure[] = [];
@@ -206,21 +279,31 @@ export function importMusicXml(xml: string): Score {
 			for (const attrs of children(measureEl, 'attributes')) {
 				const restated = childText(attrs, 'divisions');
 				if (restated !== undefined) divisions = Math.max(1, intText(restated, divisions));
-				applyAttributeChanges(attrs, measureObjs, m, score, warnOnce);
+				applyAttributeChanges(attrs, measureObjs, m, score, report);
+				for (const c of attrs.children) if (!READ_ATTRIBUTES_CHILDREN.has(c.name)) report.drop(c.name);
 			}
 
 			for (const barlineEl of children(measureEl, 'barline')) {
 				applyBarline(barlineEl, measureObjs, isLastMeasure);
+				for (const c of barlineEl.children) {
+					if (c.name !== 'bar-style' && c.name !== 'repeat') report.drop(c.name);
+				}
 			}
 
 			// Notes and forward-gaps, in document order. `<backup>` is ignored.
 			for (const el of measureEl.children) {
 				if (el.name === 'note') {
-					buildNote(el, info, measureObjs, divisions, builtNotes, score, warnOnce);
+					buildNote(el, info, measureObjs, m, divisions, builtNotes, score, report);
 				} else if (el.name === 'forward') {
-					synthesizeForwardRest(el, info, measureObjs, divisions, score, warnOnce);
-				} else if (!KNOWN_MEASURE_CHILDREN.has(el.name)) {
-					warnOnce(el.name, `importMusicXml: ignoring unrecognized <${el.name}> inside <measure>`);
+					synthesizeForwardRest(el, info, measureObjs, divisions, score, report);
+				} else if (el.name === 'direction') {
+					tallyDirection(el, tempo?.source, report);
+				} else if (el.name === 'sound' && el === tempo?.source) {
+					// The score-wide tempo came from this one; nothing lost.
+				} else if (DROPPED_MEASURE_CHILDREN.has(el.name)) {
+					report.drop(el.name);
+				} else if (!READ_MEASURE_CHILDREN.has(el.name)) {
+					report.unrecognized(el.name, 'measure');
 				}
 			}
 		}
@@ -255,13 +338,13 @@ function applyAttributeChanges(
 	measureObjs: readonly Measure[],
 	measureIndex: number,
 	score: Score,
-	warnOnce: WarnOnce
+	report: ImportReporter
 ): void {
 	if (measureIndex !== 0) {
 		for (const clefEl of children(attrs, 'clef')) {
 			const k = Math.max(1, intText(clefEl.attrs.number, 1)) - 1;
 			const measure = measureObjs[k];
-			if (measure) measure.clef = mapClef(clefEl, warnOnce);
+			if (measure) measure.clef = mapClef(clefEl, report);
 		}
 	}
 	const keyEl = child(attrs, 'key');
@@ -317,13 +400,27 @@ function applyBarline(barlineEl: XmlElement, measureObjs: readonly Measure[], is
 
 // --- Notes --------------------------------------------------------------
 
-const KNOWN_MEASURE_CHILDREN: ReadonlySet<string> = new Set([
+// Every known element name falls in exactly one of three buckets per
+// container: *read* (the model holds it, or it is a container this file
+// descends into and tallies itself), *regenerated* (the engine re-derives it
+// from the model on layout/export, so ignoring the source copy loses nothing
+// the model claims to hold) or *dropped* (known, silently discarded, and
+// counted in `ImportDiagnostics.dropped`). A name in none of them is
+// unrecognized: dropped too, but also warned about (or counted) as a
+// possible typo or newer MusicXML.
+
+/** `<measure>` children that are read, regenerated (`backup`) or tallied
+ *  piecewise elsewhere (`attributes`, `barline`, `direction`). */
+const READ_MEASURE_CHILDREN: ReadonlySet<string> = new Set([
 	'note',
 	'attributes',
 	'barline',
 	'direction',
 	'backup',
-	'forward',
+	'forward'
+]);
+
+const DROPPED_MEASURE_CHILDREN: ReadonlySet<string> = new Set([
 	'print',
 	'sound',
 	'harmony',
@@ -334,23 +431,32 @@ const KNOWN_MEASURE_CHILDREN: ReadonlySet<string> = new Set([
 	'listening'
 ]);
 
-const KNOWN_NOTE_CHILDREN: ReadonlySet<string> = new Set([
+const READ_ATTRIBUTES_CHILDREN: ReadonlySet<string> = new Set(['divisions', 'key', 'time', 'clef', 'staves']);
+
+const READ_NOTE_CHILDREN: ReadonlySet<string> = new Set([
 	'pitch',
 	'rest',
-	'unpitched',
 	'duration',
 	'tie',
 	'voice',
 	'type',
 	'dot',
 	'time-modification',
-	'stem',
 	'staff',
-	'beam',
 	'notations',
+	// Never reach the per-child tally: a note carrying either is dropped
+	// whole (and tallied as `grace`/`chord`) before it gets that far.
 	'grace',
-	'chord',
-	'accidental',
+	'chord'
+]);
+
+/** Re-derived by layout/export from pitch, key, beat position and pitch-vs-
+ *  middle-line, so the source's own copy is not information the model lost. */
+const REGENERATED_NOTE_CHILDREN: ReadonlySet<string> = new Set(['stem', 'beam', 'accidental']);
+
+const DROPPED_NOTE_CHILDREN: ReadonlySet<string> = new Set([
+	// `<unpitched>` (percussion) has no model form; the note survives as a rest.
+	'unpitched',
 	'lyric',
 	'notehead',
 	'cue',
@@ -361,23 +467,32 @@ const KNOWN_NOTE_CHILDREN: ReadonlySet<string> = new Set([
 	'level'
 ]);
 
+/** `<notations>` children read into the model (`tied`, `slur`) or regenerated
+ *  from `Note.tuplet` on export (`tuplet`); every other one is a drop. */
+const READ_OR_REGENERATED_NOTATIONS: ReadonlySet<string> = new Set(['tied', 'slur', 'tuplet']);
+
 const NOTE_VALUES: readonly NoteValue[] = ['whole', 'half', 'quarter', 'eighth', '16th', '32nd', '64th'];
 
 function buildNote(
 	noteEl: XmlElement,
 	info: { baseStaffIndex: number; staffCount: number },
 	measureObjs: readonly Measure[],
+	measureIndex: number,
 	divisions: number,
 	builtNotes: BuiltNoteRecord[],
 	score: Score,
-	warnOnce: WarnOnce
+	report: ImportReporter
 ): void {
 	// The model has neither grace notes nor chords, so a note carrying either
 	// marker is dropped whole. `<grace>` is a known, silent drop; `<chord>` is
 	// rarer here and worth a one-time note.
-	if (child(noteEl, 'grace')) return;
+	if (child(noteEl, 'grace')) {
+		report.drop('grace');
+		return;
+	}
 	if (child(noteEl, 'chord')) {
-		warnOnce('chord', 'importMusicXml: <chord> is not representable in this model; dropping the chord note');
+		report.drop('chord');
+		report.warnOnce('chord', 'importMusicXml: <chord> is not representable in this model; dropping the chord note');
 		return;
 	}
 
@@ -389,7 +504,12 @@ function buildNote(
 	const voice = Math.max(1, intText(childText(noteEl, 'voice'), 1));
 
 	let pitch: Pitch | null = null;
-	if (!child(noteEl, 'rest')) {
+	const restEl = child(noteEl, 'rest');
+	if (restEl) {
+		// `<display-step>`/`<display-octave>`: an engraver's manual rest
+		// height. Layout places rests itself, so the override is lost.
+		for (const c of restEl.children) report.drop(c.name);
+	} else {
 		const pitchEl = child(noteEl, 'pitch');
 		if (pitchEl) {
 			pitch = {
@@ -408,13 +528,38 @@ function buildNote(
 		if (actualNotes !== normalNotes) tuplet = { actualNotes, normalNotes };
 	}
 
-	const dots = Math.min(2, children(noteEl, 'dot').length) as 0 | 1 | 2;
+	const statedDots = Math.min(2, children(noteEl, 'dot').length) as 0 | 1 | 2;
+
+	// `<rest measure="yes"/>` (M6 Slice 1): a rest that fills its measure
+	// whatever the time signature. Its `<type>`, when present, is ignored on
+	// purpose: OMR output writes `<type>whole</type>` on a 3/4 bar's measure
+	// rest (Brahms "Der Abend" does, 392 times), and reading that literally
+	// would make the bar a quarter too long. The duration it fills comes from
+	// the time signature in force here, already applied to this measure by the
+	// `<attributes>` pass above, rather than from `<duration>`, so a measure
+	// rest always validates; see `NoteSpec.measureRestWholes` for the shape.
+	if (restEl && restEl.attrs.measure === 'yes') {
+		const measureRestWholes = measureCapacityWholes(score.timeAt(measureIndex, globalStaffIndex));
+		const note = score.appendNote(targetMeasure, { pitch: null, value: 'whole', voice, measureRestWholes });
+		builtNotes.push({
+			id: note.id,
+			staffIndex: globalStaffIndex,
+			voice,
+			pitch: null,
+			tieStart: false,
+			tieStop: false,
+			slurStarts: [],
+			slurStops: []
+		});
+		tallyNoteChildren(noteEl, report);
+		return;
+	}
 
 	const typeText = childText(noteEl, 'type');
-	const value =
+	const { value, dots } =
 		typeText !== undefined && isNoteValue(typeText)
-			? typeText
-			: deriveValueFromDuration(childText(noteEl, 'duration'), divisions, tuplet, dots, warnOnce);
+			? { value: typeText, dots: statedDots }
+			: deriveValueFromDuration(childText(noteEl, 'duration'), divisions, tuplet, statedDots, report, typeText);
 
 	const note = score.appendNote(targetMeasure, { pitch, value, voice, dots, tuplet });
 
@@ -455,9 +600,46 @@ function buildNote(
 		slurStops
 	});
 
+	tallyNoteChildren(noteEl, report);
+}
+
+/** Tally whatever a kept `<note>` carried that the model does not hold. */
+function tallyNoteChildren(noteEl: XmlElement, report: ImportReporter): void {
 	for (const c of noteEl.children) {
-		if (!KNOWN_NOTE_CHILDREN.has(c.name)) {
-			warnOnce(c.name, `importMusicXml: ignoring unrecognized <${c.name}> inside <note>`);
+		if (c.name === 'notations') {
+			for (const n of c.children) {
+				if (!READ_OR_REGENERATED_NOTATIONS.has(n.name)) report.drop(n.name);
+			}
+		} else if (DROPPED_NOTE_CHILDREN.has(c.name)) {
+			report.drop(c.name);
+		} else if (!READ_NOTE_CHILDREN.has(c.name) && !REGENERATED_NOTE_CHILDREN.has(c.name)) {
+			report.unrecognized(c.name, 'note');
+		}
+	}
+}
+
+/**
+ * Tally a `<direction>`, none of which the model holds yet, by what it
+ * carries: each `<direction-type>` child by name (`dynamics`, `wedge`,
+ * `words`, `metronome`, ...), plus its `<sound>` when that is anything but
+ * the one element the score-wide tempo was read from. Its placement metadata
+ * (`<offset>`, `<staff>`, `<voice>`) is not tallied; see `ImportDiagnostics`.
+ */
+function tallyDirection(directionEl: XmlElement, tempoSource: XmlElement | undefined, report: ImportReporter): void {
+	// The tempo direction usually pairs its `<metronome>` with a `<sound
+	// tempo>` saying the same thing (export writes exactly that pair), so
+	// within the direction the tempo came from, that sound is not a loss.
+	const carriesTempo =
+		tempoSource !== undefined &&
+		directionEl.children.some((c) => c === tempoSource || c.children.includes(tempoSource));
+	for (const c of directionEl.children) {
+		if (c.name === 'sound' && carriesTempo && c.attrs.tempo !== undefined) continue;
+		if (c.name === 'direction-type') {
+			for (const t of c.children) {
+				if (t !== tempoSource) report.drop(t.name);
+			}
+		} else if (c.name === 'sound' && c !== tempoSource) {
+			report.drop('sound');
 		}
 	}
 }
@@ -474,7 +656,7 @@ function synthesizeForwardRest(
 	measureObjs: readonly Measure[],
 	divisions: number,
 	score: Score,
-	warnOnce: WarnOnce
+	report: ImportReporter
 ): void {
 	const durationText = childText(forwardEl, 'duration');
 	if (durationText === undefined) return;
@@ -483,8 +665,8 @@ function synthesizeForwardRest(
 	const targetMeasure = measureObjs[k] ?? measureObjs[0];
 	if (!targetMeasure) return;
 	const voice = Math.max(1, intText(childText(forwardEl, 'voice'), 1));
-	const value = deriveValueFromDuration(durationText, divisions, undefined, 0, warnOnce);
-	score.appendNote(targetMeasure, { pitch: null, value, voice, dots: 0 });
+	const { value, dots } = deriveValueFromDuration(durationText, divisions, undefined, 0, report);
+	score.appendNote(targetMeasure, { pitch: null, value, voice, dots });
 }
 
 // --- Ties and slurs, resolved once every note exists ----------------------
@@ -499,7 +681,64 @@ type BuiltNoteRecord = {
 	readonly slurStarts: readonly number[];
 	readonly slurStops: readonly number[];
 };
-type WarnOnce = (key: string, message: string) => void;
+
+/**
+ * Where every drop, warning and fallback goes. With a caller-supplied
+ * `ImportDiagnostics` it only records (counts and events, no console noise,
+ * since the caller asked to handle them itself); without one it keeps the
+ * importer's original behaviour exactly: silent drops, and one
+ * `console.warn` per distinct unrecognized name, chord, clef or fallback.
+ *
+ * `at` sets the source location (part id, measure number) that a fallback
+ * event records; the measure loop updates it as it walks, which is cheaper
+ * than threading a location through every helper that might fall back.
+ */
+class ImportReporter {
+	readonly #diagnostics: ImportDiagnostics | undefined;
+	readonly #warned = new Set<string>();
+	#partId = '';
+	#measureNumber = '';
+
+	constructor(diagnostics: ImportDiagnostics | undefined) {
+		this.#diagnostics = diagnostics;
+	}
+
+	at(partId: string, measureNumber: string): void {
+		this.#partId = partId;
+		this.#measureNumber = measureNumber;
+	}
+
+	/** A known element, silently dropped. */
+	drop(name: string): void {
+		const dropped = this.#diagnostics?.dropped;
+		if (dropped) dropped.set(name, (dropped.get(name) ?? 0) + 1);
+	}
+
+	/** An element name this importer has no bucket for: dropped, and worth
+	 *  a warning, since it may be a typo or newer MusicXML. */
+	unrecognized(name: string, container: string): void {
+		this.drop(name);
+		this.warnOnce(name, `importMusicXml: ignoring unrecognized <${name}> inside <${container}>`);
+	}
+
+	/** Something kept, but guessed. `warnKey` dedupes the console form, which
+	 *  stays one generic message per kind; the recorded event is per site. */
+	fallback(kind: ImportFallback['kind'], warnKey: string, message: string, detail: string): void {
+		this.#diagnostics?.fallbacks.push({
+			kind,
+			partId: this.#partId,
+			measureNumber: this.#measureNumber,
+			detail
+		});
+		this.warnOnce(warnKey, message);
+	}
+
+	warnOnce(key: string, message: string): void {
+		if (this.#diagnostics || this.#warned.has(key)) return;
+		this.#warned.add(key);
+		console.warn(message);
+	}
+}
 
 /**
  * For every note that starts a tie, find the next note in the same staff and
@@ -560,7 +799,7 @@ const CLEF_SIGNATURES: ReadonlyArray<{
 	{ sign: 'F', line: '4', clef: 'bass' }
 ];
 
-function mapClef(clefEl: XmlElement, warnOnce: WarnOnce): ClefType {
+function mapClef(clefEl: XmlElement, report: ImportReporter): ClefType {
 	const sign = childText(clefEl, 'sign') ?? '';
 	const line = childText(clefEl, 'line') ?? '';
 	const octaveChange = childText(clefEl, 'clef-octave-change');
@@ -570,9 +809,11 @@ function mapClef(clefEl: XmlElement, warnOnce: WarnOnce): ClefType {
 			return candidate.clef;
 		}
 	}
-	warnOnce(
+	report.fallback(
+		'clef',
 		`clef:${sign}/${line}/${octaveChange ?? ''}`,
-		`importMusicXml: unrecognized clef <sign>${sign}</sign><line>${line}</line>; defaulting to treble`
+		`importMusicXml: unrecognized clef <sign>${sign}</sign><line>${line}</line>; defaulting to treble`,
+		`sign ${sign} line ${line}${octaveChange === undefined ? '' : ` octave-change ${octaveChange}`}`
 	);
 	return 'treble';
 }
@@ -590,54 +831,78 @@ function parseTime(timeEl: XmlElement): TimeSignature | undefined {
 /**
  * The tempo, in quarter-note BPM, from the first `<metronome><per-minute>`
  * anywhere in the document, or failing that the first `<sound tempo="...">`.
- * First one found wins; `undefined` if the document states none.
+ * First one found wins; `undefined` if the document states none. `source` is
+ * the element it came from, so the drop tally can skip exactly that one:
+ * every later metronome or tempo `<sound>` is a real loss (the model has one
+ * score-wide tempo), the first is not.
  */
-function findTempo(root: XmlElement): number | undefined {
+function findTempo(root: XmlElement): { readonly bpm: number; readonly source: XmlElement } | undefined {
 	for (const metronome of descendants(root, 'metronome')) {
 		const perMinute = childText(metronome, 'per-minute');
 		if (perMinute !== undefined) {
 			const bpm = Number.parseFloat(perMinute);
-			if (Number.isFinite(bpm)) return bpm;
+			if (Number.isFinite(bpm)) return { bpm, source: metronome };
 		}
 	}
 	for (const sound of descendants(root, 'sound')) {
 		if (sound.attrs.tempo !== undefined) {
 			const bpm = Number.parseFloat(sound.attrs.tempo);
-			if (Number.isFinite(bpm)) return bpm;
+			if (Number.isFinite(bpm)) return { bpm, source: sound };
 		}
 	}
 	return undefined;
 }
 
 /**
- * Recover a `NoteValue` for a `<note>` that has no `<type>` (a tolerant path;
- * every file `exportMusicXml` writes carries `<type>`). `durationWholes` is
- * `duration / (divisions * 4)`, un-scaled by any tuplet ratio, and the value
- * whose dotted duration matches within 1e-6 wins. Nothing matching means a
- * warn-once and a `quarter` fallback.
+ * Recover a value and dot count for a `<note>` (or `<forward>` gap) that has
+ * no `<type>` (a tolerant path; every file `exportMusicXml` writes carries
+ * `<type>`). `wholes` is `duration / (divisions * 4)`, un-scaled by any tuplet
+ * ratio, and the value whose dotted duration matches within 1e-6 wins.
+ *
+ * `statedDots` is the note's own `<dot>` count. When it is nonzero only that
+ * many dots are tried, since the file said so. When it is zero the dots are
+ * derived too (fewest first: plain, then one dot, then two): an untyped note
+ * usually has no `<dot>` either, and a 3/8 duration with no other clue is a
+ * dotted quarter, not "unmappable". Nothing matching means a `quarter`
+ * fallback, reported with the offending duration so a corpus run can list
+ * every genuinely unmappable case (e.g. a 5/8 gap no single note spells).
+ *
+ * Also the path for a `<type>` the model has no value for (`breve`, `128th`,
+ * ...): `unsupportedType` names it in the report, since "no type" would
+ * misdescribe the source.
  */
 function deriveValueFromDuration(
 	durationText: string | undefined,
 	divisions: number,
 	tuplet: TupletRatio | undefined,
-	dots: 0 | 1 | 2,
-	warnOnce: WarnOnce
-): NoteValue {
+	statedDots: 0 | 1 | 2,
+	report: ImportReporter,
+	unsupportedType?: string
+): { value: NoteValue; dots: 0 | 1 | 2 } {
 	if (durationText !== undefined && divisions > 0) {
 		let wholes = Number.parseFloat(durationText) / (divisions * 4);
 		if (Number.isFinite(wholes)) {
 			if (tuplet) wholes *= tuplet.actualNotes / tuplet.normalNotes;
-			const dotMultiplier = 2 - 2 ** -dots;
-			for (const value of NOTE_VALUES) {
-				if (Math.abs(NOTE_VALUE_WHOLES[value] * dotMultiplier - wholes) < 1e-6) return value;
+			const dotCandidates: readonly (0 | 1 | 2)[] = statedDots > 0 ? [statedDots] : [0, 1, 2];
+			for (const dots of dotCandidates) {
+				const dotMultiplier = 2 - 2 ** -dots;
+				for (const value of NOTE_VALUES) {
+					if (Math.abs(NOTE_VALUE_WHOLES[value] * dotMultiplier - wholes) < 1e-6) return { value, dots };
+				}
 			}
 		}
 	}
-	warnOnce(
+	report.fallback(
+		'note-value',
 		'note-value-fallback',
-		'importMusicXml: a <note> had no <type> and no duration that maps to a note value; using quarter'
+		'importMusicXml: a <note> had no usable <type> and no duration that maps to a note value; using quarter',
+		`${unsupportedType === undefined ? '' : `unsupported <type>${unsupportedType}</type>, `}duration ${
+			durationText?.trim() ?? '(none)'
+		} at divisions ${divisions}${
+			tuplet ? ` in a ${tuplet.actualNotes}:${tuplet.normalNotes} tuplet` : ''
+		}`
 	);
-	return 'quarter';
+	return { value: 'quarter', dots: statedDots };
 }
 
 function isNoteValue(text: string): text is NoteValue {
@@ -660,6 +925,10 @@ function intText(text: string | null | undefined, fallback: number): number {
 
 function range(start: number, count: number): number[] {
 	return Array.from({ length: count }, (_, i) => start + i);
+}
+
+function firstMeasureNumber(partEl: XmlElement): string {
+	return child(partEl, 'measure')?.attrs.number ?? '1';
 }
 
 function firstMeasureAttributes(partEl: XmlElement): XmlElement | undefined {

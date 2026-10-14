@@ -956,7 +956,7 @@ dropped-element count reaches zero for every modelled-or-passthrough
 element by Slice 3 and stays there.
 
 **Tasks — Claude:**
-- [ ] **Slice 1: Real-corpus harness + import fixes.** Copy the 7 SFCC
+- [x] **Slice 1: Real-corpus harness + import fixes.** Copy the 7 SFCC
       fixtures in; add a corpus test that imports and lays out each and
       records, per file, source `<note>` count vs model note count, part
       and staff counts, and a per-element-name tally of what was dropped
@@ -2528,3 +2528,65 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   dynamics/hairpins, E2 correction ops, grace notes, lyrics. Repeats,
   cross-page ties and staff-count divisi splits stay unscoped for a later
   pass. Brahms layout perf and `.mxl` import went to Backlog.
+- 2026-10-14: M6 Slice 1 (real-corpus harness + import fixes) done, via
+  subagent. The 7 SFCC `.musicxml` files (no PDFs) now live in
+  `src/test/fixtures/sfcc/`; `src/io/sfcc-corpus.test.ts` imports and lays
+  out each one, asserts the invariant "model notes = source notes - chord -
+  grace + forward gaps" and that every `<part>` became a named `Part`, and
+  snapshots (`src/io/__snapshots__/`) per file: source vs model note counts,
+  parts, staves, measure rests, the drop tally and every fallback. Whole
+  corpus runs in ~1.5s (Brahms ~0.8s).
+  Diagnostics API: `importMusicXml(xml, { diagnostics })` with
+  `createImportDiagnostics()` returning `{ dropped: Map<name, count>,
+  fallbacks: ImportFallback[] }` (kind `note-value`/`clef`, part id, source
+  measure number, detail), all exported from `src/io/index.ts`. Passing it
+  records instead of `console.warn`ing; without it behaviour is unchanged.
+  Tally unit is "topmost lost element": direction content by its
+  `<direction-type>` child (`dynamics`, `wedge`, `octave-shift`, ...),
+  notations by child (`articulations`, `fermata`, ...), a dropped chord or
+  grace note once as `chord`/`grace`. Regenerated elements (`stem`, `beam`,
+  `accidental`, notations `tuplet`, `backup`) are not tallied, nor is the
+  one metronome/sound the score tempo came from.
+  Part-count root cause: the `Score` constructor seeds a default part
+  `{ staffIndices: [0] }` and the importer never cleared it (unlike
+  `Score.clone`), so Brahms gave seed + 5 parts + 1 bracket group = 7. Every
+  bracketed corpus file had the same extra part, not just Brahms. Now the
+  seed is dropped and each `<score-part>` with a `<part>` gets a `Part`
+  (also when unnamed; before, an unnamed `<part>` got none). Brahms yields
+  5 instrument Parts plus the bracket group as a 6th, unnamed `Part`: the
+  model records a bracket as a `Part` (layout draws it from there), so "5
+  `<part>` -> 5 `Part`s" holds for instrument parts, not `score.parts.length`.
+  Measure rests: `NoteSpec`/`Note.measureRestWholes` (number or null,
+  `isMeasureRest` getter); `durationWholes` returns it, so validation,
+  playback and spacing need no special case. The importer sets it from
+  `timeAt` (capacity), ignoring `<type>` (Brahms writes `<type>whole</type>`
+  on 3/4 measure rests) and `<duration>`; value is `'whole'`. Layout lays it
+  out in its column, then `centreMeasureRests` translates its glyph and hit
+  box to the centre between header end and barline. Export writes `<rest
+  measure="yes"/>`, exact `<duration>`, no `<type>`; equivalence compares the
+  field. It is a snapshot: a future time-signature edit op must refresh it.
+  No-`<type>` fallback now derives dots too (0, 1, 2 when no `<dot>` given)
+  and also covers an unsupported `<type>`, named in the event.
+  Corpus after the fixes (source `<note>` -> model notes; parts =
+  instrument + group): Brahms 8416 -> 6574 (1831 chord, 11 grace dropped;
+  392 measure rests; 5+1 parts, 6 staves); Coleridge-Taylor 676 -> 552 (124
+  chord; 4+1, 4); Faure 4551 -> 3675 (868 chord, 8 grace; 5+1, 6);
+  Gardiner 3516 -> 2719 (797 chord; 5+1, 6); Frost Myth 1584 -> 1358 (226
+  chord; 5+1, 5); Elgar 3751 -> 2733 (1018 chord; 5+1, 6); Fay's Song 798
+  -> 728 (70 chord; 4+1, 4). No type-less notes remain anywhere. Remaining
+  "using quarter" fallbacks, all genuinely unmappable: 8 `<type>breve</type>`
+  notes in Coleridge-Taylor (4/2 time; P1 m14/m29/m30, P2 m30, P3 m30, P4
+  m14/m29/m30), since the model has no breve value. Other fallback: Faure P4
+  m66 C3 clef (Slice 4).
+  Tests: 429 -> 446 (7 corpus + 1 fixture-count, plus unit tests for the
+  part count (2), measure rests in 3/4, 2/2, 6/8 incl. round trip (3) and
+  centring (1), duration-derived and unmappable fallbacks (2), drop tally
+  (1)); `check`/`build` green.
+  Noted, not fixed: 36 notes in the corpus have a `<type>` that disagrees
+  with their `<duration>` (Brahms 7, Coleridge-Taylor 6, Faure 12, Frost
+  Myth 11; e.g. Faure eighths with duration 1/96 whole), and the importer
+  trusts `<type>`; 2 Frost Myth measure rests (m60) carry a 5/8 duration in
+  a 3/4 bar (capacity wins); Audiveris names parts "Part 1".."Part 5" with
+  `print-object="no"`, which layout will draw as labels since
+  `print-object` is not read; the plan's "306 dynamics" for Brahms is 153
+  `<dynamics>` elements (306 was likely open+close tags).
