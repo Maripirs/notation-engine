@@ -24,7 +24,13 @@ import {
 	type Wedge,
 	type WedgeKind
 } from './directions.js';
-import { NO_PASSTHROUGH, type MeasurePassthrough, type OpaqueElement } from './passthrough.js';
+import {
+	NO_PASSTHROUGH,
+	withoutNoteMarkup,
+	withoutTieMarkup,
+	type MeasurePassthrough,
+	type OpaqueElement
+} from './passthrough.js';
 
 /** Note values Divisi draws, whole down to 64th. */
 export type NoteValue = 'whole' | 'half' | 'quarter' | 'eighth' | '16th' | '32nd' | '64th';
@@ -39,6 +45,82 @@ export const NOTE_VALUE_WHOLES: Readonly<Record<NoteValue, number>> = {
 	'32nd': 1 / 32,
 	'64th': 1 / 64
 };
+
+/** Every `NoteValue`, longest first. */
+export const NOTE_VALUES: readonly NoteValue[] = Object.freeze(['whole', 'half', 'quarter', 'eighth', '16th', '32nd', '64th']);
+
+/** A written duration: a note value plus augmentation dots (no tuplet). */
+export interface SpelledDuration {
+	readonly value: NoteValue;
+	readonly dots: 0 | 1 | 2;
+}
+
+/** `value` with `dots`, in wholes (no tuplet): the same arithmetic as
+ *  `Note.durationWholes`. */
+export function spelledWholes(value: NoteValue, dots: 0 | 1 | 2): number {
+	return NOTE_VALUE_WHOLES[value] * (2 - 2 ** -dots);
+}
+
+/**
+ * The single note value (plus dots) that lasts exactly `wholes`, or `null`
+ * when none does (e.g. 5/8, or anything longer than a double-dotted whole).
+ * `dotCandidates` are tried in order, fewest dots first by default, so a
+ * plain value wins over an equal dotted spelling (there is none, but the
+ * order is also the preference the importer wants). Matching is within 1e-6,
+ * far below any real duration and far above float noise.
+ *
+ * Pure and model-level (M6 Slice 7) so both the importer's "no `<type>`"
+ * fallback and `Score.restToNote` (a whole-measure rest becoming a note of
+ * the measure's length) answer "which note value is this long" the same way.
+ */
+export function noteValueForWholes(
+	wholes: number,
+	dotCandidates: readonly (0 | 1 | 2)[] = [0, 1, 2]
+): SpelledDuration | null {
+	for (const dots of dotCandidates) {
+		for (const value of NOTE_VALUES) {
+			if (Math.abs(spelledWholes(value, dots) - wholes) < 1e-6) return { value, dots };
+		}
+	}
+	return null;
+}
+
+/**
+ * Spell `wholes` of silence starting `onset` wholes into a measure as a run
+ * of undotted rest values (M6 Slice 7: the padding `Score.setDuration`
+ * writes when a note gets shorter, or the remainder of a rest it partly
+ * consumed). Each step takes the longest value that fits what is left *and*
+ * starts on a multiple of its own length, the usual rule for rests (a rest
+ * does not straddle a beat of its own size), so an eighth note shortened from
+ * a half on beat 1 is followed by an eighth rest then a quarter rest, not a
+ * quarter rest across the off-beat. An onset off the 64th grid (after a
+ * tuplet) relaxes the alignment and simply takes the longest value that fits.
+ * Dotted rests are never written: the aligned plain run is what an engraver
+ * writes in simple time, and it is always correct, if not always the
+ * shortest spelling in compound time.
+ *
+ * Returns `null` when `wholes` cannot be spelled at all (a remainder below a
+ * 64th, i.e. a tuplet fraction), and `[]` for zero.
+ */
+export function restValuesFor(onset: number, wholes: number): NoteValue[] | null {
+	const values: NoteValue[] = [];
+	let at = onset;
+	let left = wholes;
+	const EPS = 1e-9;
+	const onGrid = (position: number, size: number): boolean => {
+		const ratio = position / size;
+		return Math.abs(ratio - Math.round(ratio)) < 1e-6;
+	};
+	while (left > EPS) {
+		const fits = NOTE_VALUES.filter((value) => NOTE_VALUE_WHOLES[value] <= left + EPS);
+		if (fits.length === 0) return null;
+		const value = fits.find((v) => onGrid(at, NOTE_VALUE_WHOLES[v])) ?? fits[0]!;
+		values.push(value);
+		at += NOTE_VALUE_WHOLES[value];
+		left -= NOTE_VALUE_WHOLES[value];
+	}
+	return values;
+}
 
 /**
  * A tuplet ratio: `actualNotes` notes are written to fill the time normally
@@ -768,6 +850,19 @@ export interface CrossStaffBeam {
 	readonly staffIndices: readonly [number, number];
 }
 
+/**
+ * One measure, addressed the way layout and the renderer address it: by its
+ * staff and its staff-local index. What the M6 Slice 7 correction ops return
+ * (a list of them, deduplicated, in staff then measure order) so a caller can
+ * re-lay-out and repaint exactly what an edit touched: usually the edited
+ * note's own measure, plus a tie partner's or slur end's measure across a
+ * barline.
+ */
+export interface MeasureRef {
+	readonly staffIndex: number;
+	readonly measureIndex: number;
+}
+
 export class Score {
 	/**
 	 * Every staff in the score (M2 Slice 3). The constructor always creates
@@ -1416,6 +1511,526 @@ export class Score {
 		return { from: lo, to: hi };
 	}
 
+	// --- Correction ops (M6 Slice 7) -----------------------------------------
+	//
+	// The ops an admin needs to fix rough OMR output by hand, reaching parity
+	// with Divisi's old OSMD editor (E2: transpose, delete-to-rest, planned
+	// duration edits) plus what the SFCC board's "British rests all over page
+	// 1" complaint asks for (rests misread from old-style glyphs have to be
+	// cheap to turn back into notes, and wrong values cheap to fix).
+	//
+	// Shared contract, the same one `transposeNote`/`setClefRange` set:
+	//
+	//  - Each op validates its input and returns `null` when it refuses or
+	//    when nothing would change. Refusal and no-op are deliberately the same
+	//    signal: `EditHistory.record` keeps a snapshot only for a non-null
+	//    result, so a refused edit leaves the undo stack and the dirty flag
+	//    alone. The caller (the demo) records the pre-edit snapshot by running
+	//    the op inside `history.record`, exactly as it does for a transpose.
+	//  - Otherwise each returns the measures it touched (`MeasureRef`s,
+	//    deduplicated, sorted), so the caller can `relayoutMeasure` and
+	//    repaint just those, falling back to a full `layoutScore` when one of
+	//    them declines (a width change, a moved dynamics baseline). A tie
+	//    partner's or slur end's measure across a barline is included, since
+	//    its curve is drawn in that measure's own ops too.
+	//  - Nothing outside the edited voice of the edited measure moves in time:
+	//    every op keeps the voice's total duration (padding with rests, or
+	//    consuming them), so the next measure never shifts and positional
+	//    anchors (dynamics, hairpins, `Measure.passthrough` at an onset) keep
+	//    meaning the same moment.
+	//  - A note keeps its id through every op that keeps the note (a
+	//    selection survives), and the private indexes (`#measureOfNote`,
+	//    `#tieSourceOfTarget`, `#crossStaffBeamOfNote`) are kept in step with
+	//    every removal, so `findNote`, `tiedFromNote` and layout stay correct
+	//    without a rebuild.
+
+	/**
+	 * Turn a note into a rest of the same written duration (E2's "delete":
+	 * nothing after it shifts). Returns `null` for an unknown id or a rest.
+	 *
+	 * On a chord head with other heads beside it this removes that head from
+	 * the chord instead (`removeChordMember`'s rules): deleting one misread
+	 * head of a divisi third should leave the other note, not silence the
+	 * whole chord.
+	 *
+	 * What goes with the pitch: any tie into or out of the note (the partner's
+	 * `tiedToId` too), its articulations (a staccato rest means nothing), and
+	 * its own passthrough payload (M6 Slice 3's promise: deleting a note drops
+	 * exactly its own payload, including any unmatched `<tie>`/`<tied>`/
+	 * `<slur>` ends and lyrics). A fermata stays: a fermata over a rest is
+	 * ordinary notation, and dropping it would lose a real hold. A slur that
+	 * starts or ends on the note moves to the nearest pitched event inside the
+	 * slur (same voice preferred), so a phrase mark survives deleting a stray
+	 * note at its end; a slur with nothing left inside to land on is dropped.
+	 * A cross-staff beam loses the note (a rest has no stem), and is dropped
+	 * when a side is left with fewer than two notes.
+	 */
+	noteToRest(id: NoteId): readonly MeasureRef[] | null {
+		const found = this.#locate(id);
+		if (!found || found.note.pitch === null) return null;
+		const { measure, note } = found;
+		const event = this.#eventOf(measure, note);
+		if (event.length > 1) return this.#removeHead(measure, event, note);
+		const touched = new TouchedMeasures();
+		touched.addMeasure(measure);
+		this.#untie(note, touched);
+		note.pitch = null;
+		note.articulations = NO_ARTICULATIONS;
+		note.passthrough = NO_PASSTHROUGH;
+		this.#reanchorSlurs(id, measure, null, touched);
+		this.#detachFromCrossStaffBeam(id, measure, null, touched);
+		return touched.list();
+	}
+
+	/**
+	 * Turn a rest into a note at `pitch`, keeping its duration (the inverse of
+	 * `noteToRest`, and the fix for an OMR "rest" that was really a note).
+	 * Returns `null` for an unknown id or a pitched note.
+	 *
+	 * A whole-measure rest (`Note.isMeasureRest`) becomes a note lasting the
+	 * whole measure, which needs a single note value (plus dots) of exactly
+	 * the measure's length: 4/4 and 2/2 give a whole note, 3/4 and 6/8 a dotted
+	 * half, 7/8 a double-dotted half. A measure no single note value fills
+	 * (5/4, 5/8, ...) is refused (`null`): writing tied notes is the user's
+	 * call, not something to guess. The rest's fermata and articulations stay
+	 * on the note; its passthrough payload (typically a `<rest>`'s
+	 * display-step/octave, meaningless on a note) is dropped, as `noteToRest`
+	 * drops the note's.
+	 */
+	restToNote(id: NoteId, pitch: Pitch): readonly MeasureRef[] | null {
+		const found = this.#locate(id);
+		if (!found || found.note.pitch !== null) return null;
+		const { measure, note } = found;
+		if (note.measureRestWholes !== null) {
+			const spelled = noteValueForWholes(note.measureRestWholes);
+			if (!spelled) return null;
+			this.#replaceNote(
+				measure,
+				note,
+				new Note(note.id, {
+					...specOf(note),
+					pitch: { ...pitch },
+					value: spelled.value,
+					dots: spelled.dots,
+					measureRestWholes: null,
+					passthrough: NO_PASSTHROUGH
+				})
+			);
+		} else {
+			note.pitch = { ...pitch };
+			note.passthrough = NO_PASSTHROUGH;
+		}
+		return [{ staffIndex: measure.staffIndex, measureIndex: measure.index }];
+	}
+
+	/**
+	 * Change the written value (and dots) of a note's whole event: a single
+	 * note or rest, or every head of a chord (a chord has one duration).
+	 * Returns `null` when refused or when the value is unchanged.
+	 *
+	 * Measure capacity is never broken and the next measure never shifts:
+	 *
+	 *  - Shorter: the freed time is padded with rests right after the event
+	 *    (`restValuesFor`: undotted values, each aligned to its own length),
+	 *    so everything later in the voice keeps its onset.
+	 *  - Longer: the extra time is taken from the rests that directly follow
+	 *    in the same voice, consuming whole rests and re-spelling any
+	 *    leftover as rests (OMR often reads one note's worth of time as a
+	 *    note plus a spurious rest, so this is the friendly answer rather than
+	 *    a flat refusal). If every following event is a rest and they still do
+	 *    not cover it, an under-full voice's own slack before the barline may
+	 *    make up the difference. A pitched note in the way, or a total that
+	 *    would pass the time signature's capacity, refuses the edit: pushing
+	 *    the following notes later is a re-barring decision this op will not
+	 *    make silently. Consumed rests go with their fermatas and payloads.
+	 *  - Tuplets are refused for now (the event's anchor has a `tuplet`, or a
+	 *    rest it would consume does): changing one member's value breaks the
+	 *    run's ratio arithmetic, and an editor for tuplets is its own job.
+	 *    Since no tupleted note is ever changed, the passthrough `<tuplet>`
+	 *    brackets Slice 3 keeps for a run stay valid; any stray `<tuplet>` on
+	 *    a changed (non-tuplet) head is stripped so export cannot write a
+	 *    bracket for a run that no longer exists.
+	 *
+	 * A whole-measure rest is a valid target: it becomes an ordinary rest of
+	 * `value` plus padding (how a misread measure rest is cut down to a beat).
+	 * Ties into and out of the event stay (the pitch is unchanged, so they are
+	 * still valid). A head that becomes longer than an eighth leaves any
+	 * cross-staff beam (it has no beam to join). Chord members' own
+	 * `value`/`dots` follow the anchor, since they choose the head glyph.
+	 */
+	setDuration(id: NoteId, value: NoteValue, dots: 0 | 1 | 2 = 0): readonly MeasureRef[] | null {
+		const found = this.#locate(id);
+		if (!found) return null;
+		const { measure, note } = found;
+		const events = this.#voiceEvents(measure, note.voice);
+		const k = events.findIndex((event) => event.includes(note));
+		const event = events[k]!;
+		const anchor = event[0]!;
+		if (anchor.tuplet !== null) return null;
+		if (!anchor.isMeasureRest && anchor.value === value && anchor.dots === dots) return null;
+
+		const EPS = 1e-9;
+		const oldWholes = anchor.durationWholes;
+		const newWholes = spelledWholes(value, dots);
+		let onset = 0;
+		for (let i = 0; i < k; i++) onset += events[i]![0]!.durationWholes;
+
+		const consumed: Note[] = [];
+		let padWholes: number;
+		if (newWholes > oldWholes + EPS) {
+			const extra = newWholes - oldWholes;
+			let covered = 0;
+			for (let j = k + 1; j < events.length && covered < extra - EPS; j++) {
+				const next = events[j]![0]!;
+				if (next.pitch !== null || next.tuplet !== null) return null;
+				consumed.push(next);
+				covered += next.durationWholes;
+			}
+			if (covered < extra - EPS) {
+				// Every following event was a rest and all are consumed, so what
+				// is left must fit in the voice's slack before the barline.
+				const voiceWholes = events.reduce((sum, e) => sum + e[0]!.durationWholes, 0);
+				const capacity = measureCapacityWholes(this.timeAt(measure.index, measure.staffIndex));
+				if (voiceWholes - covered + extra > capacity + EPS) return null;
+			}
+			padWholes = Math.max(0, covered - extra);
+		} else {
+			padWholes = oldWholes - newWholes;
+		}
+		const padValues = restValuesFor(onset + newWholes, padWholes);
+		if (padValues === null) return null;
+
+		const touched = new TouchedMeasures();
+		touched.addMeasure(measure);
+		for (const rest of consumed) {
+			measure.notes.splice(measure.notes.indexOf(rest), 1);
+			this.#measureOfNote.delete(rest.id);
+		}
+		let last: Note;
+		if (anchor.isMeasureRest) {
+			last = new Note(anchor.id, { ...specOf(anchor), value, dots, measureRestWholes: null });
+			this.#replaceNote(measure, anchor, last);
+		} else {
+			for (const head of event) {
+				head.value = value;
+				head.dots = dots;
+				head.passthrough = withoutNoteMarkup(head.passthrough, (el, inNotations) => inNotations && el.name === 'tuplet');
+			}
+			last = event.reduce((a, b) => (measure.notes.indexOf(b) > measure.notes.indexOf(a) ? b : a));
+			if (NOTE_VALUE_WHOLES[value] > NOTE_VALUE_WHOLES.eighth) {
+				for (const head of event) this.#detachFromCrossStaffBeam(head.id, measure, null, touched);
+			}
+		}
+		let at = measure.notes.indexOf(last) + 1;
+		for (const restValue of padValues) {
+			const rest = new Note(`n${this.#nextNoteId++}`, { pitch: null, value: restValue, voice: anchor.voice });
+			measure.notes.splice(at++, 0, rest);
+			this.#measureOfNote.set(rest.id, measure);
+		}
+		return touched.list();
+	}
+
+	/**
+	 * Add a head at `pitch` to the event `id` belongs to: a chord member
+	 * (`chordWithPrevious`) with the anchor's value, dots, tuplet and voice,
+	 * placed after the event's last head so `noteEvents` joins it there.
+	 * Returns `null` for an unknown id, a rest (a rest has no stem to share),
+	 * or a pitch the event already has (a unison head is not a correction
+	 * anyone needs, and layout draws one over the other). Use `findNote` on
+	 * the event afterwards to reach the new head; its id is fresh.
+	 */
+	addChordMember(id: NoteId, pitch: Pitch): readonly MeasureRef[] | null {
+		const found = this.#locate(id);
+		if (!found || found.note.pitch === null) return null;
+		const { measure, note } = found;
+		const event = this.#eventOf(measure, note);
+		if (event.some((head) => head.pitch !== null && pitchesEqual(head.pitch, pitch))) return null;
+		const anchor = event[0]!;
+		const last = event.reduce((a, b) => (measure.notes.indexOf(b) > measure.notes.indexOf(a) ? b : a));
+		const head = new Note(`n${this.#nextNoteId++}`, {
+			pitch: { ...pitch },
+			value: anchor.value,
+			dots: anchor.dots,
+			tuplet: anchor.tuplet ?? undefined,
+			voice: anchor.voice,
+			chordWithPrevious: true
+		});
+		measure.notes.splice(measure.notes.indexOf(last) + 1, 0, head);
+		this.#measureOfNote.set(head.id, measure);
+		return [{ staffIndex: measure.staffIndex, measureIndex: measure.index }];
+	}
+
+	/**
+	 * Remove one head from a chord. Returns `null` for an unknown id, a rest,
+	 * or a note that is its event's only head (that is `noteToRest`'s job:
+	 * removing the last head would leave no event at all and shift the
+	 * voice).
+	 *
+	 * Removing the anchor (the first head, the one without
+	 * `chordWithPrevious`) promotes the next head to anchor, in the removed
+	 * anchor's place in `measure.notes`: the rough edge E2's spike hit, where
+	 * the remaining heads were left as members joined to nothing. The promoted
+	 * head keeps its id, pitch, ties and payload, and takes the chord's
+	 * value/dots/tuplet and any passthrough `<tuplet>` bracket the old anchor
+	 * carried (export writes a run's brackets on its anchors). The removed
+	 * head's articulations and fermata move to the remaining anchor (they
+	 * belong to the chord, whichever head they were written on), its ties are
+	 * cleared at both ends, its own payload is dropped, and a slur or
+	 * cross-staff beam anchored on it moves to the remaining anchor.
+	 */
+	removeChordMember(id: NoteId): readonly MeasureRef[] | null {
+		const found = this.#locate(id);
+		if (!found || found.note.pitch === null) return null;
+		const event = this.#eventOf(found.measure, found.note);
+		if (event.length < 2) return null;
+		return this.#removeHead(found.measure, event, found.note);
+	}
+
+	/**
+	 * Tie `sourceId` to `targetId`, or untie it (`targetId: null`), as an
+	 * undoable correction (so a tie lost at a page join can be re-added).
+	 * Stricter than the low-level `setTie`, which import and `buildScore` use
+	 * to wire ties they already resolved: the target must be a head of the
+	 * *next event in the source's voice* (later in the same measure, or the
+	 * voice's first event in the next measure of the staff) with the same
+	 * pitch, and no other note may already tie into it. `tieTargetFor` finds
+	 * that head. Returns `null` when refused or when nothing changes.
+	 *
+	 * Passthrough tie markup is kept consistent with the model: the model's
+	 * tie is what export writes, so a stray unmatched `<tie>`/`<tied>` start
+	 * on the source and stop on the target (OMR's half of a tie whose partner
+	 * was on the other page) are stripped when linking, or export would write
+	 * each end twice. Untying strips the source's stray start too, so "untie"
+	 * also removes a dangling OMR tie start the model never linked (and is
+	 * not a no-op when that is all there is).
+	 */
+	editTie(sourceId: NoteId, targetId: NoteId | null): readonly MeasureRef[] | null {
+		const found = this.#locate(sourceId);
+		if (!found || found.note.pitch === null) return null;
+		const { measure, note: source } = found;
+		const touched = new TouchedMeasures();
+		touched.addMeasure(measure);
+		const sourcePayload = withoutTieMarkup(source.passthrough, 'start');
+		if (targetId === null) {
+			if (source.tiedToId === null && sourcePayload === source.passthrough) return null;
+			if (source.tiedToId !== null) {
+				const oldTarget = this.#measureOfNote.get(source.tiedToId);
+				if (oldTarget) touched.addMeasure(oldTarget);
+				this.setTie(sourceId, null);
+			}
+			source.passthrough = sourcePayload;
+			return touched.list();
+		}
+		const target = this.#nextEventInVoice(measure, source)?.find((head) => head.id === targetId);
+		if (!target || target.pitch === null || source.pitch === null || !pitchesEqual(target.pitch, source.pitch)) return null;
+		const existing = this.tiedFromNote(targetId);
+		if (existing && existing !== source) return null;
+		const targetPayload = withoutTieMarkup(target.passthrough, 'stop');
+		if (source.tiedToId === targetId && sourcePayload === source.passthrough && targetPayload === target.passthrough) {
+			return null;
+		}
+		if (source.tiedToId !== null && source.tiedToId !== targetId) {
+			const oldTarget = this.#measureOfNote.get(source.tiedToId);
+			if (oldTarget) touched.addMeasure(oldTarget);
+		}
+		this.setTie(sourceId, targetId);
+		source.passthrough = sourcePayload;
+		target.passthrough = targetPayload;
+		touched.addMeasure(this.#measureOfNote.get(targetId)!);
+		return touched.list();
+	}
+
+	/**
+	 * The head `editTie(sourceId, ...)` would accept as a target: the head of
+	 * the same pitch in the next event of the source's voice (see `editTie`),
+	 * or `null` if there is none (a rest, a different pitch, no next event).
+	 */
+	tieTargetFor(sourceId: NoteId): NoteId | null {
+		const found = this.#locate(sourceId);
+		const pitch = found?.note.pitch;
+		if (!found || !pitch) return null;
+		const next = this.#nextEventInVoice(found.measure, found.note);
+		return next?.find((head) => head.pitch !== null && pitchesEqual(head.pitch, pitch))?.id ?? null;
+	}
+
+	#locate(id: NoteId): { measure: Measure; note: Note } | undefined {
+		const measure = this.#measureOfNote.get(id);
+		const note = measure?.notes.find((candidate) => candidate.id === id);
+		return measure && note ? { measure, note } : undefined;
+	}
+
+	/** One voice's events in `measure`, in time order. */
+	#voiceEvents(measure: Measure, voice: number): Note[][] {
+		return noteEvents(measure.notes).filter((event) => event[0]!.voice === voice);
+	}
+
+	/** The event (`noteEvents`) holding `note`. */
+	#eventOf(measure: Measure, note: Note): Note[] {
+		return noteEvents(measure.notes).find((event) => event.includes(note))!;
+	}
+
+	/** The event after `note`'s in its voice: later in `measure`, else the
+	 *  voice's first event in the staff's next measure. */
+	#nextEventInVoice(measure: Measure, note: Note): Note[] | undefined {
+		const events = this.#voiceEvents(measure, note.voice);
+		const k = events.findIndex((event) => event.includes(note));
+		if (k + 1 < events.length) return events[k + 1];
+		const next = this.staves[measure.staffIndex]!.measures[measure.index + 1];
+		return next ? this.#voiceEvents(next, note.voice)[0] : undefined;
+	}
+
+	/** Swap `replacement` (same id) in for `note` at its place in
+	 *  `measure.notes`, for the fields `Note` keeps readonly
+	 *  (`chordWithPrevious`, `measureRestWholes`). The id indexes need no
+	 *  update, since they key by id; the tie is carried over directly. */
+	#replaceNote(measure: Measure, note: Note, replacement: Note): void {
+		replacement.tiedToId = note.tiedToId;
+		measure.notes[measure.notes.indexOf(note)] = replacement;
+	}
+
+	/** Clear every tie into and out of `note`, at both ends. */
+	#untie(note: Note, touched: TouchedMeasures): void {
+		if (note.tiedToId !== null) {
+			const target = this.#measureOfNote.get(note.tiedToId);
+			if (target) touched.addMeasure(target);
+			this.#tieSourceOfTarget.delete(note.tiedToId);
+			note.tiedToId = null;
+		}
+		const source = this.tiedFromNote(note.id);
+		if (source) {
+			touched.addMeasure(this.#measureOfNote.get(source.id)!);
+			this.#tieSourceOfTarget.delete(note.id);
+			source.tiedToId = null;
+		}
+	}
+
+	/** `noteToRest`/`removeChordMember` on a head of a chord with others. */
+	#removeHead(measure: Measure, event: readonly Note[], note: Note): readonly MeasureRef[] {
+		const touched = new TouchedMeasures();
+		touched.addMeasure(measure);
+		this.#untie(note, touched);
+		let anchor: Note;
+		if (note === event[0]) {
+			const successor = event[1]!;
+			// The old anchor's tuplet brackets (if the source wrote any) mark
+			// where its run starts or stops; they move with the anchor role.
+			const brackets = note.passthrough.flatMap((el) =>
+				el.name === 'notations' ? el.children.filter((c) => c.name === 'tuplet') : []
+			);
+			const passthrough =
+				brackets.length === 0
+					? successor.passthrough
+					: Object.freeze([
+							...successor.passthrough,
+							Object.freeze({ name: 'notations', attrs: Object.freeze({}), children: Object.freeze(brackets), text: '' })
+						]);
+			anchor = new Note(successor.id, {
+				...specOf(successor),
+				value: note.value,
+				dots: note.dots,
+				tuplet: note.tuplet ?? undefined,
+				chordWithPrevious: false,
+				articulations: [...successor.articulations, ...note.articulations],
+				fermata: successor.fermata ?? note.fermata,
+				passthrough
+			});
+			anchor.tiedToId = successor.tiedToId;
+			measure.notes.splice(measure.notes.indexOf(successor), 1);
+			measure.notes[measure.notes.indexOf(note)] = anchor;
+		} else {
+			anchor = event[0]!;
+			anchor.articulations = normalizeArticulations([...anchor.articulations, ...note.articulations]);
+			if (anchor.fermata === null) anchor.fermata = note.fermata;
+			measure.notes.splice(measure.notes.indexOf(note), 1);
+		}
+		this.#measureOfNote.delete(note.id);
+		this.#reanchorSlurs(note.id, measure, anchor.id, touched);
+		this.#detachFromCrossStaffBeam(note.id, measure, anchor.id, touched);
+		return touched.list();
+	}
+
+	/**
+	 * Move every slur end on `removedId` (in `removedMeasure`) to
+	 * `replacementId`, or, when that is `null`, to the nearest pitched event
+	 * inside the slur (its first for a start, its last for an end; same voice
+	 * as the removed note preferred). A slur left with no distinct, correctly
+	 * ordered pair of ends is dropped. Every measure the slur spanned is
+	 * touched, since its curve is redrawn in each.
+	 */
+	#reanchorSlurs(removedId: NoteId, removedMeasure: Measure, replacementId: NoteId | null, touched: TouchedMeasures): void {
+		const staffIndex = removedMeasure.staffIndex;
+		for (let i = this.slurs.length - 1; i >= 0; i--) {
+			const slur = this.slurs[i]!;
+			const isStart = slur.startNoteId === removedId;
+			if (!isStart && slur.endNoteId !== removedId) continue;
+			const otherId = isStart ? slur.endNoteId : slur.startNoteId;
+			const other = this.#measureOfNote.get(otherId);
+			const lo = Math.min(removedMeasure.index, other?.index ?? removedMeasure.index);
+			const hi = Math.max(removedMeasure.index, other?.index ?? removedMeasure.index);
+			for (let m = lo; m <= hi; m++) touched.add(staffIndex, m);
+
+			const order = this.notesInOrder(staffIndex);
+			const indexOf = (id: NoteId) => order.findIndex((n) => n.id === id);
+			let replacement = replacementId;
+			if (replacement === null) {
+				const removedNote = order.find((n) => n.id === removedId);
+				const inner = order
+					.slice(indexOf(slur.startNoteId) + 1, indexOf(slur.endNoteId))
+					.filter((n) => n.pitch !== null && !n.chordWithPrevious);
+				const sameVoice = inner.filter((n) => n.voice === removedNote?.voice);
+				const pool = sameVoice.length > 0 ? sameVoice : inner;
+				replacement = (isStart ? pool[0] : pool[pool.length - 1])?.id ?? null;
+			}
+			const next: Slur | null =
+				replacement === null
+					? null
+					: isStart
+						? { startNoteId: replacement, endNoteId: slur.endNoteId }
+						: { startNoteId: slur.startNoteId, endNoteId: replacement };
+			if (next === null || indexOf(next.startNoteId) < 0 || indexOf(next.startNoteId) >= indexOf(next.endNoteId)) {
+				this.slurs.splice(i, 1);
+			} else {
+				this.slurs[i] = next;
+			}
+		}
+	}
+
+	/**
+	 * Take `id` out of its cross-staff beam (if any), putting `replacementId`
+	 * in its place when given and not already a member. A beam left with
+	 * fewer than two notes on a staff (`addCrossStaffBeam`'s own rule) is
+	 * dropped. Every measure the beam spans is touched.
+	 */
+	#detachFromCrossStaffBeam(
+		id: NoteId,
+		removedMeasure: Measure,
+		replacementId: NoteId | null,
+		touched: TouchedMeasures
+	): void {
+		const beam = this.#crossStaffBeamOfNote.get(id);
+		if (!beam) return;
+		this.#crossStaffBeamOfNote.delete(id);
+		for (const staffIndex of beam.staffIndices) touched.add(staffIndex, removedMeasure.index);
+		const noteIds =
+			replacementId !== null && !beam.noteIds.includes(replacementId)
+				? beam.noteIds.map((x) => (x === id ? replacementId : x))
+				: beam.noteIds.filter((x) => x !== id);
+		const perStaff = new Map<number, number>();
+		for (const x of noteIds) {
+			const s = this.#measureOfNote.get(x)?.staffIndex;
+			if (s !== undefined) perStaff.set(s, (perStaff.get(s) ?? 0) + 1);
+		}
+		const at = this.crossStaffBeams.indexOf(beam);
+		if (beam.staffIndices.every((s) => (perStaff.get(s) ?? 0) >= 2)) {
+			const kept: CrossStaffBeam = { noteIds, staffIndices: beam.staffIndices };
+			this.crossStaffBeams[at] = kept;
+			for (const x of noteIds) this.#crossStaffBeamOfNote.set(x, kept);
+		} else {
+			this.crossStaffBeams.splice(at, 1);
+			for (const x of noteIds) this.#crossStaffBeamOfNote.delete(x);
+		}
+	}
+
 	/**
 	 * A deep, **id-preserving** copy of this score.
 	 *
@@ -1534,6 +2149,42 @@ export class Score {
 		// cannot collide with the ones just copied in.
 		copy.#nextNoteId = this.#nextNoteId;
 		return copy;
+	}
+}
+
+/** A note's construction spec, for rebuilding it with a readonly field
+ *  changed (`Score.#replaceNote`). Leaves out `tiedToId`, which the caller
+ *  sets directly so the tie index is not re-validated. */
+function specOf(note: Note): NoteSpec {
+	return {
+		pitch: note.pitch === null ? null : { ...note.pitch },
+		value: note.value,
+		voice: note.voice,
+		dots: note.dots,
+		tuplet: note.tuplet ?? undefined,
+		measureRestWholes: note.measureRestWholes,
+		chordWithPrevious: note.chordWithPrevious,
+		articulations: note.articulations,
+		fermata: note.fermata,
+		passthrough: note.passthrough
+	};
+}
+
+/** The measures one correction op touched, deduplicated; `list()` sorts
+ *  them by staff, then measure. */
+class TouchedMeasures {
+	readonly #refs = new Map<string, MeasureRef>();
+
+	add(staffIndex: number, measureIndex: number): void {
+		this.#refs.set(`${staffIndex}:${measureIndex}`, { staffIndex, measureIndex });
+	}
+
+	addMeasure(measure: Measure): void {
+		this.add(measure.staffIndex, measure.index);
+	}
+
+	list(): readonly MeasureRef[] {
+		return [...this.#refs.values()].sort((a, b) => a.staffIndex - b.staffIndex || a.measureIndex - b.measureIndex);
 	}
 }
 

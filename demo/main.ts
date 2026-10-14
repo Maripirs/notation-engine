@@ -14,6 +14,7 @@ import {
 	createGrandStaffShowcaseScore,
 	EditHistory,
 	exportMusicXml,
+	keyAlterForStep,
 	hitTest,
 	hitTestMeasure,
 	importMusicXml,
@@ -22,9 +23,15 @@ import {
 	PlaybackEngine,
 	regionForNote,
 	relayoutMeasure,
+	NOTE_VALUES,
+	noteEvents,
 	type ClefType,
 	type LaidOutScore,
-	type NoteId
+	type MeasureRef,
+	type NoteId,
+	type Pitch,
+	type Score,
+	type Step
 } from '../src/index.js';
 
 const canvas = document.querySelector<HTMLCanvasElement>('#score')!;
@@ -209,6 +216,176 @@ function transposeSelected(semitones: number): void {
 	report(elapsed, touched, staffIndex);
 }
 
+// --- Correction ops (M6 Slice 7) -------------------------------------------
+//
+// Keyboard shortcuts on the selected note for fixing rough OMR output (see
+// the list in index.html). Each runs one `Score` correction op through
+// `history.record`, exactly like a transpose, and repaints only the measures
+// the op reports, falling back to a whole-score layout when one of them
+// declines (most duration and chord edits change a measure's width).
+
+/** The pitch on a clef's middle staff line (before the key signature): what
+ *  R turns a rest into, so a misread rest becomes a visible note the user
+ *  then moves with the arrows. */
+const MIDDLE_LINE_PITCH: Readonly<Record<ClefType, Pitch>> = {
+	treble: { step: 'B', alter: 0, octave: 4 },
+	treble8: { step: 'B', alter: 0, octave: 4 },
+	bass: { step: 'D', alter: 0, octave: 3 },
+	alto: { step: 'C', alter: 0, octave: 4 },
+	tenor: { step: 'A', alter: 0, octave: 3 }
+};
+
+const STEPS: readonly Step[] = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+
+/** A diatonic third above (`direction` 1) or below (-1) `pitch`, spelled in
+ *  the key in force at the note's measure (so in D major a third above D is
+ *  F#, not F). */
+function thirdFrom(pitch: Pitch, direction: 1 | -1, keyFifths: number): Pitch {
+	const index = STEPS.indexOf(pitch.step) + 2 * direction;
+	const step = STEPS[(index + 7) % 7]!;
+	const octave = pitch.octave + Math.floor(index / 7);
+	return { step, alter: keyAlterForStep(keyFifths, step), octave };
+}
+
+/**
+ * Run one correction op on the selected note and repaint what it touched.
+ * `refusal` is the status line when the op returns `null` (refused, or
+ * nothing to change), which records nothing.
+ */
+function applyCorrection(label: string, refusal: string, op: (score: Score, id: NoteId) => readonly MeasureRef[] | null): void {
+	if (selected === null) return;
+	const started = performance.now();
+	const noteId = selected;
+	// The heads of the selected note's event, so that when the op removes the
+	// selected head (a chord head deleted) the selection can move to a head
+	// that is still there.
+	const measure = history.current.measureOfNote(noteId);
+	const siblings = (measure && noteEvents(measure.notes).find((e) => e.some((n) => n.id === noteId))?.map((n) => n.id)) ?? [];
+	const touched = history.record((score) => op(score, noteId));
+	if (touched === null) {
+		status.textContent = refusal;
+		return;
+	}
+	markScoreChanged();
+
+	if (history.current.findNote(noteId) === undefined) {
+		const fallback = siblings.find((id) => history.current.findNote(id) !== undefined) ?? null;
+		// The measures this changes are the touched ones, repainted below.
+		renderer.setSelection(fallback);
+		selected = fallback;
+		upButton.disabled = selected === null;
+		downButton.disabled = selected === null;
+	}
+
+	let scoped: LaidOutScore | null = layout;
+	for (const { staffIndex, measureIndex } of touched) {
+		scoped = scoped && relayoutMeasure(history.current, scoped, measureIndex, layoutOptions, staffIndex);
+	}
+	if (scoped) {
+		layout = scoped;
+		renderer.setLayout(layout);
+		for (const { staffIndex, measureIndex } of touched) renderer.redrawMeasure(measureIndex, staffIndex);
+	} else {
+		layout = layoutScore(history.current, layoutOptions);
+		renderer.setLayout(layout);
+		sizeCanvas();
+		renderer.drawAll();
+	}
+	const elapsed = performance.now() - started;
+	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
+	const where = touched.map((ref) => `${ref.measureIndex + 1}${history.current.staves.length > 1 ? ` (staff ${ref.staffIndex + 1})` : ''}`).join(', ');
+	status.textContent = scoped
+		? `${label}: redrew measure ${where} only.`
+		: `${label}: the edit changed the system's geometry, so the whole score was re-laid-out.`;
+	const first = touched[0]!;
+	if (scoped) report(elapsed, first.measureIndex, first.staffIndex);
+	else timings.textContent = `edit + whole-score layout/repaint  ${elapsed.toFixed(2)} ms`;
+}
+
+function deleteSelected(): void {
+	applyCorrection('Note to rest', 'Already a rest.', (score, id) => score.noteToRest(id));
+}
+
+/** R: a rest becomes a note on the staff's middle line; a note becomes a rest. */
+function toggleRestSelected(): void {
+	if (selected === null) return;
+	const note = history.current.findNote(selected);
+	if (!note) return;
+	if (note.pitch !== null) {
+		deleteSelected();
+		return;
+	}
+	const measure = history.current.measureOfNote(selected)!;
+	const line = MIDDLE_LINE_PITCH[history.current.clefAt(measure.index, measure.staffIndex)];
+	// Spelled in the key, so in A-flat major the treble middle line is B-flat
+	// (no accidental drawn), not a B natural the user then has to fix.
+	const pitch = { ...line, alter: keyAlterForStep(history.current.keyFifthsAt(measure.index, measure.staffIndex), line.step) };
+	applyCorrection(
+		'Rest to note',
+		'This whole-measure rest cannot become one note: no single note value fills the measure.',
+		(score, id) => score.restToNote(id, pitch)
+	);
+}
+
+function setValueSelected(digit: number): void {
+	const value = NOTE_VALUES[digit - 1];
+	if (value === undefined) return;
+	applyCorrection(
+		`Set to ${value}`,
+		`Could not make it a ${value}: unchanged, a tuplet, or a longer value would run into a following note or past the barline.`,
+		(score, id) => score.setDuration(id, value, 0)
+	);
+}
+
+function toggleDotSelected(): void {
+	if (selected === null) return;
+	const note = history.current.findNote(selected);
+	if (!note) return;
+	const dots = note.dots === 0 ? 1 : 0;
+	applyCorrection(
+		dots ? 'Dotted' : 'Undotted',
+		'Could not change the dot: a tuplet, or the longer value would run into a following note or past the barline.',
+		(score, id) => score.setDuration(id, note.value, dots)
+	);
+}
+
+function addThirdSelected(direction: 1 | -1): void {
+	if (selected === null) return;
+	const note = history.current.findNote(selected);
+	const measure = history.current.measureOfNote(selected);
+	if (!note?.pitch || !measure) {
+		status.textContent = 'Select a note (not a rest) to add a chord head.';
+		return;
+	}
+	const pitch = thirdFrom(note.pitch, direction, history.current.keyFifthsAt(measure.index, measure.staffIndex));
+	applyCorrection(
+		`Added a head a third ${direction === 1 ? 'above' : 'below'}`,
+		'The chord already has that pitch.',
+		(score, id) => score.addChordMember(id, pitch)
+	);
+}
+
+/** T: untie a tied note, or tie it to the same pitch in the next event. */
+function toggleTieSelected(): void {
+	if (selected === null) return;
+	const note = history.current.findNote(selected);
+	if (!note?.pitch) return;
+	if (note.tiedToId !== null) {
+		applyCorrection('Untied', 'Nothing to untie.', (score, id) => score.editTie(id, null));
+		return;
+	}
+	const target = history.current.tieTargetFor(selected);
+	if (target === null && note.passthrough.length === 0) {
+		status.textContent = 'No same-pitch note right after this one to tie to.';
+		return;
+	}
+	applyCorrection(
+		target === null ? 'Removed a dangling tie' : 'Tied to the next note',
+		'No same-pitch note right after this one to tie to.',
+		(score, id) => score.editTie(id, target)
+	);
+}
+
 /**
  * Step the history one way or the other and repaint.
  *
@@ -225,6 +402,14 @@ function stepHistory(direction: 'undo' | 'redo'): void {
 	const restored = direction === 'undo' ? history.undo() : history.redo();
 	if (restored === null) return;
 	markScoreChanged();
+	// A correction op can remove or add notes, so the selected id may not
+	// exist on the other side of the step.
+	if (selected !== null && history.current.findNote(selected) === undefined) {
+		renderer.setSelection(null);
+		selected = null;
+		upButton.disabled = true;
+		downButton.disabled = true;
+	}
 
 	layout = layoutScore(history.current, layoutOptions);
 	renderer.setLayout(layout);
@@ -232,8 +417,8 @@ function stepHistory(direction: 'undo' | 'redo'): void {
 	lastFullDrawMs = drawAll();
 	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
 	status.textContent = direction === 'undo'
-		? 'Undid transpose. Re-laid-out and repainted the whole score.'
-		: 'Redid transpose. Re-laid-out and repainted the whole score.';
+		? 'Undid the last edit. Re-laid-out and repainted the whole score.'
+		: 'Redid the edit. Re-laid-out and repainted the whole score.';
 	timings.textContent = `whole-score repaint                ${lastFullDrawMs.toFixed(2)} ms`;
 }
 
@@ -360,8 +545,18 @@ window.addEventListener('keydown', (event) => {
 	const step = activeHistoryCanvas === 'main' ? stepHistory : stepStaffSelectHistory;
 	if (modifier && key === 'z') step(event.shiftKey ? 'redo' : 'undo');
 	else if (modifier && key === 'y') step('redo');
+	else if (event.shiftKey && event.key === 'ArrowUp') addThirdSelected(1);
+	else if (event.shiftKey && event.key === 'ArrowDown') addThirdSelected(-1);
 	else if (event.key === 'ArrowUp') transposeSelected(1);
 	else if (event.key === 'ArrowDown') transposeSelected(-1);
+	// M6 Slice 7 correction shortcuts (listed in index.html), on the main
+	// canvas's selection; a modified key is the browser's, not ours.
+	else if (modifier || event.altKey) return;
+	else if (event.key === 'Delete' || event.key === 'Backspace') deleteSelected();
+	else if (key === 'r') toggleRestSelected();
+	else if (key === 't') toggleTieSelected();
+	else if (event.key === '.') toggleDotSelected();
+	else if (/^[1-7]$/.test(event.key)) setValueSelected(Number(event.key));
 	else return;
 	event.preventDefault();
 });

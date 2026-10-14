@@ -144,3 +144,57 @@ function divisionValueKey(text: string, divisions: number): string {
 	const g = a === 0 ? 1 : a;
 	return `${value / g}/${(divisions * 4) / g}`;
 }
+
+/**
+ * A note's payload (`Note.passthrough`) with some markup filtered out (M6
+ * Slice 7's correction ops): `drop` is asked about every top-level element
+ * (`inNotations: false`, e.g. a bare `<tie>`) and every child of a
+ * `<notations>` (`inNotations: true`, e.g. a `<tied>` or `<tuplet>`). A
+ * `<notations>` left with no children is dropped whole, since export writes
+ * its own when the model has something to state. Returns `payload` itself
+ * (no allocation) when nothing matched, so an edit that strips nothing leaves
+ * the shared, immutable payload untouched; otherwise a fresh frozen list with
+ * fresh frozen `<notations>` nodes where they were cut down.
+ */
+export function withoutNoteMarkup(
+	payload: readonly OpaqueElement[],
+	drop: (element: OpaqueElement, inNotations: boolean) => boolean
+): readonly OpaqueElement[] {
+	let changed = false;
+	const kept: OpaqueElement[] = [];
+	for (const element of payload) {
+		if (drop(element, false)) {
+			changed = true;
+			continue;
+		}
+		if (element.name === 'notations') {
+			const children = element.children.filter((c) => !drop(c, true));
+			if (children.length !== element.children.length) {
+				changed = true;
+				if (children.length > 0) kept.push(Object.freeze({ ...element, children: Object.freeze(children) }));
+				continue;
+			}
+		}
+		kept.push(element);
+	}
+	if (!changed) return payload;
+	return kept.length === 0 ? NO_PASSTHROUGH : Object.freeze(kept);
+}
+
+/**
+ * `payload` without tie markup of `type` (`'start'`, `'stop'`, or both when
+ * omitted): a bare `<tie type>` and a `<notations><tied type>`. A note's
+ * payload only ever holds a tie end the model did *not* link (an OMR tie that
+ * found no partner, e.g. at a page join; see `finalizeNotePassthrough` in the
+ * importer), so a correction op that links or clears a tie at that end strips
+ * the stray markup too, or export would write the end twice (or write one the
+ * user just removed).
+ */
+export function withoutTieMarkup(payload: readonly OpaqueElement[], type?: 'start' | 'stop'): readonly OpaqueElement[] {
+	return withoutNoteMarkup(
+		payload,
+		(element, inNotations) =>
+			(inNotations ? element.name === 'tied' : element.name === 'tie') &&
+			(type === undefined || element.attrs.type === type)
+	);
+}

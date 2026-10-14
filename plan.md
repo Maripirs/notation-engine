@@ -1029,7 +1029,7 @@ element by Slice 3 and stays there.
       redraw of one of them repaints its segment (tested). Acceptance:
       layout/collision unit tests, cross-system wedge test, corpus
       `<dynamics>`/`<wedge>` promoted, round trip preserved.
-- [ ] **Slice 7: Correction ops (E2 parity).** Model edit ops, each
+- [x] **Slice 7: Correction ops (E2 parity).** Model edit ops, each
       recording one `EditHistory` entry and returning the touched
       measures for scoped redraw: `noteToRest` (E2's delete, keeps
       duration so nothing shifts), `restToNote(pitch)`, `setDuration`
@@ -3016,3 +3016,84 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   note x without changing width (the slur precedent); per-staff playback
   levels ignore a grand staff's shared dynamics; no edit op adds or removes
   a dynamic or hairpin yet.
+- 2026-10-14: M6 Slice 7 (correction ops) done, via subagent. Six ops on
+  `Score`, each returning the touched measures as `MeasureRef[]` (`{
+  staffIndex, measureIndex }`, deduplicated, sorted; a tie partner's or slur
+  end's measure across a barline included) or `null` for both refusal and
+  no-op, so `EditHistory.record` skips either; the caller records them like
+  a transpose. A kept note keeps its id; `#measureOfNote`,
+  `#tieSourceOfTarget` and `#crossStaffBeamOfNote` are maintained on every
+  removal. Nothing ever moves outside the edited voice of the edited
+  measure, so onset anchors (dynamics, hairpins, measure passthrough) stay
+  valid. Semantics decided: `noteToRest(id)` keeps value/dots/tuplet,
+  clears ties at both ends (partner's `tiedToId` too), drops articulations
+  and the note's own payload, keeps a fermata (a rest fermata is real
+  notation); a slur ending on it moves to the nearest pitched event inside
+  the slur (same voice preferred), or is dropped if nothing is left inside;
+  a cross-staff beam loses it and is dropped below two notes per side. On a
+  chord head with siblings it removes the head instead (`removeChordMember`
+  rules). `removeChordMember(id)` refuses a lone note; removing the anchor
+  rebuilds the next head as anchor in the old anchor's slot (same id, its
+  own ties/payload, the chord's value/dots/tuplet, plus any passthrough
+  `<tuplet>` bracket the old anchor had); the removed head's articulations
+  and fermata, slurs and cross-staff beam membership move to the remaining
+  anchor. `restToNote(id, pitch)` keeps the duration and marks, drops the
+  rest's payload (its `<rest>` display-step is meaningless on a note); a
+  whole-measure rest becomes one note of the measure's length via the new
+  model `noteValueForWholes` (4/4, 2/2 whole; 3/4, 6/8 dotted half; 7/8
+  double-dotted half) and is refused when none exists (5/4, 5/8).
+  `setDuration(id, value, dots)` changes the whole event (members follow
+  the anchor): shorter pads with rests right after it (`restValuesFor`:
+  undotted, each aligned to its own length, so half to eighth on beat 1
+  gives eighth rest + quarter rest); longer consumes the rests that directly
+  follow in the voice (leftover re-spelled as rests), then an under-full
+  voice's slack, and refuses a pitched note in the way or a total past
+  capacity; tuplets refused (the note's, or a tupleted rest it would
+  consume), so Slice 3's passthrough `<tuplet>` brackets stay valid (any
+  stray one on a changed head is stripped); a measure rest becomes an
+  ordinary rest plus padding; ties stay; a head longer than an eighth
+  leaves its cross-staff beam. `addChordMember(id, pitch)` appends a member
+  after the event's last head with the anchor's value/dots/tuplet/voice,
+  refusing a rest or a pitch already in the chord. The undoable tie op is
+  `editTie(source, target | null)` (plus `tieTargetFor(source)`), not a
+  stricter `setTie`, because import and `buildScore` still wire resolved
+  ties through the low-level `setTie` and import does not guarantee
+  adjacency; `editTie` requires the same-pitch head of the voice's next
+  event (in the measure or the next one) and refuses a target another note
+  already ties into; linking strips the source's passthrough `<tie>`/
+  `<tied>` start and the target's stop (new `withoutTieMarkup`/
+  `withoutNoteMarkup` in `passthrough.ts`), and untying strips a dangling
+  OMR start too, so export writes each end once. `deriveValueFromDuration`
+  in the importer now calls the model's `noteValueForWholes` (`NOTE_VALUES`
+  moved to the model). Re-layout of the touched measures recomputes
+  accidentals, beaming, second displacement and direction baselines; a
+  layout test checks each op's touched measures against a fresh
+  `layoutScore`, scoped or via the full-layout fallback (pitch/tie ops stay
+  scoped, most duration and chord edits change width and fall back).
+  Demo: shortcuts on the main canvas's selection, listed in a new
+  `#shortcuts` block in `index.html`: Delete/Backspace note to rest (chord
+  head removal), R rest/note toggle (middle line of the clef, spelled in the
+  key), 1-7 whole..64th (undotted), `.` toggle dot, Shift+Up/Down add a
+  diatonic third above/below, T tie to next / untie; each through
+  `applyCorrection` (record, scoped redraw of every touched measure or full
+  layout, selection moves to a surviving head when the selected one is
+  removed); undo/redo drop a selection whose note no longer exists and say
+  "Undid the last edit". Verified headlessly in system Chrome: opened Les
+  Djinns, selected Part 2 m3's quarter rest, R made it a Bb4 (no
+  accidental), 2 was refused (a note follows), R made it a rest again, undo
+  restored the note, undoing all returned to "Saved"; no page errors.
+  Tests: 582 -> 626 (28 model in new `src/model/correction-ops.test.ts`, 7
+  io in new `src/io/correction-ops.test.ts` incl. passthrough tie markup,
+  tuplet bracket hand-over, export -> re-import after every op on a built
+  score with exact undo of every export, and a Les Djinns page-1 fix flow;
+  9 layout in new `src/layout/correction-layout.test.ts`); `check`/`build`
+  green. Bench scoped edit 0.356/0.287/0.280/0.334 ms at 4/16/64/124
+  measures, full redraw 30.7 ms at 124, i.e. unchanged.
+  Noticed, not fixed: rests consumed by a lengthening lose their fermatas
+  and payloads silently; padding uses undotted rests even in compound time
+  (correct, not always the shortest spelling); the demo's digit keys reset
+  dots (`.` re-adds one); there is no op for inserting tied notes when a
+  measure-rest length has no single value, nor for moving a chord head
+  between voices; `transposeNote` still returns a bare measure index rather
+  than `MeasureRef[]`; Les Djinns page 1 has no British-rest misreads to fix
+  (its rests are real), so the demo flow fixes a real rest as a stand-in.

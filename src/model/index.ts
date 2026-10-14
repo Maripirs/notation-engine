@@ -21,8 +21,10 @@ export type {
 	MeasureValidation,
 	NoteId,
 	NoteSpec,
+	MeasureRef,
 	NoteValue,
 	Part,
+	SpelledDuration,
 	ScoreOptions,
 	Slur,
 	SlurSpec,
@@ -42,7 +44,7 @@ export type {
 export { DYNAMIC_KINDS, NO_DYNAMICS, positionBefore, sortDynamics } from './directions.js';
 export { assertScoresEquivalent } from './score-equivalence.js';
 export type { Fraction, MeasurePassthrough, OpaqueElement } from './passthrough.js';
-export { NO_PASSTHROUGH, opaqueElementKey } from './passthrough.js';
+export { NO_PASSTHROUGH, opaqueElementKey, withoutNoteMarkup, withoutTieMarkup } from './passthrough.js';
 export { EditHistory } from './edit-history.js';
 export type { EditHistoryOptions } from './edit-history.js';
 export {
@@ -55,6 +57,10 @@ export {
 	measureDurationWholes,
 	Note,
 	NOTE_VALUE_WHOLES,
+	NOTE_VALUES,
+	noteValueForWholes,
+	restValuesFor,
+	spelledWholes,
 	NO_ARTICULATIONS,
 	NO_CLEF_CHANGES,
 	normalizeArticulations,

@@ -60,7 +60,8 @@ import {
 	measureCapacityWholes,
 	NO_PASSTHROUGH,
 	sortDynamics,
-	NOTE_VALUE_WHOLES,
+	NOTE_VALUES,
+	noteValueForWholes,
 	Score,
 	type Articulation,
 	type ClefType,
@@ -1153,8 +1154,6 @@ const KNOWN_NOTE_PASSTHROUGH: ReadonlySet<string> = new Set([
 	'listen'
 ]);
 
-const NOTE_VALUES: readonly NoteValue[] = ['whole', 'half', 'quarter', 'eighth', '16th', '32nd', '64th'];
-
 /** The note a following `<chord/>` note joins: the last `<note>` built in
  *  the current measure, with where it landed. */
 interface ChordState {
@@ -1735,13 +1734,8 @@ function deriveValueFromDuration(
 		let wholes = Number.parseFloat(durationText) / (divisions * 4);
 		if (Number.isFinite(wholes)) {
 			if (tuplet) wholes *= tuplet.actualNotes / tuplet.normalNotes;
-			const dotCandidates: readonly (0 | 1 | 2)[] = statedDots > 0 ? [statedDots] : [0, 1, 2];
-			for (const dots of dotCandidates) {
-				const dotMultiplier = 2 - 2 ** -dots;
-				for (const value of NOTE_VALUES) {
-					if (Math.abs(NOTE_VALUE_WHOLES[value] * dotMultiplier - wholes) < 1e-6) return { value, dots };
-				}
-			}
+			const spelled = noteValueForWholes(wholes, statedDots > 0 ? [statedDots] : [0, 1, 2]);
+			if (spelled) return spelled;
 		}
 	}
 	report.fallback(

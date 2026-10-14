@@ -80,6 +80,22 @@
 			#dirty.dirty {
 				color: #b45309;
 			}
+			#shortcuts {
+				margin: 0 0 0.75rem;
+				font-size: 0.9rem;
+			}
+			#shortcuts summary {
+				cursor: pointer;
+				font-weight: 600;
+			}
+			#shortcuts ul {
+				margin: 0.25rem 0 0;
+				padding-left: 1.25rem;
+				line-height: 1.7;
+			}
+			#shortcuts p.lede {
+				margin: 0.5rem 0 0;
+			}
 			#status {
 				margin: 0;
 				font-size: 0.9rem;
@@ -150,6 +166,26 @@
 			<label>Open MusicXML <input id="open" type="file" accept=".musicxml,.xml,application/vnd.recordare.musicxml+xml" /></label>
 			<span id="dirty">Saved</span>
 		</div>
+		<details id="shortcuts" open>
+			<summary>Correction shortcuts (M6 Slice 7), on the selected note</summary>
+			<p class="lede">
+				For fixing rough OMR output, e.g. Les Djinns opened from
+				<code>src/test/fixtures/sfcc/</code>. Every one is a single undoable step
+				(<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>), and repaints only the measures it
+				touched unless the measure's width changed. Nothing ever shifts into the next measure: a
+				shorter value is padded with rests, a longer one takes time from the rests right after it
+				(and is refused if a note is in the way).
+			</p>
+			<ul>
+				<li><kbd>Delete</kbd> / <kbd>Backspace</kbd>: note to rest of the same length (on a chord head: remove that head)</li>
+				<li><kbd>R</kbd>: rest to note on the staff's middle line, or note to rest</li>
+				<li><kbd>1</kbd>&ndash;<kbd>7</kbd>: whole, half, quarter, eighth, 16th, 32nd, 64th</li>
+				<li><kbd>.</kbd>: toggle a dot</li>
+				<li><kbd>Shift</kbd>+<kbd>&uarr;</kbd> / <kbd>Shift</kbd>+<kbd>&darr;</kbd>: add a chord head a third above / below</li>
+				<li><kbd>T</kbd>: tie to the same pitch in the next note, or untie</li>
+				<li><kbd>&uarr;</kbd> / <kbd>&darr;</kbd>: transpose a semitone</li>
+			</ul>
+		</details>
 		<p id="status">Loading Bravura&hellip;</p>
 		<pre id="timings"></pre>
 
