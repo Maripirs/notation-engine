@@ -7,5 +7,5 @@ export {
 	STAFF_SPACES_PER_EM
 } from './glyph-metrics.js';
 export { loadSmuflFont } from './font.js';
-export type { CanvasRendererOptions } from './renderer.js';
+export type { CanvasRendererOptions, MeasureRange } from './renderer.js';
 export { CanvasRenderer } from './renderer.js';

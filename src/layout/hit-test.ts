@@ -50,3 +50,34 @@ export function hitTest(layout: LaidOutScore, x: number, y: number): HitResult |
 	}
 	return null;
 }
+
+/** A measure resolved from a point (M5 Slice 4), addressed by the same
+ *  `(staffIndex, measureIndex)` pair `HitResult` carries. */
+export interface MeasureHitResult {
+	/** Which staff (`Score.staves`) the measure belongs to. */
+	readonly staffIndex: number;
+	/** The measure's staff-local index (`LaidOutMeasure.index`). */
+	readonly measureIndex: number;
+}
+
+/**
+ * Resolve a point in canvas coordinates to the measure whose region contains
+ * it, or `null` for empty space outside every measure (M5 Slice 4).
+ *
+ * `hitTest` above answers "which note", which is the wrong question for a
+ * measure-range selection: a user shift-clicking or dragging across bars
+ * means the bar, wherever inside it the pointer lands, including the blank
+ * staff space between noteheads that `hitTest` reports as `null`. Measure
+ * regions never overlap (see `CanvasRenderer.redrawMeasure`'s own comment),
+ * so the first region containing the point is the only one, and the same
+ * `containsPoint` scan works unchanged across staves and across systems after
+ * cast-off. Coordinate conversion stays the caller's job, as for `hitTest`.
+ */
+export function hitTestMeasure(layout: LaidOutScore, x: number, y: number): MeasureHitResult | null {
+	for (const measure of layout.measures) {
+		if (containsPoint(measure.region, x, y)) {
+			return { staffIndex: measure.staffIndex, measureIndex: measure.index };
+		}
+	}
+	return null;
+}

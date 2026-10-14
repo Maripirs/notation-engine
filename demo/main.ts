@@ -15,6 +15,7 @@ import {
 	EditHistory,
 	exportMusicXml,
 	hitTest,
+	hitTestMeasure,
 	layoutScore,
 	loadSmuflFont,
 	PlaybackEngine,
@@ -635,26 +636,109 @@ function sizeStaffSelectCanvas(): void {
 	staffSelectCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
-staffSelectCanvas.addEventListener('pointerdown', (event) => {
-	// Same coordinate-scaling logic as the main canvas's own handler, above.
+/** Same coordinate-scaling logic as the main canvas's own handler, above:
+ *  pointer event to layout coordinates. Shared by every pointer handler on
+ *  this canvas (M5 Slice 4 added `pointermove` alongside `pointerdown`). */
+function staffSelectPoint(event: PointerEvent): { x: number; y: number } {
 	const rect = staffSelectCanvas.getBoundingClientRect();
 	const scaleX = staffSelectLayout.width / rect.width;
 	const scaleY = staffSelectLayout.height / rect.height;
-	const hit = hitTest(
-		staffSelectLayout,
-		(event.clientX - rect.left) * scaleX,
-		(event.clientY - rect.top) * scaleY
-	);
+	return { x: (event.clientX - rect.left) * scaleX, y: (event.clientY - rect.top) * scaleY };
+}
+
+/** Redraw each affected `(staffIndex, index)` pair once, against its own
+ *  staff. Deduplicated because one gesture can change both the note
+ *  selection and the measure range, and both may name the same measure. */
+function redrawStaffSelectPairs(pairs: readonly { staffIndex: number; index: number }[]): string[] {
+	const seen = new Set<string>();
+	for (const { staffIndex, index } of pairs) {
+		const key = `${staffIndex}:${index}`;
+		if (seen.has(key)) continue;
+		seen.add(key);
+		staffSelectRenderer.redrawMeasure(index, staffIndex);
+	}
+	return [...seen].map((key) => {
+		const [staffIndex, index] = key.split(':').map(Number);
+		return `staff ${staffIndex} measure ${index! + 1}`;
+	});
+}
+
+// Measure-range selection (M5 Slice 4). The anchor is the measure the last
+// plain click (or first shift-click) landed on; a shift-click or a drag then
+// sets the range from the anchor to the measure under the pointer. Ranges are
+// single-staff, so a shift-click on the other staff starts a fresh one-measure
+// range there instead of spanning staves. A plain click clears the range and
+// keeps M4 Slice 1's note selection behaviour exactly as it was.
+let measureAnchor: { staffIndex: number; measureIndex: number } | null = null;
+let measureDragging = false;
+
+function describeRange(redrew: string[]): string {
+	const range = staffSelectRenderer.measureRange;
+	const what = range
+		? `Measure range: staff ${range.staffIndex}, measures ${range.from + 1}-${range.to + 1}.`
+		: 'No measure range.';
+	return `${what} Redrew ${redrew.length} measure(s)${redrew.length ? `: ${redrew.join(', ')}` : ''}.`;
+}
+
+staffSelectCanvas.addEventListener('pointerdown', (event) => {
+	const { x, y } = staffSelectPoint(event);
+	const measureHit = hitTestMeasure(staffSelectLayout, x, y);
+
+	if (event.shiftKey && measureHit) {
+		if (!measureAnchor || measureAnchor.staffIndex !== measureHit.staffIndex) measureAnchor = measureHit;
+		const changed = staffSelectRenderer.setMeasureRange({
+			staffIndex: measureAnchor.staffIndex,
+			from: measureAnchor.measureIndex,
+			to: measureHit.measureIndex
+		});
+		staffSelectStatus.textContent = describeRange(redrawStaffSelectPairs(changed));
+		return;
+	}
+
+	const hit = hitTest(staffSelectLayout, x, y);
 	// The fixed version of the main canvas's handler above: each affected
 	// pair is redrawn against its own `staffIndex`, so a click on the bass
 	// staff never touches the treble staff's same-numbered measure.
-	const changed = staffSelectRenderer.setSelection(hit ? hit.noteId : null);
-	for (const { staffIndex, index } of changed) staffSelectRenderer.redrawMeasure(index, staffIndex);
+	const changed = [
+		...staffSelectRenderer.setSelection(hit ? hit.noteId : null),
+		...staffSelectRenderer.setMeasureRange(null)
+	];
+	const redrew = redrawStaffSelectPairs(changed);
+	measureAnchor = measureHit;
+	if (measureHit) {
+		measureDragging = true;
+		staffSelectCanvas.setPointerCapture(event.pointerId);
+	}
 	staffSelectStatus.textContent = hit
 		? `Selected note ${hit.noteId} on staff ${hit.staffIndex} (${hit.staffIndex === 0 ? 'treble' : 'bass'}), ` +
-			`measure ${hit.measureIndex + 1}. Redrew staff ${hit.staffIndex}'s measure ${hit.measureIndex + 1} only.`
-		: 'Nothing selected. Click a notehead or a rest.';
+			`measure ${hit.measureIndex + 1}. Redrew ${redrew.length ? `${redrew.join(', ')} only` : 'nothing'}.`
+		: 'Nothing selected. Click a notehead or a rest, or shift-click/drag across measures. ' +
+			`Redrew ${redrew.length} measure(s).`;
 });
+
+staffSelectCanvas.addEventListener('pointermove', (event) => {
+	if (!measureDragging || !measureAnchor || (event.buttons & 1) === 0) return;
+	const { x, y } = staffSelectPoint(event);
+	const measureHit = hitTestMeasure(staffSelectLayout, x, y);
+	// Ignore space between measures and the other staff: the range is
+	// single-staff, so the drag simply holds its last range there.
+	if (!measureHit || measureHit.staffIndex !== measureAnchor.staffIndex) return;
+	// A press that never leaves its own measure stays a plain click, not a
+	// one-measure range, until the pointer actually crosses into another one.
+	if (staffSelectRenderer.measureRange === null && measureHit.measureIndex === measureAnchor.measureIndex) return;
+	const changed = staffSelectRenderer.setMeasureRange({
+		staffIndex: measureAnchor.staffIndex,
+		from: measureAnchor.measureIndex,
+		to: measureHit.measureIndex
+	});
+	if (changed.length > 0) staffSelectStatus.textContent = describeRange(redrawStaffSelectPairs(changed));
+});
+
+const endMeasureDrag = () => {
+	measureDragging = false;
+};
+staffSelectCanvas.addEventListener('pointerup', endMeasureDrag);
+staffSelectCanvas.addEventListener('pointercancel', endMeasureDrag);
 
 // Temporary debug control (M4 Slice 2): confirms `setPlaybackCursor` lands
 // correctly across staves without a second `PlaybackEngine`/`AudioContext`

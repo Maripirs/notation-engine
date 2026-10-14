@@ -38,6 +38,23 @@ export interface CanvasRendererOptions {
 	 * read as the same thing on screen.
 	 */
 	readonly playbackCursor?: string;
+	/**
+	 * Translucent fill painted over the whole region of every measure in the
+	 * current measure range (M5 Slice 4). A background tint, not an ink
+	 * colour, and deliberately a pale blue distinct from both `selection` and
+	 * `playbackCursor`: see `#paintMeasureRangeTint`'s own comment on why.
+	 */
+	readonly measureRange?: string;
+}
+
+/** A contiguous run of measures on one staff (M5 Slice 4), inclusive at both
+ *  ends. `from`/`to` are staff-local measure indices (`LaidOutMeasure.index`)
+ *  and may be passed in either order; `CanvasRenderer.setMeasureRange`
+ *  normalizes them so `from <= to`. */
+export interface MeasureRange {
+	readonly staffIndex: number;
+	readonly from: number;
+	readonly to: number;
 }
 
 const DEFAULTS = {
@@ -46,7 +63,8 @@ const DEFAULTS = {
 	foreground: '#111111',
 	background: '#ffffff',
 	selection: '#c2410c',
-	playbackCursor: '#0369a1'
+	playbackCursor: '#0369a1',
+	measureRange: 'rgba(37, 99, 235, 0.12)'
 } as const;
 
 export class CanvasRenderer {
@@ -60,6 +78,9 @@ export class CanvasRenderer {
 	 *  array (possibly empty) rather than a nullable single id like
 	 *  `setSelection` does: a cursor is inherently a set, a selection is not. */
 	#playbackCursorNoteIds: ReadonlySet<NoteId> = new Set();
+	/** The current measure range (M5 Slice 4), always stored normalized
+	 *  (`from <= to`), or `null` when no range is active. */
+	#measureRange: MeasureRange | null = null;
 
 	/**
 	 * Measure indices painted by the most recent draw call, in the order they
@@ -89,7 +110,8 @@ export class CanvasRenderer {
 			foreground: options.foreground ?? DEFAULTS.foreground,
 			background: options.background === undefined ? DEFAULTS.background : options.background,
 			selection: options.selection ?? DEFAULTS.selection,
-			playbackCursor: options.playbackCursor ?? DEFAULTS.playbackCursor
+			playbackCursor: options.playbackCursor ?? DEFAULTS.playbackCursor,
+			measureRange: options.measureRange ?? DEFAULTS.measureRange
 		};
 	}
 
@@ -181,6 +203,60 @@ export class CanvasRenderer {
 		return [...affected.values()];
 	}
 
+	get measureRange(): MeasureRange | null {
+		return this.#measureRange;
+	}
+
+	/**
+	 * Change the measure range (M5 Slice 4), returning the `(staffIndex,
+	 * index)` pairs whose membership changed so the caller can redraw exactly
+	 * those. `null` clears the range. `from`/`to` may arrive in either order
+	 * (a drag leftwards from its anchor produces `from > to`) and are
+	 * normalized here, so callers never have to.
+	 *
+	 * Same diff-and-return shape as `setSelection` and `setPlaybackCursor`
+	 * above, with one deliberate difference: this returns *only* the
+	 * symmetric difference of the old and new member sets, not their union.
+	 * Those two can afford the union because they touch a handful of
+	 * measures at most; a range can span a whole staff, and growing a
+	 * twenty-measure range by one bar should repaint one measure, not
+	 * twenty-one. A measure that stays in the range keeps its tint, so
+	 * repainting it would be pure waste. Pairs are deduplicated by
+	 * `staffIndex:index` and limited to measures that actually exist in the
+	 * current layout, so an out-of-bounds `to` never yields a pair
+	 * `redrawMeasure` would silently ignore anyway. Setting the same range
+	 * again returns `[]`.
+	 */
+	setMeasureRange(range: MeasureRange | null): { staffIndex: number; index: number }[] {
+		const next =
+			range === null
+				? null
+				: {
+						staffIndex: range.staffIndex,
+						from: Math.min(range.from, range.to),
+						to: Math.max(range.from, range.to)
+					};
+		const members = (r: MeasureRange | null): Set<string> => {
+			const keys = new Set<string>();
+			if (r === null) return keys;
+			for (const m of this.#layout.measures) {
+				if (m.staffIndex === r.staffIndex && m.index >= r.from && m.index <= r.to) {
+					keys.add(`${m.staffIndex}:${m.index}`);
+				}
+			}
+			return keys;
+		};
+		const before = members(this.#measureRange);
+		const after = members(next);
+		this.#measureRange = next;
+		const affected: { staffIndex: number; index: number }[] = [];
+		for (const m of this.#layout.measures) {
+			const key = `${m.staffIndex}:${m.index}`;
+			if (before.has(key) !== after.has(key)) affected.push({ staffIndex: m.staffIndex, index: m.index });
+		}
+		return affected;
+	}
+
 	/** Repaint the whole score. The baseline the region-scoped path is measured against. */
 	drawAll(): void {
 		this.lastRedrawnMeasures = [];
@@ -194,6 +270,7 @@ export class CanvasRenderer {
 		this.#ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;
 		this.#ctx.textBaseline = 'alphabetic';
 		for (const measure of this.#layout.measures) {
+			if (this.#inMeasureRange(measure.staffIndex, measure.index)) this.#paintMeasureRangeTint(measure.region);
 			this.#drawOps(measure.ops);
 			this.lastRedrawnMeasures.push(measure.index);
 			this.lastRedrawnRegions.push(measure.region);
@@ -239,11 +316,36 @@ export class CanvasRenderer {
 		const measure = this.#layout.measures.find((m) => m.staffIndex === staffIndex && m.index === index);
 		if (!measure) return;
 		this.#paintBackground(measure.region);
+		if (this.#inMeasureRange(staffIndex, index)) this.#paintMeasureRangeTint(measure.region);
 		this.#ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;
 		this.#ctx.textBaseline = 'alphabetic';
 		this.#drawOps(measure.ops);
 		this.lastRedrawnMeasures.push(index);
 		this.lastRedrawnRegions.push(measure.region);
+	}
+
+	#inMeasureRange(staffIndex: number, index: number): boolean {
+		const range = this.#measureRange;
+		return range !== null && range.staffIndex === staffIndex && index >= range.from && index <= range.to;
+	}
+
+	/**
+	 * Tint one range measure's region (M5 Slice 4): a translucent fill laid
+	 * over the freshly painted background and *under* the measure's ops, so
+	 * every ink op still draws on top at full strength.
+	 *
+	 * A background fill rather than an ink recolour, deliberately. Note
+	 * selection and the playback cursor both recolour ink (see `#drawOps`),
+	 * so a third ink colour would compete with them for the same pixels and
+	 * need its own precedence rule; a background tint occupies a different
+	 * layer entirely, so a selected or cursor-highlighted note inside the
+	 * range keeps its own ink colour and the range still reads as a range.
+	 * It stays region-scoped for the same reason the background does: it
+	 * fills exactly `measure.region`, and regions never overlap.
+	 */
+	#paintMeasureRangeTint(rect: Rect): void {
+		this.#ctx.fillStyle = this.#options.measureRange;
+		this.#ctx.fillRect(rect.x, rect.y, rect.width, rect.height);
 	}
 
 	#paintBackground(rect: Rect): void {

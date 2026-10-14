@@ -7,6 +7,6 @@ export {
 	relayoutMeasure,
 	stemDirectionForNotes
 } from './layout.js';
-export type { HitResult } from './hit-test.js';
-export { containsPoint, hitTest } from './hit-test.js';
+export type { HitResult, MeasureHitResult } from './hit-test.js';
+export { containsPoint, hitTest, hitTestMeasure } from './hit-test.js';
 export { regionForNote } from './region-for-note.js';

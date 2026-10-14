@@ -720,3 +720,172 @@ describe('CanvasRenderer painting a tie curve', () => {
 		}
 	});
 });
+
+describe('CanvasRenderer.setMeasureRange (M5 Slice 4)', () => {
+	// Same 2D containment check the multi-staff blocks above use, for the same
+	// reason: staff 1's measures share x ranges with staff 0's.
+	const withinBox = (rect: Rect, point: { x: number; right: number; y: number; bottom: number }, slack = 0.001) =>
+		point.x >= rect.x - slack &&
+		point.right <= rect.x + rect.width + slack &&
+		point.y >= rect.y - slack &&
+		point.bottom <= rect.y + rect.height + slack;
+
+	// Six measures per staff rather than the three the blocks above use, so a
+	// range has room to grow, shrink and move disjointly without running off
+	// the end of the staff.
+	function twoStaffScore(): Score {
+		const score = new Score({ keyFifths: 0 });
+		score.appendStaff('bass');
+		for (const staffIndex of [0, 1] as const) {
+			for (let i = 0; i < 6; i++) {
+				const measure = score.appendMeasure(staffIndex);
+				for (const pitch of ['C4', 'D4', 'E4', 'F4']) {
+					score.appendNote(measure, { pitch: parsePitch(pitch), value: 'quarter' });
+				}
+			}
+		}
+		return score;
+	}
+
+	const sortPairs = (pairs: { staffIndex: number; index: number }[]) =>
+		[...pairs].sort((a, b) => a.staffIndex - b.staffIndex || a.index - b.index);
+	const pairs = (staffIndex: number, indices: number[]) => indices.map((index) => ({ staffIndex, index }));
+
+	let layout: LaidOutScore;
+	let renderer: CanvasRenderer;
+
+	beforeEach(() => {
+		layout = layoutScore(twoStaffScore());
+		renderer = new CanvasRenderer(recordingContext().ctx, layout);
+	});
+
+	it('setting a range from none returns every member measure', () => {
+		expect(sortPairs(renderer.setMeasureRange({ staffIndex: 0, from: 1, to: 3 }))).toEqual(pairs(0, [1, 2, 3]));
+		expect(renderer.measureRange).toEqual({ staffIndex: 0, from: 1, to: 3 });
+	});
+
+	it('growing returns only the measures that joined', () => {
+		renderer.setMeasureRange({ staffIndex: 0, from: 1, to: 2 });
+		expect(sortPairs(renderer.setMeasureRange({ staffIndex: 0, from: 1, to: 4 }))).toEqual(pairs(0, [3, 4]));
+	});
+
+	it('shrinking returns only the measures that left', () => {
+		renderer.setMeasureRange({ staffIndex: 0, from: 0, to: 4 });
+		expect(sortPairs(renderer.setMeasureRange({ staffIndex: 0, from: 2, to: 4 }))).toEqual(pairs(0, [0, 1]));
+	});
+
+	it('moving to an overlapping range returns only the symmetric difference', () => {
+		renderer.setMeasureRange({ staffIndex: 0, from: 1, to: 3 });
+		expect(sortPairs(renderer.setMeasureRange({ staffIndex: 0, from: 2, to: 4 }))).toEqual(pairs(0, [1, 4]));
+	});
+
+	it('moving to a disjoint range returns both the old and new members', () => {
+		renderer.setMeasureRange({ staffIndex: 0, from: 0, to: 1 });
+		expect(sortPairs(renderer.setMeasureRange({ staffIndex: 0, from: 4, to: 5 }))).toEqual(pairs(0, [0, 1, 4, 5]));
+	});
+
+	it('clearing to null returns every former member', () => {
+		renderer.setMeasureRange({ staffIndex: 1, from: 2, to: 4 });
+		expect(sortPairs(renderer.setMeasureRange(null))).toEqual(pairs(1, [2, 3, 4]));
+		expect(renderer.measureRange).toBeNull();
+		expect(renderer.setMeasureRange(null)).toEqual([]);
+	});
+
+	it('normalizes an out-of-order from/to', () => {
+		expect(sortPairs(renderer.setMeasureRange({ staffIndex: 0, from: 4, to: 2 }))).toEqual(pairs(0, [2, 3, 4]));
+		expect(renderer.measureRange).toEqual({ staffIndex: 0, from: 2, to: 4 });
+		// The same range in the other order is the same range: nothing changes.
+		expect(renderer.setMeasureRange({ staffIndex: 0, from: 2, to: 4 })).toEqual([]);
+	});
+
+	it("moving to another staff returns both staves' members, each with its own staffIndex", () => {
+		renderer.setMeasureRange({ staffIndex: 0, from: 1, to: 2 });
+		expect(sortPairs(renderer.setMeasureRange({ staffIndex: 1, from: 1, to: 2 }))).toEqual([
+			...pairs(0, [1, 2]),
+			...pairs(1, [1, 2])
+		]);
+	});
+
+	it('setting the same range again returns nothing', () => {
+		renderer.setMeasureRange({ staffIndex: 0, from: 1, to: 3 });
+		expect(renderer.setMeasureRange({ staffIndex: 0, from: 1, to: 3 })).toEqual([]);
+	});
+
+	it('never returns measures that do not exist in the layout', () => {
+		expect(sortPairs(renderer.setMeasureRange({ staffIndex: 0, from: 4, to: 99 }))).toEqual(pairs(0, [4, 5]));
+	});
+
+	it('redrawing the returned pairs touches only those measures\' regions', () => {
+		const recorder = recordingContext();
+		const scoped = new CanvasRenderer(recorder.ctx, layout);
+		scoped.setMeasureRange({ staffIndex: 1, from: 1, to: 3 });
+		scoped.drawAll();
+		recorder.calls.length = 0;
+
+		// An overlapping move on staff 1: measure 1 leaves, measure 4 joins, and
+		// measures 2-3 (still members) must not repaint.
+		const changed = scoped.setMeasureRange({ staffIndex: 1, from: 2, to: 4 });
+		expect(sortPairs(changed)).toEqual(pairs(1, [1, 4]));
+		for (const { staffIndex, index } of changed) scoped.redrawMeasure(index, staffIndex);
+
+		const touchedRegions = changed.map(
+			({ staffIndex, index }) => layout.measures.find((m) => m.staffIndex === staffIndex && m.index === index)!.region
+		);
+		expect(recorder.calls.length).toBeGreaterThan(0);
+		for (const call of recorder.calls) {
+			expect(touchedRegions.some((region) => withinBox(region, call))).toBe(true);
+		}
+		for (const m of layout.measures) {
+			if (changed.some((p) => p.staffIndex === m.staffIndex && p.index === m.index)) continue;
+			const intruders = recorder.calls.filter((call) => withinBox(m.region, call));
+			expect(intruders).toEqual([]);
+		}
+	});
+
+	it("paints the tint over a range measure's whole region, after the background and before its ink, and not on a non-range measure", () => {
+		// Records each fillRect's colour and extent together, since this test
+		// needs to know both that the tint was used and exactly where it went.
+		const fills: { style: string; x: number; y: number; width: number; height: number }[] = [];
+		const stub = {
+			font: '',
+			fillStyle: '',
+			strokeStyle: '',
+			textBaseline: 'alphabetic',
+			fillRect(x: number, y: number, width: number, height: number) {
+				fills.push({ style: this.fillStyle, x, y, width, height });
+			},
+			clearRect() {},
+			fillText() {
+				fills.push({ style: this.fillStyle, x: NaN, y: NaN, width: 0, height: 0 });
+			}
+		};
+		const tint = 'rgba(1, 2, 3, 0.5)';
+		const tinted = new CanvasRenderer(stub as unknown as CanvasRenderingContext2D, layout, {
+			background: '#ffffff',
+			foreground: '#000000',
+			measureRange: tint
+		});
+		tinted.setMeasureRange({ staffIndex: 0, from: 1, to: 2 });
+
+		const region = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!.region;
+		tinted.redrawMeasure(1, 0);
+		expect(fills[0]).toEqual({ style: '#ffffff', ...region });
+		expect(fills[1]).toEqual({ style: tint, ...region });
+		expect(fills.slice(2).every((f) => f.style !== tint)).toBe(true);
+		expect(fills.slice(2).some((f) => f.style === '#000000')).toBe(true);
+
+		// Staff 1's same-numbered measure is not in the range: no tint.
+		fills.length = 0;
+		tinted.redrawMeasure(1, 1);
+		expect(fills.some((f) => f.style === tint)).toBe(false);
+
+		// drawAll tints exactly the two range measures.
+		fills.length = 0;
+		tinted.drawAll();
+		const tintFills = fills.filter((f) => f.style === tint);
+		const expected = layout.measures
+			.filter((m) => m.staffIndex === 0 && (m.index === 1 || m.index === 2))
+			.map((m) => ({ style: tint, ...m.region }));
+		expect(tintFills).toEqual(expected);
+	});
+});

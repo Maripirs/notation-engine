@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { createDemoScore } from '../demo-score.js';
-import { hitTest } from './hit-test.js';
+import { createDemoScore, createFullDemoScore, createGrandStaffShowcaseScore } from '../demo-score.js';
+import { hitTest, hitTestMeasure } from './hit-test.js';
 import { layoutScore } from './layout.js';
 
 describe('hitTest', () => {
@@ -67,5 +67,65 @@ describe('hitTest across systems', () => {
 		expect(y).toBeGreaterThan(layout.systems[0]!.topY + 4 * layout.staffSpacePx);
 
 		expect(hitTest(layout, x, y)).toEqual({ noteId: note.id, measureIndex, staffIndex: 0 });
+	});
+});
+
+describe('hitTestMeasure (M5 Slice 4)', () => {
+	// Click points are derived from each measure's own laid-out region rather
+	// than hard-coded pixels, so these tests keep meaning the same thing if
+	// spacing or cast-off ever shifts.
+	const regionCentre = (region: { x: number; y: number; width: number; height: number }) => ({
+		x: region.x + region.width / 2,
+		y: region.y + region.height / 2
+	});
+
+	it('resolves a point inside a measure region to that measure, notes or not', () => {
+		const layout = layoutScore(createDemoScore());
+		for (const measure of layout.measures) {
+			const { x, y } = regionCentre(measure.region);
+			expect(hitTestMeasure(layout, x, y)).toEqual({ staffIndex: 0, measureIndex: measure.index });
+		}
+		// The region's own top-left corner sits in blank staff space, where
+		// `hitTest` would report nothing; a measure hit still resolves it.
+		const first = layout.measures[0]!.region;
+		expect(hitTestMeasure(layout, first.x + 1, first.y + 1)).toEqual({ staffIndex: 0, measureIndex: 0 });
+	});
+
+	it('resolves a measure on a non-zero staff to that staff, not staff 0', () => {
+		const layout = layoutScore(createGrandStaffShowcaseScore());
+		const bass = layout.measures.filter((m) => m.staffIndex === 1);
+		expect(bass.length).toBeGreaterThan(1);
+		for (const measure of bass) {
+			const { x, y } = regionCentre(measure.region);
+			expect(hitTestMeasure(layout, x, y)).toEqual({ staffIndex: 1, measureIndex: measure.index });
+		}
+	});
+
+	it('resolves a measure in a later system after cast-off', () => {
+		const layout = layoutScore(createFullDemoScore(), { staffSpacePx: 11, systemWidthPx: 600 });
+		expect(layout.systems.length).toBeGreaterThan(1);
+		const lastSystem = layout.systems[layout.systems.length - 1]!;
+		const measureIndex = lastSystem.measureIndices[lastSystem.measureIndices.length - 1]!;
+		const measure = layout.measures.find((m) => m.staffIndex === 0 && m.index === measureIndex)!;
+		const { x, y } = regionCentre(measure.region);
+		// Really below the first system, not measure 0 by accident.
+		expect(y).toBeGreaterThan(layout.systems[0]!.topY + 4 * layout.staffSpacePx);
+		expect(hitTestMeasure(layout, x, y)).toEqual({ staffIndex: 0, measureIndex });
+	});
+
+	it('resolves a bass-staff measure in a later system of a multi-staff score', () => {
+		const layout = layoutScore(createGrandStaffShowcaseScore(), { staffSpacePx: 11, systemWidthPx: 300 });
+		expect(layout.systems.length).toBeGreaterThan(1);
+		const lastSystem = layout.systems[layout.systems.length - 1]!;
+		const measureIndex = lastSystem.measureIndices[0]!;
+		const measure = layout.measures.find((m) => m.staffIndex === 1 && m.index === measureIndex)!;
+		const { x, y } = regionCentre(measure.region);
+		expect(hitTestMeasure(layout, x, y)).toEqual({ staffIndex: 1, measureIndex });
+	});
+
+	it('returns null for empty space outside every measure', () => {
+		const layout = layoutScore(createDemoScore());
+		expect(hitTestMeasure(layout, layout.width / 2, 0)).toBeNull();
+		expect(hitTestMeasure(layout, layout.width - 1, layout.height / 2)).toBeNull();
 	});
 });

@@ -819,7 +819,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       Cmd/Ctrl+Z / Cmd/Ctrl+Shift+Z in `npm run dev` reverse and replay a
       sequence of transposes, with the dirty indicator clearing on save
       and reappearing on the next edit.
-- [ ] **Slice 4 — Measure-range selection.** Measure-level hit-testing
+- [x] **Slice 4 — Measure-range selection.** Measure-level hit-testing
       (`hitTestMeasure(layout, x, y): { staffIndex, measureIndex } | null`,
       alongside `hit-test.ts`'s existing note lookup) and a
       `CanvasRenderer.setMeasureRange(range: { staffIndex, from, to } |
@@ -2274,4 +2274,21 @@ divisi splits). Unscoped.
   restarted on every onset; the wrapper is now `position: relative` and it
   scrolls only when the measure is off screen. Verified in headless Chrome:
   the score box now scrolls once per system, top to bottom. 379 tests pass.
-
+- 2026-10-14: M5 Slice 4 (measure-range selection) done, via subagent,
+  reviewed and re-verified in the main session. `hitTestMeasure(layout, x,
+  y)` in `hit-test.ts` resolves a point to `{ staffIndex, measureIndex }` by
+  region containment (blank staff space inside a bar counts, unlike
+  `hitTest`). `CanvasRenderer.setMeasureRange(range | null)` stores a
+  normalized single-staff `MeasureRange` and, unlike `setSelection`/
+  `setPlaybackCursor`, returns only the symmetric difference of old and new
+  members, so growing a long range by one bar repaints one measure. The
+  `measureRange` option is a translucent region fill painted under the
+  measure's ops (in `drawAll` and region redraws), not an ink recolour, so it
+  composes with note selection and the playback cursor without a precedence
+  rule. Demo: on the grand-staff canvas, click sets the anchor, shift-click or
+  drag extends the range on the same staff; verified headlessly in Chrome
+  (only changed measures repaint), and manual browser check passed (user,
+  2026-10-14). 396 tests pass; `check`/`build` green.
+  Noted, not fixed: a small pre-existing gap in the barline joining the two
+  grand-staff staves, and em dashes in three `musicxml-import.test.ts` test
+  names.

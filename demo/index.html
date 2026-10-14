@@ -171,13 +171,15 @@
 			instead. The button below is M4 Slice 2's own debug control: it calls
 			<code>setPlaybackCursor</code> directly with a hand-picked chord spanning both staves, with
 			no audio attached, to confirm the highlight lands on the right staff without needing a
-			second <code>PlaybackEngine</code>.
+			second <code>PlaybackEngine</code>. M5 Slice 4 adds measure-range selection: shift-click a
+			second measure, or drag across measures, to tint a contiguous range on one staff. Only
+			the measures that join or leave the range repaint.
 		</p>
 		<canvas id="staff-select-demo" class="demo-canvas"></canvas>
 		<div class="controls">
 			<button id="staff-select-cursor-demo">Highlight sample chord across staves</button>
 		</div>
-		<p id="staff-select-status">Click a notehead or a rest on either staff to select it.</p>
+		<p id="staff-select-status">Click a notehead or a rest on either staff to select it, or shift-click/drag across measures to select a range.</p>
 
 		<script type="module" src="./main.ts"></script>
 	</body>
