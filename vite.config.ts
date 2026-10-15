@@ -73,19 +73,35 @@ function inlineBravura(): Plugin {
 	};
 }
 
+// The one source of the version string: `NOTATION_ENGINE_VERSION` is this,
+// substituted as a literal (see src/build-globals.d.ts), so nothing else of
+// package.json ends up in the bundle.
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as {
+	version: string;
+};
+
 export default defineConfig({
 	// `npm run dev` serves the demo page (a plain Vite app rooted at demo/)
 	// against the library source directly, no build step. `npm run build`
-	// switches to library mode and bundles `src/index.ts`.
+	// switches to library mode and bundles two entries: `src/index.ts` (the
+	// package's main export) and `src/examples.ts` (`notation-engine/examples`).
+	// Code both reach (the model, which the showcase scores are built with)
+	// lands in a shared chunk rather than in both files.
 	root: 'demo',
 	plugins: [shipBravura(), inlineBravura()],
+	define: {
+		__NOTATION_ENGINE_VERSION__: JSON.stringify(version)
+	},
 	build: {
 		outDir: '../dist',
 		emptyOutDir: true,
 		lib: {
-			entry: '../src/index.ts',
+			entry: {
+				index: '../src/index.ts',
+				examples: '../src/examples.ts'
+			},
 			formats: ['es'],
-			fileName: 'index'
+			fileName: (_format, name) => `${name}.js`
 		}
 	},
 	test: {

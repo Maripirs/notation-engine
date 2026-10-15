@@ -1223,7 +1223,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       hatch the demo needed, since `EditHistory.undo()` swaps in a different
       `Score` object and `load` would stop playback and scroll to the top.
       `PlaybackEngine` now ends on its own (`onEnd`, `durationSeconds`).
-- [ ] **Slice 4: Public surface + packaging.** Move the `create*Showcase
+- [x] **Slice 4: Public surface + packaging.** Move the `create*Showcase
       Score` fixtures out of the main entry (a `notation-engine/examples`
       subpath, or internal only). Scrub private-project references from
       source comments (`src/index.ts`, `renderer.ts`, `score.ts`,
@@ -1233,6 +1233,13 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       into a scratch project, import every documented entry point.
       Acceptance: smoke test passes; `npm pack --dry-run` lists only
       `dist/`, the font, `OFL.txt`, `LICENSE`, `README.md`.
+      Done as `src/examples.ts` (all showcase scores, a second Vite lib
+      entry; the model they share with the main entry lands in one
+      `dist/score-<hash>.js` chunk), `sideEffects: false`, the version via
+      a Vite `define` from `package.json`, the corpus test renamed to
+      `src/io/corpus.test.ts`, and `npm run smoke` (`scripts/pack-smoke.mjs`:
+      build, pack allowlist, install into a temp ESM project, import both
+      entries in Node, type-check a consumer with `skipLibCheck` off).
 - [ ] **Slice 5: Docs + examples.** Rewrite `README.md` for outsiders:
       what it is, a GIF/screenshot, install, a ~10-line `mountScore`
       quickstart, a feature list and a "known limitations" section
@@ -1369,7 +1376,9 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   jump is re-struck rather than held (Frost Myth m65 is all such ties).
   `firstOnsetSeconds` is wired in only as `ScoreView.seekToNote`; the demo
   has no play-from-note control.
-- [M7] The opt-in corpus test keeps its private name (`sfcc-corpus.test.ts`,
-  its snapshot, `SFCC corpus:` suite titles, "finds all 7 fixtures"); rename
-  to a neutral "corpus" when Slice 4 scrubs private references (the rename
-  regenerates the snapshot file's keys, so re-run with the env var and `-u`).
+- [M7] `vitest.bench.config.ts` lacks the `__NOTATION_ENGINE_VERSION__`
+  `define`, so a benchmark that imports `src/index.ts` would throw a
+  ReferenceError; share the define with `vite.config.ts` if one ever does.
+- [M7] plan.md's Backlog still names Divisi/SFCC specifics (the Lacrymosa
+  `.mxl`, per-score SFCC timings, Frost Myth); decide before the public
+  push whether plan.md ships as is or gets a neutral pass.

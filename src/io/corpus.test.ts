@@ -2,17 +2,17 @@
 //
 // Every `.musicxml` file in the directory named by `NOTATION_CORPUS_DIR` is
 // imported and laid out, and what the import kept, passed through and lost
-// is snapshotted per file. The corpus is a set of real, privately held
-// Audiveris-era choral scores (the 7 SFCC files) that is not in the repo, so
-// the whole file is skipped unless the variable is set:
+// is snapshotted per file. The corpus is a set of real choral scores
+// (Audiveris OMR output) kept outside the repo, so the whole file is skipped
+// unless the variable is set:
 //
 //     NOTATION_CORPUS_DIR=/path/to/scores npm test
 //
-// The committed snapshot is for that 7-file corpus; another directory needs
-// its own (`-u`). The snapshot
-// is the point: each later M6 slice that models an element (dynamics,
-// articulations, ...) shows up as a reviewed diff moving that element out of
-// the passthrough tally, and an accidental regression shows up the same way
+// The committed snapshot is for the maintainer's local corpus (per file name,
+// counts and import diagnostics only, no score content); another directory
+// needs its own (`-u`). The snapshot is the point: each later M6 slice that
+// models an element (dynamics, articulations, ...) shows up as a reviewed
+// diff moving that element out of the passthrough tally, and an accidental regression shows up the same way
 // rather than silently.
 //
 // Since M6 Slice 6 the snapshot also tallies the dynamics (by kind) and
@@ -117,9 +117,9 @@ function unexplainedDifferences(source: XmlElement, exported: XmlElement, droppe
 	return differences;
 }
 
-describe.skipIf(!FIXTURE_DIR)('SFCC corpus: import + layout', () => {
-	it('finds all 7 fixtures', () => {
-		expect(fixtures).toHaveLength(7);
+describe.skipIf(!FIXTURE_DIR)('real-score corpus: import + layout', () => {
+	it('finds at least one .musicxml file', () => {
+		expect(fixtures.length).toBeGreaterThan(0);
 	});
 
 	for (const name of fixtures) {
@@ -229,7 +229,7 @@ describe.skipIf(!FIXTURE_DIR)('SFCC corpus: import + layout', () => {
 	}
 });
 
-describe.skipIf(!FIXTURE_DIR)('SFCC corpus: shared system breaks (M6 Slice 10)', () => {
+describe.skipIf(!FIXTURE_DIR)('real-score corpus: shared system breaks (M6 Slice 10)', () => {
 	// Every staff breaks at the same measures, sharing each barline's x, and
 	// no measure ends past `systemWidthPx` unless it sits alone in its system
 	// (a measure cannot be split, so a lone over-wide one is allowed to).
@@ -256,7 +256,7 @@ describe.skipIf(!FIXTURE_DIR)('SFCC corpus: shared system breaks (M6 Slice 10)',
 	});
 });
 
-describe.skipIf(!FIXTURE_DIR)('SFCC corpus: lossless round trip (M6 Slice 3)', () => {
+describe.skipIf(!FIXTURE_DIR)('real-score corpus: lossless round trip (M6 Slice 3)', () => {
 	for (const name of fixtures) {
 		it(name, () => {
 			const xml = readFileSync(join(FIXTURE_DIR, name), 'utf8');

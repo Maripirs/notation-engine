@@ -3,7 +3,7 @@
 // with it, and after every op `export` still writes MusicXML that re-imports
 // as the same score (on a hand-built score, and on Les Djinns from the
 // local-only corpus when `NOTATION_CORPUS_DIR` points at it, see
-// `sfcc-corpus.test.ts`). The model-only semantics are in
+// `corpus.test.ts`). The model-only semantics are in
 // `src/model/correction-ops.test.ts`.
 
 import { existsSync, readFileSync } from 'node:fs';

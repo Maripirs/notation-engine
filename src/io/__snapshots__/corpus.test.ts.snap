@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
+exports[`real-score corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
 {
   "dropped": {},
   "dynamics": {
@@ -50,7 +50,7 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
 }
 `;
 
-exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 1`] = `
+exports[`real-score corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 1`] = `
 {
   "dropped": {},
   "dynamics": {
@@ -98,7 +98,7 @@ exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 
 }
 `;
 
-exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`] = `
+exports[`real-score corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`] = `
 {
   "dropped": {},
   "dynamics": {
@@ -148,7 +148,7 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
 }
 `;
 
-exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
+exports[`real-score corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
 {
   "dropped": {},
   "dynamics": {
@@ -186,7 +186,7 @@ exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
 }
 `;
 
-exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`] = `
+exports[`real-score corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`] = `
 {
   "dropped": {},
   "dynamics": {
@@ -232,7 +232,7 @@ exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`]
 }
 `;
 
-exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
+exports[`real-score corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
 {
   "dropped": {},
   "dynamics": {
@@ -267,7 +267,7 @@ exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
 }
 `;
 
-exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] = `
+exports[`real-score corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] = `
 {
   "dropped": {},
   "dynamics": {

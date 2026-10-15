@@ -12,8 +12,6 @@
 import satbLyricsXml from '../src/test/fixtures/satb-lyrics.musicxml?raw';
 import {
 	CanvasRenderer,
-	createFullDemoScore,
-	createGrandStaffShowcaseScore,
 	EditHistory,
 	exportMusicXml,
 	keyAlterForStep,
@@ -34,6 +32,7 @@ import {
 	type ScoreView,
 	type Step
 } from '../src/index.js';
+import { createFullDemoScore, createGrandStaffShowcaseScore } from '../src/examples.js';
 
 /**
  * The scroll container the view mounts into. Its `max-height` in index.html

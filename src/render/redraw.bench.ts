@@ -14,8 +14,8 @@
 // What this does *not* measure is OSMD. Installing OSMD or VexFlow to race
 // against would contradict the repo's first design principle, and there is no
 // need: OSMD's figure (~1.1-1.3s per edit, ~70% of it inside load() + render())
-// is already profiled and recorded in Divisi's OMR_EDITOR_PLAN.md, milestone
-// E13. Note that it was measured on a 124-measure choral score, so it is not
+// was profiled once, in an OSMD-based editor, and is not re-measured here.
+// Note that it was measured on a 124-measure choral score, so it is not
 // like-for-like with the small scores below. The comparison that matters is not
 // millisecond against millisecond, it is the shape of the curve: OSMD's cost is
 // a full reparse and re-layout whose size is the score's, ours is one measure's

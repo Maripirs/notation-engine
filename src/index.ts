@@ -14,27 +14,13 @@
 // host element and wires scrolling, resizing, zoom and playback with a moving
 // cursor. It is the only layer that touches the DOM, `ResizeObserver` or
 // `AudioContext`, and it builds only on the five layers' public functions.
-// See README.md for the design principles.
-//
-// Phase 0 scope: one staff, one voice, standard undotted durations, one clef,
-// one key and time signature, and a single edit op. The roadmap beyond that
-// lives in Divisi's OMR_EDITOR_PLAN.md, milestone E13.
+// See README.md for the design principles. Ready-made showcase scores live in
+// a separate entry, `notation-engine/examples` (`src/examples.ts`). What is
+// supported so far, and what is not yet, is tracked in plan.md.
 
-export const NOTATION_ENGINE_VERSION = '0.0.1';
+/** The package version, injected from `package.json` at build time. */
+export const NOTATION_ENGINE_VERSION: string = __NOTATION_ENGINE_VERSION__;
 
-export {
-	createAccidentalShowcaseScore,
-	createArticulationShowcaseScore,
-	createChordShowcaseScore,
-	createDemoScore,
-	createDurationShowcaseScore,
-	createDynamicsShowcaseScore,
-	createGraceShowcaseScore,
-	createFullDemoScore,
-	createGrandStaffShowcaseScore,
-	createSlurShowcaseScore,
-	createTieShowcaseScore
-} from './demo-score.js';
 export * from './model/index.js';
 export * from './layout/index.js';
 export * from './render/index.js';

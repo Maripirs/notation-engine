@@ -1,7 +1,7 @@
 // Lyrics through MusicXML (M6 Slice 9): import promotes `<lyric>` out of the
 // note's passthrough into `Note.lyrics`, export writes it back after
 // `<notations>` (verbatim when unchanged), and a re-import is equivalent.
-// Exercised on the hand-written SATB fixture (the SFCC corpus has no lyrics)
+// Exercised on the hand-written SATB fixture (the local real-score corpus has no lyrics)
 // and on a small file full of `<lyric>` formatting the model does not read.
 
 import { readFileSync } from 'node:fs';

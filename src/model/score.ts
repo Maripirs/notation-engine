@@ -33,7 +33,7 @@ import {
 	type OpaqueElement
 } from './passthrough.js';
 
-/** Note values Divisi draws, whole down to 64th. */
+/** Note values the engine draws, whole down to 64th. */
 export type NoteValue = 'whole' | 'half' | 'quarter' | 'eighth' | '16th' | '32nd' | '64th';
 
 /** Duration of each note value as a fraction of a whole note. */
@@ -209,8 +209,8 @@ export interface EndingSpan {
  *
  * `alto` and `tenor` (M6 Slice 4) are the two C clefs choral and orchestral
  * music still uses: the same `cClef` glyph, centred on the line it names as
- * middle C, the third line for alto (viola) and the fourth for tenor (the
- * SFCC tenor parts alternate bass and tenor clef). The other C-clef lines
+ * middle C, the third line for alto (viola) and the fourth for tenor (older
+ * choral tenor parts alternate bass and tenor clef). The other C-clef lines
  * (soprano C1, mezzo-soprano C2, baritone C5) are obsolete in this repertoire
  * and stay unmodelled; the importer reads them as treble with a fallback.
  */
@@ -314,7 +314,7 @@ export interface NoteSpec {
 	readonly voice?: number;
 	/** Augmentation dots. Each dot adds half of what the previous one added: one
 	 *  dot multiplies the base duration by 1.5, two dots by 1.75. Every
-	 *  engraving convention Divisi targets stops at two, so this is not an
+	 *  engraving convention the engine targets stops at two, so this is not an
 	 *  open-ended count. */
 	readonly dots?: 0 | 1 | 2;
 	/** Tuplet ratio, e.g. `TRIPLET`. `undefined` means the note is not part of one. */
@@ -424,8 +424,8 @@ export interface NoteSpec {
 	 *
 	 * Only valid on a pitched note that is not a chord member, a measure rest
 	 * or a tuplet (the constructor throws): grace chords and grace rests are
-	 * not modelled (none in the SFCC corpus; import keeps them as
-	 * passthrough).
+	 * not modelled (rare in the choral repertoire this targets; import keeps
+	 * them as passthrough).
 	 */
 	readonly grace?: GraceNote | null;
 	/**
@@ -1735,11 +1735,10 @@ export class Score {
 
 	// --- Correction ops (M6 Slice 7) -----------------------------------------
 	//
-	// The ops an admin needs to fix rough OMR output by hand, reaching parity
-	// with Divisi's old OSMD editor (E2: transpose, delete-to-rest, planned
-	// duration edits) plus what the SFCC board's "British rests all over page
-	// 1" complaint asks for (rests misread from old-style glyphs have to be
-	// cheap to turn back into notes, and wrong values cheap to fix).
+	// The ops needed to fix rough OMR output by hand: transpose,
+	// delete-to-rest and duration edits, plus the commonest OMR misreads on
+	// older engravings (rests misread from old-style glyphs have to be cheap
+	// to turn back into notes, and wrong values cheap to fix).
 	//
 	// Shared contract, the same one `transposeNote`/`setClefRange` set:
 	//
@@ -1767,8 +1766,8 @@ export class Score {
 	//    without a rebuild.
 
 	/**
-	 * Turn a note into a rest of the same written duration (E2's "delete":
-	 * nothing after it shifts). Returns `null` for an unknown id or a rest.
+	 * Turn a note into a rest of the same written duration (an editor's
+	 * "delete": nothing after it shifts). Returns `null` for an unknown id or a rest.
 	 *
 	 * On a chord head with other heads beside it this removes that head from
 	 * the chord instead (`removeChordMember`'s rules): deleting one misread
@@ -2008,8 +2007,9 @@ export class Score {
 	 *
 	 * Removing the anchor (the first head, the one without
 	 * `chordWithPrevious`) promotes the next head to anchor, in the removed
-	 * anchor's place in `measure.notes`: the rough edge E2's spike hit, where
-	 * the remaining heads were left as members joined to nothing. The promoted
+	 * anchor's place in `measure.notes`. Without that, the remaining heads
+	 * would be left as members joined to nothing (an earlier prototype hit
+	 * exactly that). The promoted
 	 * head keeps its id, pitch, ties and payload, and takes the chord's
 	 * value/dots/tuplet and any passthrough `<tuplet>` bracket the old anchor
 	 * carried (export writes a run's brackets on its anchors). The removed

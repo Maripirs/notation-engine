@@ -2,8 +2,8 @@
 //
 // `drawAll()` paints the score. `redrawMeasure(n)` paints one measure's region
 // and touches no other pixel. That second method is the thing being proved:
-// OSMD has no equivalent, so Divisi's editor pays a full MusicXML reparse plus a
-// whole-score re-layout on every keystroke (~1.1-1.3s on a 124-measure piece,
+// OSMD has no equivalent, so an editor built on it pays a full MusicXML reparse
+// plus a whole-score re-layout on every keystroke (~1.1-1.3s on a 124-measure piece,
 // about 70% of it inside OSMD itself). An edit here costs one measure's layout
 // and one measure's worth of fill calls, and that cost does not grow with the
 // score.

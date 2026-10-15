@@ -4,7 +4,7 @@
 // hold, checks where the payload was anchored, and round-trips it (export,
 // re-import, equivalent score, identical second export), checking the
 // payload came back at the same place in valid MusicXML child order. The
-// real-corpus version of the same guarantee is `sfcc-corpus.test.ts`.
+// real-corpus version of the same guarantee is `corpus.test.ts`.
 
 import { describe, expect, it } from 'vitest';
 import {
