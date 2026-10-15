@@ -1382,9 +1382,8 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 - [M7] `vitest.bench.config.ts` lacks the `__NOTATION_ENGINE_VERSION__`
   `define`, so a benchmark that imports `src/index.ts` would throw a
   ReferenceError; share the define with `vite.config.ts` if one ever does.
-- [M7] node-canvas cannot parse WOFF2, so `bravuraFontUrl` is no use for
-  headless rendering; the README tells Node users to fetch `Bravura.otf`
-  themselves. Shipping the OTF (889KB) or a `bravuraOtfUrl` would make it
-  zero-setup, at the cost of package size.
+- [M7] node-canvas cannot parse WOFF2, so headless users fetch
+  `Bravura.otf` themselves (README links it). Decided 2026-10-15 not to
+  ship the 889KB OTF; revisit if headless use turns out common.
 - [Layout] Tuplets are timing only: no bracket or number is drawn (export
   keeps source brackets as passthrough).
