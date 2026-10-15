@@ -106,6 +106,9 @@ export class CanvasRenderer {
 	 *  per paint so a region-scoped redraw stays a cheap rect intersection per
 	 *  marker, not a measure search per marker. */
 	#seamStrips: readonly Rect[] = [];
+	/** The visible window (M6 Slice 11), in layout coordinates, or `null` to
+	 *  treat the whole layout as visible. See `setViewport`. */
+	#viewport: Rect | null = null;
 
 	/**
 	 * Measure indices painted by the most recent draw call, in the order they
@@ -284,6 +287,65 @@ export class CanvasRenderer {
 		return affected;
 	}
 
+	get viewport(): Rect | null {
+		return this.#viewport;
+	}
+
+	/**
+	 * Limit painting to the part of the layout the host actually shows (M6
+	 * Slice 11), or `null` (the default) to paint the whole layout at its own
+	 * coordinates, as before this existed.
+	 *
+	 * A canvas big enough for a whole real score does not work: Les Djinns
+	 * lays out about 79,000 CSS px tall, past the ~32k device-pixel ceiling
+	 * browsers allow a canvas, so the backing store had to drop well below
+	 * 1x density, and compositing it cost 33-65ms per selection click. With
+	 * a viewport the host can size its canvas to the visible window instead:
+	 * the renderer translates every draw by `-viewport.x, -viewport.y` (on
+	 * top of whatever transform the host already set, e.g. its pixel-ratio
+	 * scale), `drawAll` paints only the measures intersecting the window, and
+	 * `redrawMeasure`/`redrawMeasures` skip a measure outside it entirely,
+	 * since none of its pixels exist on the canvas. A skipped measure needs
+	 * no bookkeeping: the host repaints with `drawAll` whenever it moves the
+	 * viewport, which picks up the measure's current ops and state then.
+	 *
+	 * Like `setLayout`, this does not paint: the host moves the viewport and
+	 * then calls `drawAll`. Draws are not clipped to the window here, because
+	 * the canvas edge already clips a measure that is only partly visible.
+	 */
+	setViewport(viewport: Rect | null): void {
+		this.#viewport = viewport === null ? null : { ...viewport };
+	}
+
+	/** True when `rect` has some area inside the viewport (always, without one). */
+	#visible(rect: Rect): boolean {
+		const view = this.#viewport;
+		if (view === null) return true;
+		return (
+			rect.x < view.x + view.width &&
+			rect.x + rect.width > view.x &&
+			rect.y < view.y + view.height &&
+			rect.y + rect.height > view.y
+		);
+	}
+
+	/** Run `paint` in layout coordinates: translated to the viewport's origin
+	 *  when there is one, and with the context's state restored afterwards. */
+	#inViewport(paint: () => void): void {
+		const view = this.#viewport;
+		if (view === null) {
+			paint();
+			return;
+		}
+		this.#ctx.save();
+		this.#ctx.translate(-view.x, -view.y);
+		try {
+			paint();
+		} finally {
+			this.#ctx.restore();
+		}
+	}
+
 	get seamMarkers(): readonly SeamMarker[] {
 		return this.#seamMarkers;
 	}
@@ -327,19 +389,27 @@ export class CanvasRenderer {
 		return strips;
 	}
 
-	/** Repaint the whole score. The baseline the region-scoped path is measured against. */
+	/** Repaint the whole score (or, with a viewport, all of it that is
+	 *  visible). The baseline the region-scoped path is measured against. */
 	drawAll(): void {
 		this.lastRedrawnMeasures = [];
 		this.lastRedrawnRegions = [];
-		this.#paintBackground({
-			x: 0,
-			y: 0,
-			width: this.#layout.width,
-			height: this.#layout.height
-		});
+		this.#inViewport(() => this.#drawAllInternal());
+	}
+
+	#drawAllInternal(): void {
+		this.#paintBackground(
+			this.#viewport ?? {
+				x: 0,
+				y: 0,
+				width: this.#layout.width,
+				height: this.#layout.height
+			}
+		);
 		this.#ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;
 		this.#ctx.textBaseline = 'alphabetic';
 		for (const measure of this.#layout.measures) {
+			if (!this.#visible(measure.region)) continue;
 			if (this.#inMeasureRange(measure.staffIndex, measure.index)) this.#paintMeasureRangeTint(measure.region);
 			this.#drawOps(measure.ops);
 			this.lastRedrawnMeasures.push(measure.index);
@@ -348,13 +418,16 @@ export class CanvasRenderer {
 		// Part-grouping decorations (M2 Slice 5): drawn once here, never by
 		// `redrawMeasure`/`redrawMeasures`. See `LaidOutScore.partDecorations`'s
 		// own comment on why they live outside every measure's own region and
-		// therefore outside the region-scoped redraw path entirely.
+		// therefore outside the region-scoped redraw path entirely. Not culled
+		// to the viewport: they have no region to test, and the canvas edge
+		// clips what falls outside it.
 		this.#drawOps(this.#layout.partDecorations);
 		// Seam markers (M5 Slice 6): last, over every measure's ink, so a strip
 		// reads as an annotation laid on top of the barline it marks.
-		if (this.#seamStrips.length > 0) {
+		const strips = this.#seamStrips.filter((strip) => this.#visible(strip));
+		if (strips.length > 0) {
 			this.#ctx.fillStyle = this.#options.seamMarker;
-			for (const strip of this.#seamStrips) this.#ctx.fillRect(strip.x, strip.y, strip.width, strip.height);
+			for (const strip of strips) this.#ctx.fillRect(strip.x, strip.y, strip.width, strip.height);
 		}
 	}
 
@@ -377,7 +450,7 @@ export class CanvasRenderer {
 	redrawMeasure(index: number, staffIndex = 0): void {
 		this.lastRedrawnMeasures = [];
 		this.lastRedrawnRegions = [];
-		this.#redrawMeasureInternal(index, staffIndex);
+		this.#inViewport(() => this.#redrawMeasureInternal(index, staffIndex));
 	}
 
 	/** Repaint several measures of one staff, e.g. when moving a selection
@@ -385,12 +458,17 @@ export class CanvasRenderer {
 	redrawMeasures(indices: readonly number[], staffIndex = 0): void {
 		this.lastRedrawnMeasures = [];
 		this.lastRedrawnRegions = [];
-		for (const index of indices) this.#redrawMeasureInternal(index, staffIndex);
+		this.#inViewport(() => {
+			for (const index of indices) this.#redrawMeasureInternal(index, staffIndex);
+		});
 	}
 
 	#redrawMeasureInternal(index: number, staffIndex: number): void {
 		const measure = this.#layout.measures.find((m) => m.staffIndex === staffIndex && m.index === index);
-		if (!measure) return;
+		// Outside the viewport the measure has no pixels on the canvas, so
+		// there is nothing to repaint; the next `drawAll` that scrolls it into
+		// view paints its current state.
+		if (!measure || !this.#visible(measure.region)) return;
 		this.#paintBackground(measure.region);
 		if (this.#inMeasureRange(staffIndex, index)) this.#paintMeasureRangeTint(measure.region);
 		this.#ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;

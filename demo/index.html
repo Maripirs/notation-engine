@@ -42,16 +42,29 @@
 			 * off into well over a dozen systems there, see main.ts's own comment
 			 * on `scoreScroll` for the check that confirmed this), so the score
 			 * overflows vertically and this wrapper scrolls, giving the playback-
-			 * cursor auto-scroll (M4 Slice 4) something real to demonstrate. #score
-			 * keeps its own border (declared above) so it looks the same as before
-			 * this wrapper existed; this element only adds the scrolling behaviour.
+			 * cursor auto-scroll (M4 Slice 4) something real to demonstrate. It also
+			 * carries the border #score used to have (see #score below).
 			 */
 			#score-scroll {
-				/* The canvas's offsetParent, so main.ts's followPlaybackCursor can
-				   read canvas.offsetTop relative to this wrapper. */
 				position: relative;
 				max-height: 22rem;
 				overflow-y: auto;
+				background: #fff;
+				border: 1px solid #ddd;
+				border-radius: 4px;
+			}
+			/*
+			 * M6 Slice 11: #score is only as tall as the visible window and sticks
+			 * to the wrapper's top while #score-spacer (after it) supplies the rest
+			 * of the score's height to scroll through; main.ts repaints the visible
+			 * band on scroll. The border moved to the wrapper, since a border on a
+			 * window-sized canvas would frame the window, not the score.
+			 */
+			#score {
+				position: sticky;
+				top: 0;
+				border: none;
+				border-radius: 0;
 			}
 			.controls {
 				display: flex;
@@ -151,6 +164,7 @@
 		</p>
 		<div id="score-scroll">
 			<canvas id="score"></canvas>
+			<div id="score-spacer"></div>
 		</div>
 		<div class="controls">
 			<button id="down" disabled>&darr; semitone</button>

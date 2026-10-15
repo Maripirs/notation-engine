@@ -11,7 +11,7 @@
 
 import { createCanvas } from 'canvas';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { createDemoScore } from '../demo-score.js';
+import { createDemoScore, createFullDemoScore } from '../demo-score.js';
 import { layoutScore, relayoutMeasure, type LayoutOptions } from '../layout/layout.js';
 import { regionForMeasureBoundary } from '../layout/region-for-measure-boundary.js';
 import { parsePitch } from '../model/pitch.js';
@@ -32,32 +32,48 @@ interface Recorded {
 	readonly lineWidth?: number;
 }
 
-/** A context stub recording every paint call. A curve (tie, slur, hairpin) is
- *  one call spanning its start and end points. */
+/** A context stub recording every paint call, in canvas coordinates (after
+ *  any `translate`, so a viewport's offset shows up in what is recorded). A
+ *  curve (tie, slur, hairpin) is one call spanning its start and end points. */
 function recordingContext(): { ctx: CanvasRenderingContext2D; calls: Recorded[] } {
 	const calls: Recorded[] = [];
+	let dx = 0;
+	let dy = 0;
+	const saved: [number, number][] = [];
 	const stub = {
 		font: '',
 		fillStyle: '',
 		strokeStyle: '',
 		lineWidth: 1,
 		textBaseline: 'alphabetic',
+		save() {
+			saved.push([dx, dy]);
+		},
+		restore() {
+			[dx, dy] = saved.pop() ?? [0, 0];
+		},
+		translate(x: number, y: number) {
+			dx += x;
+			dy += y;
+		},
 		fillRect(x: number, y: number, width: number, height: number) {
-			calls.push({ call: 'fillRect', x, y, right: x + width, bottom: y + height, style: stub.fillStyle });
+			calls.push({ call: 'fillRect', x: x + dx, y: y + dy, right: x + dx + width, bottom: y + dy + height, style: stub.fillStyle });
 		},
 		clearRect(x: number, y: number, width: number, height: number) {
-			calls.push({ call: 'clearRect', x, y, right: x + width, bottom: y + height, style: '' });
+			calls.push({ call: 'clearRect', x: x + dx, y: y + dy, right: x + dx + width, bottom: y + dy + height, style: '' });
 		},
 		fillText(_text: string, x: number, y: number) {
-			calls.push({ call: 'fillText', x, y, right: x, bottom: y, style: stub.fillStyle });
+			calls.push({ call: 'fillText', x: x + dx, y: y + dy, right: x + dx, bottom: y + dy, style: stub.fillStyle });
 		},
 		beginPath() {},
 		stroke() {},
 		moveTo(x: number, y: number) {
-			calls.push({ call: 'curve', x, y, right: x, bottom: y, style: stub.strokeStyle });
+			calls.push({ call: 'curve', x: x + dx, y: y + dy, right: x + dx, bottom: y + dy, style: stub.strokeStyle });
 		},
 		bezierCurveTo(_a: number, _b: number, _c: number, _d: number, x: number, y: number) {
 			const start = calls.pop()!;
+			x += dx;
+			y += dy;
 			calls.push({
 				call: 'curve',
 				x: Math.min(start.x, x),
@@ -643,5 +659,69 @@ describe('CanvasRenderer: M6 notation ink in a scoped redraw', () => {
 				expect(withinBox(clearedRect, inkBox(op, layout.staffSpacePx))).toBe(true);
 			}
 		}
+	});
+});
+
+describe('CanvasRenderer.setViewport (M6 Slice 11)', () => {
+	/** A many-system layout and a viewport over a band of its middle, cut so
+	 *  it slices through a system rather than lining up with one. */
+	function viewportCase() {
+		const { layout, recorder, renderer } = painted(createFullDemoScore(), { systemWidthPx: 600 });
+		expect(layout.systems.length).toBeGreaterThan(4);
+		const viewport = { x: 0, y: layout.height * 0.4, width: layout.width, height: layout.height * 0.2 };
+		const intersects = (r: Rect) => r.y < viewport.y + viewport.height && r.y + r.height > viewport.y;
+		return { layout, recorder, renderer, viewport, intersects };
+	}
+
+	it('drawAll paints only the measures intersecting the viewport, shifted to its origin', () => {
+		const { layout, recorder, renderer, viewport, intersects } = viewportCase();
+		renderer.setViewport(viewport);
+		renderer.drawAll();
+
+		const visible = layout.measures.filter((m) => intersects(m.region));
+		expect(visible.length).toBeGreaterThan(0);
+		expect(visible.length).toBeLessThan(layout.measures.length);
+		expect(renderer.lastRedrawnMeasures).toEqual(visible.map((m) => m.index));
+		// The first call is the background, exactly covering the canvas.
+		expect(recorder.calls[0]).toMatchObject({ x: 0, y: 0, right: viewport.width, bottom: viewport.height });
+		// Every ink call lands inside some visible measure's region once shifted,
+		// so nothing is issued for a measure scrolled out of view.
+		const shifted = visible.map((m) => ({ ...m.region, x: m.region.x - viewport.x, y: m.region.y - viewport.y }));
+		for (const call of recorder.calls.slice(1)) expect(shifted.some((region) => withinBox(region, call))).toBe(true);
+	});
+
+	it('a scoped redraw outside the viewport paints nothing; one inside matches the unshifted draw, offset', () => {
+		const { layout, recorder, renderer, viewport, intersects } = viewportCase();
+		const outside = layout.measures.find((m) => !intersects(m.region))!;
+		const inside = layout.measures.find((m) => intersects(m.region))!;
+
+		renderer.redrawMeasure(inside.index);
+		const unshifted = recorder.calls.splice(0);
+
+		renderer.setViewport(viewport);
+		renderer.redrawMeasures([outside.index]);
+		expect(recorder.calls).toEqual([]);
+		expect(renderer.lastRedrawnMeasures).toEqual([]);
+
+		renderer.redrawMeasure(inside.index);
+		expect(renderer.lastRedrawnMeasures).toEqual([inside.index]);
+		// Rounded, since shifting a coordinate before or after adding a width
+		// differs in the last floating-point bit.
+		const rounded = (calls: readonly Recorded[], dx = 0, dy = 0) =>
+			calls.map((call) => [call.call, call.style, ...[call.x - dx, call.right - dx, call.y - dy, call.bottom - dy].map((v) => v.toFixed(6))]);
+		expect(rounded(recorder.calls)).toEqual(rounded(unshifted, viewport.x, viewport.y));
+	});
+
+	it('setViewport(null) goes back to painting every measure at layout coordinates', () => {
+		const { layout, recorder, renderer, viewport } = viewportCase();
+		renderer.drawAll();
+		const whole = recorder.calls.splice(0);
+		renderer.setViewport(viewport);
+		renderer.drawAll();
+		renderer.setViewport(null);
+		recorder.calls.length = 0;
+		renderer.drawAll();
+		expect(renderer.lastRedrawnMeasures).toHaveLength(layout.measures.length);
+		expect(recorder.calls).toEqual(whole);
 	});
 });

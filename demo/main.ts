@@ -56,6 +56,12 @@ const canvas = document.querySelector<HTMLCanvasElement>('#score')!;
  * therefore scrolling, actually happen.
  */
 const scoreScroll = document.querySelector<HTMLElement>('#score-scroll')!;
+/**
+ * Gives `#score-scroll` the score's full height to scroll through (M6 Slice
+ * 11). The canvas itself is only as tall as the visible window and sticks to
+ * the wrapper's top, so this element, placed after it, makes up the rest.
+ */
+const scoreSpacer = document.querySelector<HTMLElement>('#score-spacer')!;
 const status = document.querySelector<HTMLElement>('#status')!;
 const timings = document.querySelector<HTMLElement>('#timings')!;
 const upButton = document.querySelector<HTMLButtonElement>('#up')!;
@@ -81,7 +87,7 @@ const openInput = document.querySelector<HTMLInputElement>('#open')!;
 const dirtyIndicator = document.querySelector<HTMLElement>('#dirty')!;
 
 // These mirror index.html's own CSS (`body { max-width: 60rem; padding: 2rem
-// 1.5rem; }`, `#score { border: 1px solid #ddd; }`) so `systemWidthForViewport`
+// 1.5rem; }`, `#score-scroll { border: 1px solid #ddd; }`) so `systemWidthForViewport`
 // can work out how much room the canvas actually has without waiting on a
 // layout/paint round trip to measure it.
 const BODY_MAX_WIDTH_PX = 960;
@@ -149,31 +155,75 @@ const ctx = canvas.getContext('2d')!;
 const renderer = new CanvasRenderer(ctx, layout, { background: '#ffffff' });
 
 /**
- * Size the backing store for the display's pixel density and scale the context
- * to match, so layout can keep working in CSS pixels. Without this, every glyph
- * is resampled from a 1x bitmap on a retina screen and the staff lines blur.
+ * Layout pixels to CSS pixels: 1 unless `#score-scroll` is narrower than
+ * `layout.width` (a viewport narrower than even one system), in which case
+ * the score is shrunk to fit, keeping its aspect ratio. Hit-testing and
+ * follow-scroll divide by it to get back to layout coordinates.
+ */
+let scoreScale = 1;
+
+/**
+ * Size the canvas to the visible window of the score, not the whole score
+ * (M6 Slice 11), and set the spacer that makes up the rest of the scroll
+ * height.
+ *
+ * A canvas the size of the whole score broke down on real ones: Les Djinns
+ * lays out about 79,000 CSS px tall, past the ~32k device-pixel ceiling
+ * browsers allow a canvas, so its backing store had to drop far below 1x
+ * density (blurry on retina), and compositing that giant layer delayed every
+ * selection click by 33-65ms. A window-sized canvas always fits, so it runs
+ * at the full `devicePixelRatio`, and `CanvasRenderer.setViewport` makes the
+ * renderer translate its draws to the scrolled-to band and skip everything
+ * outside it. The canvas is `position: sticky` in index.html, so it stays in
+ * view while the spacer scrolls past, and `#score-scroll`'s `scroll` handler
+ * below repaints the newly visible band.
  */
 function sizeCanvas(): void {
-	// Browsers refuse to allocate a canvas taller than ~32k device pixels (it
-	// silently renders blank), and an opened real score (M6 Slice 2: Les Djinns
-	// is ~43k CSS pixels tall at the default zoom) passes that at any pixel
-	// ratio above 0.75. Lowering the backing-store density for such a score
-	// trades some crispness for a canvas that draws at all.
-	const MAX_CANVAS_DEVICE_PX = 32767;
-	const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DEVICE_PX / Math.max(layout.width, layout.height));
-	canvas.width = Math.ceil(layout.width * dpr);
-	canvas.height = Math.ceil(layout.height * dpr);
-	// Height follows width through the aspect ratio rather than being pinned:
-	// `#score`'s `max-width: 100%` shrinks the box when the score is wider
-	// than its container, and a fixed height then squashed it horizontally
-	// only, stretching the music tall (M6 Slice 10 found Les Djinns drawn
-	// about twice its height that way). Hit-testing and follow-scroll scale
-	// by the box's actual size, so a shrunk canvas still lines up.
-	canvas.style.width = `${layout.width}px`;
-	canvas.style.height = 'auto';
-	canvas.style.aspectRatio = `${layout.width} / ${layout.height}`;
-	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	const dpr = window.devicePixelRatio || 1;
+	const maxViewHeight = parseFloat(getComputedStyle(scoreScroll).maxHeight);
+	const apply = (scale: number): void => {
+		const totalHeight = layout.height * scale;
+		const viewHeight = Math.min(totalHeight, Number.isFinite(maxViewHeight) ? maxViewHeight : window.innerHeight);
+		const width = layout.width * scale;
+		canvas.width = Math.ceil(width * dpr);
+		canvas.height = Math.ceil(viewHeight * dpr);
+		canvas.style.width = `${width}px`;
+		canvas.style.height = `${viewHeight}px`;
+		scoreSpacer.style.height = `${totalHeight - viewHeight}px`;
+		scoreScale = scale;
+	};
+	// Twice: the wrapper's width depends on whether the first pass's height
+	// gave it a scrollbar, and the scale depends on that width.
+	apply(1);
+	const scale = Math.min(1, scoreScroll.clientWidth / layout.width);
+	if (scale !== 1) apply(scale);
+	ctx.setTransform(dpr * scoreScale, 0, 0, dpr * scoreScale, 0, 0);
+	updateViewport();
 }
+
+/** Point the renderer at the band of the score `#score-scroll` currently
+ *  shows, in layout coordinates. Does not paint. */
+function updateViewport(): void {
+	renderer.setViewport({
+		x: 0,
+		y: scoreScroll.scrollTop / scoreScale,
+		width: layout.width,
+		height: canvas.clientHeight / scoreScale
+	});
+}
+
+// Scroll events arrive at most once per frame, before it paints, so painting
+// right here keeps the canvas in step with the scroll position. Only the
+// visible measures draw, so this costs a window's worth of ops however long
+// the score is.
+scoreScroll.addEventListener(
+	'scroll',
+	() => {
+		updateViewport();
+		renderer.drawAll();
+	},
+	{ passive: true }
+);
 
 function drawAll(): number {
 	const started = performance.now();
@@ -523,24 +573,18 @@ function report(scopedMs: number, measureIndex: number, staffIndex = 0): void {
 canvas.addEventListener('pointerdown', (event) => {
 	activeHistoryCanvas = 'main';
 	// Pointer coordinates are relative to the viewport and in CSS pixels; layout
-	// works in CSS pixels relative to the canvas origin. The engine deliberately
+	// works in CSS pixels relative to the score's origin. The engine deliberately
 	// does not do this conversion, because only the host knows what else it has
 	// done to the canvas (zoom, scroll, transforms). Here that "what else": the
-	// canvas is now sized to fit its laid-out content (multi-system wrapping
-	// keeps every system within `systemWidthPx`, so this is normally a no-op),
-	// but `max-width: 100%` on #score is kept as a belt-and-suspenders safety
-	// net for a viewport narrower than even one system, which still shrinks
-	// the CSS box below layout.width (keeping its aspect ratio, see
-	// `sizeCanvas`) and would otherwise point at the wrong note (or none).
-	// Measured against the content box (`clientLeft`/`clientWidth` leave out
-	// the 1px border), which is what the drawing is scaled into.
+	// canvas shows only the scrolled-to band of the score (M6 Slice 11, see
+	// `sizeCanvas`), starting at the renderer's viewport origin, and is shrunk
+	// by `scoreScale` on a viewport narrower than even one system.
 	const rect = canvas.getBoundingClientRect();
-	const scaleX = layout.width / canvas.clientWidth;
-	const scaleY = layout.height / canvas.clientHeight;
+	const view = renderer.viewport ?? { x: 0, y: 0 };
 	const hit = hitTest(
 		layout,
-		(event.clientX - rect.left - canvas.clientLeft) * scaleX,
-		(event.clientY - rect.top - canvas.clientTop) * scaleY
+		(event.clientX - rect.left) / scoreScale + view.x,
+		(event.clientY - rect.top) / scoreScale + view.y
 	);
 	const changed = renderer.setSelection(hit ? hit.noteId : null);
 	selected = hit ? hit.noteId : null;
@@ -678,7 +722,11 @@ fullButton.addEventListener('click', () => {
 flashButton.addEventListener('click', () => {
 	if (lastScopedMeasures.length === 0) return;
 	const measures = lastScopedMeasures.map((index) => layout.measures[index]!);
+	// In layout coordinates, like the renderer's own draws: shift to the
+	// visible band's origin (M6 Slice 11).
+	const view = renderer.viewport;
 	ctx.save();
+	if (view) ctx.translate(-view.x, -view.y);
 	ctx.fillStyle = 'rgba(194, 65, 12, 0.18)';
 	for (const measure of measures) {
 		const { x, y, width, height } = measure.region;
@@ -840,15 +888,15 @@ let onsetFlushQueued = false;
  * (the same framework-agnostic split `pointerdown` above already follows for
  * click coordinates). The canvas is one unstyled element with no child node
  * per note to hand to `Element.scrollIntoView`, so this computes a manual
- * `scrollTo` instead: `canvas.offsetTop` accounts for the canvas's own
- * position within the wrapper (0 today, since the canvas is the wrapper's
- * only child, but read rather than assumed in case that ever changes). That
- * only holds because `#score-scroll` is `position: relative` in index.html,
- * which makes it the canvas's `offsetParent`; without it `offsetTop` is
- * measured from the page body and every target overshoots by the height of
- * the prose above the score. Centring on the region's vertical midpoint
- * rather than snapping to its top edge keeps a system from sitting flush
- * against the wrapper's rim.
+ * `scrollTo` instead. Since M6 Slice 11 the wrapper's scrollable content is
+ * the score itself at `scoreScale` (the window-sized sticky canvas plus the
+ * spacer after it, starting at the wrapper's top with no padding), so a
+ * region's scroll position is simply its layout `y` times `scoreScale`. The
+ * canvas's own `offsetTop` is no use any more: being sticky, it moves with
+ * the scroll position. Measuring in scroll-content coordinates rather than
+ * page ones also avoids overshooting by the height of the prose above the
+ * score. Centring on the region's vertical midpoint rather than snapping to
+ * its top edge keeps a system from sitting flush against the wrapper's rim.
  *
  * It scrolls only when the measure is not already fully visible. Onsets fire
  * several times a second, and restarting a smooth scroll on every one (even
@@ -858,10 +906,8 @@ let onsetFlushQueued = false;
 function followPlaybackCursor(noteId: NoteId): void {
 	const region = regionForNote(layout, noteId);
 	if (!region) return;
-	// Layout pixels to CSS pixels, should `max-width` have shrunk the canvas.
-	const scale = canvas.clientHeight / layout.height;
-	const top = canvas.offsetTop + canvas.clientTop + region.y * scale;
-	const height = region.height * scale;
+	const top = region.y * scoreScale;
+	const height = region.height * scoreScale;
 	const viewTop = scoreScroll.scrollTop;
 	if (top >= viewTop && top + height <= viewTop + scoreScroll.clientHeight) return;
 	const targetTop = top + height / 2 - scoreScroll.clientHeight / 2;
