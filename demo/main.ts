@@ -698,9 +698,7 @@ saveButton.addEventListener('click', saveMusicXml);
 
 /**
  * Replace the main canvas's score with a MusicXML file the user picked (M6
- * Slice 2's demo check: an SFCC fixture such as
- * `src/test/fixtures/sfcc/Faure__-_Les_djinns__Op._12.musicxml`, chords and
- * all). The opened score gets a fresh `EditHistory`, so Undo cannot step back
+ * Slice 2's demo check: any real score, chords and all). The opened score gets a fresh `EditHistory`, so Undo cannot step back
  * into the demo score and the file opens as "Saved"; selection, seam markers
  * and any running playback are cleared since they all named the old score's
  * notes and measures.

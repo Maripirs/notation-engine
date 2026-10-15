@@ -1,9 +1,15 @@
 // The real-corpus regression net (M6 Slice 1).
 //
-// Every SFCC choral score in `src/test/fixtures/sfcc/` (7 real Audiveris-era
-// MusicXML files, copied from Divisi's `Backend/fixtures/SFCC/`, the scores
-// the SFCC board's feedback is about) is imported and laid out, and what the
-// import kept, passed through and lost is snapshotted per file. The snapshot
+// Every `.musicxml` file in the directory named by `NOTATION_CORPUS_DIR` is
+// imported and laid out, and what the import kept, passed through and lost
+// is snapshotted per file. The corpus is a set of real, privately held
+// Audiveris-era choral scores (the 7 SFCC files) that is not in the repo, so
+// the whole file is skipped unless the variable is set:
+//
+//     NOTATION_CORPUS_DIR=/path/to/scores npm test
+//
+// The committed snapshot is for that 7-file corpus; another directory needs
+// its own (`-u`). The snapshot
 // is the point: each later M6 slice that models an element (dynamics,
 // articulations, ...) shows up as a reviewed diff moving that element out of
 // the passthrough tally, and an accidental regression shows up the same way
@@ -32,10 +38,12 @@ import { exportMusicXml } from './musicxml-export.js';
 import { createImportDiagnostics, importMusicXml } from './musicxml-import.js';
 import { descendants, parseXml, type XmlElement } from './xml.js';
 
-const FIXTURE_DIR = join(import.meta.dirname, '../test/fixtures/sfcc');
-const fixtures = readdirSync(FIXTURE_DIR)
-	.filter((name) => name.endsWith('.musicxml'))
-	.sort();
+const FIXTURE_DIR = process.env.NOTATION_CORPUS_DIR ?? '';
+const fixtures = FIXTURE_DIR
+	? readdirSync(FIXTURE_DIR)
+			.filter((name) => name.endsWith('.musicxml'))
+			.sort()
+	: [];
 
 /**
  * Element names whose count an import -> export round trip may change, each
@@ -109,7 +117,7 @@ function unexplainedDifferences(source: XmlElement, exported: XmlElement, droppe
 	return differences;
 }
 
-describe('SFCC corpus: import + layout', () => {
+describe.skipIf(!FIXTURE_DIR)('SFCC corpus: import + layout', () => {
 	it('finds all 7 fixtures', () => {
 		expect(fixtures).toHaveLength(7);
 	});
@@ -221,7 +229,7 @@ describe('SFCC corpus: import + layout', () => {
 	}
 });
 
-describe('SFCC corpus: shared system breaks (M6 Slice 10)', () => {
+describe.skipIf(!FIXTURE_DIR)('SFCC corpus: shared system breaks (M6 Slice 10)', () => {
 	// Every staff breaks at the same measures, sharing each barline's x, and
 	// no measure ends past `systemWidthPx` unless it sits alone in its system
 	// (a measure cannot be split, so a lone over-wide one is allowed to).
@@ -248,7 +256,7 @@ describe('SFCC corpus: shared system breaks (M6 Slice 10)', () => {
 	});
 });
 
-describe('SFCC corpus: lossless round trip (M6 Slice 3)', () => {
+describe.skipIf(!FIXTURE_DIR)('SFCC corpus: lossless round trip (M6 Slice 3)', () => {
 	for (const name of fixtures) {
 		it(name, () => {
 			const xml = readFileSync(join(FIXTURE_DIR, name), 'utf8');

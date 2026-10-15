@@ -1,11 +1,12 @@
 // Correction ops (M6 Slice 7) against MusicXML: passthrough tie markup is
 // kept consistent with the model's ties, a deleted note's own payload goes
 // with it, and after every op `export` still writes MusicXML that re-imports
-// as the same score (on a hand-built score and on Les Djinns, the SFCC
-// board's benchmark). The model-only semantics are in
+// as the same score (on a hand-built score, and on Les Djinns from the
+// local-only corpus when `NOTATION_CORPUS_DIR` points at it, see
+// `sfcc-corpus.test.ts`). The model-only semantics are in
 // `src/model/correction-ops.test.ts`.
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
@@ -37,6 +38,12 @@ function expectRoundTrip(score: Score): string {
 }
 
 const count = (xml: string, re: RegExp): number => xml.match(re)?.length ?? 0;
+
+/** Les Djinns in the local-only corpus, or `undefined` when it is not there. */
+const DJINNS = ((dir) => {
+	const path = dir && join(dir, 'Faure__-_Les_djinns__Op._12.musicxml');
+	return path && existsSync(path) ? path : undefined;
+})(process.env.NOTATION_CORPUS_DIR);
 
 describe('editTie and passthrough tie markup', () => {
 	const lead = n('C', 2, 'quarter') + n('D', 2, 'quarter') + n('E', 2, 'quarter');
@@ -169,8 +176,8 @@ describe('export after every op re-imports equivalently', () => {
 		}
 	});
 
-	it('on Les Djinns: fix a rest, a value and a chord on page 1, round-tripping after each', () => {
-		const source = readFileSync(join(import.meta.dirname, '../test/fixtures/sfcc/Faure__-_Les_djinns__Op._12.musicxml'), 'utf8');
+	it.skipIf(!DJINNS)('on Les Djinns: fix a rest, a value and a chord on page 1, round-tripping after each', () => {
+		const source = readFileSync(DJINNS!, 'utf8');
 		const score = importMusicXml(source);
 		const history = new EditHistory(score);
 		const original = exportMusicXml(history.current);

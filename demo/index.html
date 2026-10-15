@@ -158,8 +158,8 @@
 			where stitched scan fragments meet; they are render-only, and survive a transpose's
 			scoped redraw of a neighbouring measure. The score ends with M6 Slice 2's chord showcase
 			(triads, seconds on both sides of the stem, stacked accidentals, divisi thirds, beamed and
-			tied chords, two chordal voices); Open MusicXML replaces it with any MusicXML file, e.g.
-			an SFCC fixture from <code>src/test/fixtures/sfcc/</code> such as Les Djinns. Every
+			tied chords, two chordal voices); Open MusicXML replaces it with any MusicXML file, such as
+			an OMR export or a score saved from MuseScore. Every
 			chord head is its own note: click one and transpose it alone.
 		</p>
 		<div id="score-scroll">
@@ -184,8 +184,7 @@
 		<details id="shortcuts" open>
 			<summary>Correction shortcuts (M6 Slice 7), on the selected note</summary>
 			<p class="lede">
-				For fixing rough OMR output, e.g. Les Djinns opened from
-				<code>src/test/fixtures/sfcc/</code>. Every one is a single undoable step
+				For fixing rough OMR output opened with Open MusicXML. Every one is a single undoable step
 				(<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>), and repaints only the measures it
 				touched unless the measure's width changed. Nothing ever shifts into the next measure: a
 				shorter value is padded with rests, a longer one takes time from the rests right after it

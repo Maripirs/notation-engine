@@ -1168,7 +1168,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   public; no keybindings or edit UI policy go into the library.
 
 **Acceptance criteria (whole milestone):**
-- [ ] No SFCC file in the working tree; `npm test` green on a clean
+- [x] No SFCC file in the working tree; `npm test` green on a clean
       clone without them
 - [ ] `npm pack` tarball installs into a fresh scratch Vite app, and the
       README quickstart, pasted verbatim, renders and plays a score with
@@ -1180,7 +1180,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 - [ ] `npm run check`/`test`/`build` green throughout
 
 **Tasks — Claude:**
-- [ ] **Slice 1: Fixture removal + license.** Delete
+- [x] **Slice 1: Fixture removal + license.** Delete
       `src/test/fixtures/sfcc/`. The corpus test and the four other
       tests that read SFCC files (`lyrics`, `passthrough`,
       `correction-ops`, `repeats-playback`) either move to a local-only
@@ -1355,3 +1355,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   jump is re-struck rather than held (Frost Myth m65 is all such ties).
   The demo has no play-from-note control, so `firstOnsetSeconds` is
   exported but not wired in.
+- [M7] The opt-in corpus test keeps its private name (`sfcc-corpus.test.ts`,
+  its snapshot, `SFCC corpus:` suite titles, "finds all 7 fixtures"); rename
+  to a neutral "corpus" when Slice 4 scrubs private references (the rename
+  regenerates the snapshot file's keys, so re-run with the env var and `-u`).

@@ -1,10 +1,28 @@
 {
 	"name": "notation-engine",
 	"version": "0.0.1",
-	"private": true,
 	"description": "A from-scratch, framework-agnostic music notation engraving and rendering engine: an editable score model plus a canvas renderer, built to replace OpenSheetMusicDisplay/VexFlow where instant, region-scoped re-render on edit matters. No UI framework dependency in the core; embeds into any web app.",
+	"keywords": [
+		"music",
+		"notation",
+		"musicxml",
+		"engraving",
+		"canvas",
+		"smufl",
+		"sheet-music",
+		"score"
+	],
+	"homepage": "https://github.com/Maripirs/notation-engine#readme",
+	"bugs": {
+		"url": "https://github.com/Maripirs/notation-engine/issues"
+	},
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Maripirs/notation-engine.git"
+	},
+	"license": "MIT",
+	"author": "Maria Paz Maluenda",
 	"type": "module",
-	"license": "UNLICENSED",
 	"main": "./dist/index.js",
 	"types": "./dist/index.d.ts",
 	"exports": {

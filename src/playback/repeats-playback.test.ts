@@ -86,26 +86,23 @@ describe('computePlaybackTimeline: repeats (M6 Slice 14)', () => {
 		]);
 	});
 
-	it('plays Frost Myth m65 (a one-measure repeat) twice', () => {
-		const score = fixture('sfcc/The-Frost-Myth_SATB-Score.musicxml');
-		const order = measurePlayOrder(score).map((p) => p.measureIndex);
-		const repeated = order.filter((m, k) => order.indexOf(m) !== k);
-		expect(repeated).toHaveLength(1);
-		const [m65] = repeated;
-		expect(score.staves[0]!.measures[m65!]!.startBarline).toBe('repeatStart');
-		expect(order.filter((m) => m === m65)).toHaveLength(2);
-		// Every voice ties into m65 from m64, so its first pass sounds as the
-		// tail of those ties, and the second (entered by the jump) strikes the
-		// same notes afresh. Nothing is held over the jump.
-		const second = order.lastIndexOf(m65!);
-		const events = computePlaybackTimeline(score);
-		const measureOf = measureOfNote(score);
-		const inM65 = events.filter((e) => measureOf.get(e.noteId) === m65);
-		expect(inM65.length).toBeGreaterThan(0);
-		expect(new Set(inM65.map((e) => e.playIndex))).toEqual(new Set([second]));
-		const jumpAt = Math.min(...inM65.map((e) => e.startSeconds));
-		const before = events.filter((e) => e.playIndex! < second);
-		expect(Math.max(...before.map((e) => e.startSeconds + e.durationSeconds))).toBeCloseTo(jumpAt, 9);
+	it('ends a tie into a one-measure repeat at the jump, and strikes the measure afresh on pass 2', () => {
+		// A shape real choral scores have, every voice tied into the repeated
+		// measure: pass 1 sounds the repeated measure as the tie's
+		// tail, the jump back strikes it again, and nothing is held over the
+		// jump.
+		const score = buildScore([
+			[['G4', 'whole', { tiedToNext: true }]],
+			{ notes: [['G4', 'whole']], startBarline: 'repeatStart', endBarline: 'repeatEnd' },
+			[['C5', 'whole']]
+		]);
+		const [tail, repeated, after] = score.staves[0]!.measures.map((m) => m.notes[0]!.id);
+		expect(measurePlayOrder(score).map((p) => p.measureIndex)).toEqual([0, 1, 1, 2]);
+		expect(computePlaybackTimeline(score).map((e) => [e.noteId, e.startSeconds, e.durationSeconds, e.playIndex])).toEqual([
+			[tail, 0, 4, 0],
+			[repeated, 4, 2, 2],
+			[after, 6, 2, 3]
+		]);
 	});
 });
 
