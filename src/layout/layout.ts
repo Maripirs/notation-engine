@@ -58,9 +58,12 @@ export interface LayoutOptions {
 	/** Blank margin around the system, pixels. */
 	readonly paddingPx?: number;
 	/**
-	 * Maximum pixel width a system's measures may run to before the rest cast
-	 * off onto a new system, stacked below. Omit it and layout keeps Phase 0's
-	 * original behaviour: one system, forever, however wide the score gets.
+	 * Maximum pixel width of a system (both paddings and any brace/bracket
+	 * and part-label header included) before the rest of the measures cast
+	 * off onto a new system, stacked below. Every staff breaks at the same
+	 * measures, so no measure ends past it except a single measure too wide
+	 * to fit even on its own. Omit it and layout keeps Phase 0's original
+	 * behaviour: one system, forever, however wide the score gets.
 	 *
 	 * Casting-off here is greedy (fill a system until the next measure would
 	 * overflow, then start a new one), not the balanced/optimal algorithm real
@@ -1104,11 +1107,12 @@ function layoutSystemPartDecorations(
  * result `layoutScore` always produced.
  *
  * System membership (which measures land in which system) is decided *once*
- * for the whole score, off staff 0 alone, not independently per staff: a
- * shared system only makes sense if every staff agrees on where it starts
- * and ends, and `planSystems`'s own width-probing already assumes one
- * measure count and one score-wide key/time/barline sequence (M1 Slices
- * 7-8), which every staff in practice shares. This is also why every staff
+ * for the whole score, not independently per staff: a shared system only
+ * makes sense if every staff agrees on where it starts and ends. Since M6
+ * Slice 10 it is decided off the shared column widths (each measure costs
+ * its widest staff's width, see `planSystems`), and one justification
+ * factor per system is shared by every staff (`systemSpacingScale`), so the
+ * padded columns below still add up to `systemWidthPx`. This is also why every staff
  * in a `Score` is required to have the same number of measures (checked
  * below, not silently assumed): a staff with a different measure count would
  * have no coherent claim to be "in system 3" at all. Flagged as a real scope
@@ -1163,24 +1167,21 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 		}
 	}
 
-	// Decided once, off staff 0, for the reason explained in this function's
-	// own doc comment: every staff shares one system membership.
-	const systemPlans = planSystems(score, 0, ss, padding, options.systemWidthPx);
-
 	// M2 Slice 5: how much left margin every system reserves for a
 	// brace/bracket plus part-name labels, decided once for the whole score
-	// (see `computePartDecorationPlan`'s own comment). Not fed into
-	// `planSystems`/`probeMeasureWidth`/`systemSpacingScale`'s own width
-	// budgeting above, which still assumes a system's note content starts at
-	// plain `padding`: a documented scope cut, not an oversight. A score that
-	// combines `systemWidthPx` casting-off with a bracketed/labelled part
-	// therefore renders `decorationPlan.headerWidth` pixels wider than
-	// `systemWidthPx` asks for, rather than the header eating into the note
-	// content's own budget; nothing in this slice's own acceptance criteria
-	// exercises that combination, and getting it exactly right would mean
-	// threading a second, asymmetric margin through three functions whose
-	// signatures nothing else in this slice needs touched.
+	// (see `computePartDecorationPlan`'s own comment). Every system's
+	// measures start after it, so it comes out of the width casting-off and
+	// justification have to work with (M6 Slice 10; it used to be added on
+	// top, making a labelled score wider than `systemWidthPx`).
 	const decorationPlan = computePartDecorationPlan(score, ss);
+	const availableWidth =
+		options.systemWidthPx === undefined ? undefined : options.systemWidthPx - 2 * padding - decorationPlan.headerWidth;
+
+	// Decided once, off every staff's shared column widths, for the reason
+	// explained in this function's own doc comment: every staff shares one
+	// system membership and one justification factor per system.
+	const naturalWidths = availableWidth === undefined ? null : probeNaturalWidths(score, ss);
+	const systemPlans = planSystems(score, naturalWidths, availableWidth);
 
 	const measures: LaidOutMeasure[] = [];
 	const systems: {
@@ -1213,18 +1214,23 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 		const plan = systemPlans[systemIndex]!;
 		const isLastSystem = systemIndex === systemPlans.length - 1;
 
-		// Each staff's own justification scale for this system, independent
-		// per staff (unchanged from Slice 3/9): a sparser staff stretches more
-		// than a denser one to reach the same `systemWidthPx` target.
-		const scales = score.staves.map((_, staffIndex) =>
-			systemSpacingScale(score, staffIndex, plan, ss, padding, options.systemWidthPx, isLastSystem)
+		// One justification factor for every staff of this system (see
+		// `systemSpacingScale` on why a per-staff one overflowed).
+		const scale = systemSpacingScale(
+			score,
+			plan,
+			(staffIndex, measureIndex) =>
+				(measureIndex === plan[0] ? naturalWidths!.first : naturalWidths!.mid)[staffIndex]![measureIndex]!,
+			ss,
+			availableWidth,
+			isLastSystem
 		);
 
 		// Every staff's own natural (pre-column-sharing) width for every
-		// measure in this system, at that staff's own decided scale: what
-		// `layoutMeasure` would produce completely on its own, before the
-		// cross-staff column-width sharing below pads a narrower staff out.
-		const naturalWidths = score.staves.map((staff, staffIndex) =>
+		// measure in this system, at the system's scale: what `layoutMeasure`
+		// would produce completely on its own, before the cross-staff
+		// column-width sharing below pads a narrower staff out.
+		const columnNaturalWidths = score.staves.map((staff, staffIndex) =>
 			plan.map((measureIndex) => {
 				const measure = staff.measures[measureIndex]!;
 				return probeMeasureWidth(
@@ -1237,14 +1243,14 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 						isScoreFirst: measureIndex === 0,
 						isLast: measureIndex === staff.measures.length - 1
 					},
-					scales[staffIndex]
+					scale
 				);
 			})
 		);
 		// The shared width every staff's own version of a given measure column
 		// renders at (see this function's own doc comment on why padding, not
 		// re-scaling, closes the gap for whichever staff was narrower here).
-		const columnWidths = plan.map((_measureIndex, col) => Math.max(...naturalWidths.map((row) => row[col]!)));
+		const columnWidths = plan.map((_measureIndex, col) => Math.max(...columnNaturalWidths.map((row) => row[col]!)));
 
 		let staffTopY = groupTopY;
 		let groupBottom = groupTopY;
@@ -1284,7 +1290,7 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 					isSystemFirst: measureIndex === plan[0],
 					isScoreFirst: measureIndex === 0,
 					isLast: measureIndex === staff.measures.length - 1,
-					spacingScale: scales[staffIndex],
+					spacingScale: scale,
 					staffIndex,
 					clef,
 					lines: CLEF_LINES[clef],
@@ -1315,7 +1321,7 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 			systems.push({
 				measureIndices: [...plan],
 				topY: staffTopY,
-				spacingScale: scales[staffIndex]!,
+				spacingScale: scale,
 				staffIndex,
 				...(lyricBaselineY !== undefined ? { lyricVerses: verses, lyricBaseline: lyricBaselineY } : {})
 			});
@@ -1388,10 +1394,10 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 }
 
 /**
- * The justification factor a system's notes get stretched (or, rarely, very
- * mildly compressed) by, so the system's measures collectively fill
- * `systemWidthPx` exactly instead of leaving a ragged right edge at whatever
- * width natural spacing happens to produce.
+ * The justification factor every staff of a system's notes get stretched
+ * (or, rarely, very mildly compressed) by, so the system's shared measure
+ * columns collectively fill the system's width exactly instead of leaving a
+ * ragged right edge at whatever width natural spacing happens to produce.
  *
  * Real engraving justifies every system except the last: a piece's final
  * line, like the final line of justified prose, is left at its own natural
@@ -1411,60 +1417,112 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
  * it), and is also why this never pads a measure's edges to make up a
  * shortfall.
  *
- * Solved with a single linear estimate, not iteratively: true final width at
+ * One factor for the whole system, shared by every staff (M6 Slice 10).
+ * Each staff used to get its own, filling `systemWidthPx` on its own, but
+ * the columns are then widened to the widest staff (`layoutScore`'s
+ * `columnWidths`), so a sparse staff stretched to fill the line plus a
+ * dense staff's wider columns elsewhere added up to more than the line.
+ * Each staff's width at one column is estimated as linear in the factor
+ * (natural width plus the stretched part of its note advances); the column
+ * takes the widest staff's estimate, so the system's width is a sum of
+ * maxima of increasing lines: convex, piecewise linear and increasing.
+ * Newton's method on that, starting from natural spacing, lands on the
+ * exact root in a few steps (one for a single staff, where it reduces to
+ * the plain linear solve this function always did), and every step uses a
+ * true tangent, so it never overshoots past the root on the way back.
+ *
+ * Still a linear estimate, not an iterative re-layout: true final width at
  * a given scale can differ very slightly from this estimate whenever a
  * note's accidental-collision clearance (`layoutNote`'s `collisionShift`)
- * would or would not trigger at that scale. Stretching only ever *removes*
- * the need for that clearance (more natural room between notes), never adds
- * it, so the estimate is safe in the direction that matters; real engraving
- * software solves this properly with iterative passes, out of scope here.
- * Collision shifts are already the rare exception this file's own spacing
- * constants are tuned around (see `SPACING.minAccidentalClearance`), so in
- * practice the estimate lands within the "small tolerance" this slice's
- * acceptance criteria ask for.
+ * or a lyric's minimum width would or would not bind at that scale.
+ * Stretching only ever *removes* the need for either (more natural room
+ * between notes), never adds it, so the estimate errs short, never past the
+ * system's right edge; real engraving software solves this properly with
+ * iterative passes, out of scope here.
  */
 function systemSpacingScale(
 	score: Score,
-	staffIndex: number,
 	plan: readonly number[],
+	naturalWidth: (staffIndex: number, measureIndex: number) => number,
 	ss: number,
-	padding: number,
-	systemWidthPx: number | undefined,
+	availableWidth: number | undefined,
 	isLastSystem: boolean
 ): number {
-	if (systemWidthPx === undefined || isLastSystem) return 1;
+	if (availableWidth === undefined || isLastSystem) return 1;
 
-	const staffMeasures = score.staves[staffIndex]!.measures;
-	let naturalWidth = 0;
-	let advanceSpaces = 0;
-	for (const measureIndex of plan) {
-		const measure = staffMeasures[measureIndex]!;
-		naturalWidth += probeMeasureWidth(score, staffIndex, measure, ss, {
-			isSystemFirst: measureIndex === plan[0],
-			isScoreFirst: measureIndex === 0,
-			isLast: measureIndex === staffMeasures.length - 1
-		});
-		// Sum the shared *columns'* widths (M2 Slice 1), not every voice's
-		// every note's own advance: a two-voice measure's notes no longer form
-		// one timeline, and summing per note across both voices would
-		// double-count whatever beat they share, inflating this denominator
-		// and under-stretching the system relative to what `naturalWidth`
-		// (computed by `probeMeasureWidth`, which already lays the measure out
-		// through the same column logic) actually needs filled.
-		for (const column of measureColumns(measure.notes, lyricColumnExtras(score, measureIndex))) advanceSpaces += column.width;
-	}
+	// Per column, per staff: natural width and stretchable advance (px per
+	// unit of scale). Sum the shared *columns'* widths (M2 Slice 1), not
+	// every voice's every note's own advance: a two-voice measure's notes no
+	// longer form one timeline, and summing per note across both voices
+	// would double-count whatever beat they share.
+	const columns = plan.map((measureIndex) =>
+		score.staves.map((staff, staffIndex) => {
+			const measure = staff.measures[measureIndex]!;
+			let advanceSpaces = 0;
+			for (const column of measureColumns(measure.notes, lyricColumnExtras(score, measureIndex))) advanceSpaces += column.width;
+			return { natural: naturalWidth(staffIndex, measureIndex), stretch: advanceSpaces * ss };
+		})
+	);
 	// An entirely note-free plan (nothing to stretch) has no sensible scale;
 	// natural spacing is already whatever this system is going to look like.
-	if (advanceSpaces <= 0) return 1;
+	if (!columns.some((column) => column.some((entry) => entry.stretch > 0))) return 1;
 
-	const availableWidth = systemWidthPx - 2 * padding;
-	const rawScale = 1 + (availableWidth - naturalWidth) / (advanceSpaces * ss);
+	let scale = 1;
+	for (let step = 0; step < 32; step++) {
+		let width = 0;
+		let slope = 0;
+		for (const column of columns) {
+			let best = -Infinity;
+			let bestStretch = 0;
+			for (const entry of column) {
+				const w = entry.natural + (scale - 1) * entry.stretch;
+				// A tie keeps the steeper line: the right-hand derivative, still
+				// a tangent of the convex sum, so the step stays safe.
+				if (w > best + 1e-9 || (Math.abs(w - best) <= 1e-9 && entry.stretch > bestStretch)) {
+					best = w;
+					bestStretch = entry.stretch;
+				}
+			}
+			width += best;
+			slope += bestStretch;
+		}
+		const gap = availableWidth - width;
+		if (Math.abs(gap) < 1e-6 || slope <= 0) break;
+		scale += gap / slope;
+	}
 	// Guards the one case `planSystems` allows to exceed `availableWidth`: a
 	// single measure too wide to fit even alone, which cannot be split across
 	// systems. Compressing it by more than half would start visibly crowding
 	// noteheads together, well past the "very mildly compressed" this slice's
 	// own scope asks for; not expected to be hit by an ordinary casting-off.
-	return Math.max(rawScale, 0.5);
+	return Math.max(scale, 0.5);
+}
+
+/**
+ * Every staff's natural (scale 1) width for every measure, both as the
+ * first measure of a system (clef and key, plus the time signature on the
+ * score's first) and mid-system, indexed `[staffIndex][measureIndex]`.
+ * Probed once per score and shared by `planSystems` (which needs both, not
+ * yet knowing where each measure lands) and `systemSpacingScale` (which
+ * reads whichever applies once it does).
+ */
+interface NaturalWidths {
+	readonly first: readonly (readonly number[])[];
+	readonly mid: readonly (readonly number[])[];
+}
+
+function probeNaturalWidths(score: Score, ss: number): NaturalWidths {
+	const probe = (isSystemFirst: boolean) =>
+		score.staves.map((staff, staffIndex) =>
+			staff.measures.map((measure) =>
+				probeMeasureWidth(score, staffIndex, measure, ss, {
+					isSystemFirst,
+					isScoreFirst: isSystemFirst && measure.index === 0,
+					isLast: measure.index === staff.measures.length - 1
+				})
+			)
+		);
+	return { first: probe(true), mid: probe(false) };
 }
 
 /**
@@ -1476,55 +1534,41 @@ function systemSpacingScale(
  * always gets at least one measure, even an oversized one, because a measure
  * cannot be split.
  *
- * The width a measure needs depends on whether it opens a system (clef + key,
- * see `layoutMeasure`), which is exactly the thing being decided, so each
- * candidate measure's width is computed twice, once for each case, and the
- * one matching where it actually lands is used. Reusing `layoutMeasure` at a
- * throwaway `startX` of 0 keeps this in one place rather than duplicating the
- * width arithmetic.
+ * Decided once for the whole score, off shared column widths (M6 Slice 10):
+ * a measure column is as wide as its widest staff (`layoutScore` pads the
+ * others out to it), so that maximum is what each measure costs here. It
+ * was staff 0's own width alone before, and every other staff's wider
+ * columns then pushed systems far past `systemWidthPx`.
+ *
+ * The width a measure needs depends on whether it opens a system (clef + key
+ * on every staff, see `layoutMeasure`), which is exactly the thing being
+ * decided, so `widths` carries both, and the one matching where the measure
+ * actually lands is used.
  */
-function planSystems(
-	score: Score,
-	staffIndex: number,
-	ss: number,
-	padding: number,
-	systemWidthPx: number | undefined
-): number[][] {
-	const staffMeasures = score.staves[staffIndex]!.measures;
-	if (systemWidthPx === undefined) return [staffMeasures.map((m) => m.index)];
+function planSystems(score: Score, widths: NaturalWidths | null, availableWidth: number | undefined): number[][] {
+	const measureCount = score.staves[0]!.measures.length;
+	const all = Array.from({ length: measureCount }, (_, i) => i);
+	if (availableWidth === undefined || widths === null) return [all];
 
-	const availableWidth = systemWidthPx - 2 * padding;
+	const column = (rows: NaturalWidths['first'], measureIndex: number) => Math.max(...rows.map((row) => row[measureIndex]!));
 	const systems: number[][] = [];
 	let current: number[] = [];
 	let currentWidth = 0;
 
-	for (const measure of staffMeasures) {
-		const isScoreFirst = measure.index === 0;
-		const isLast = measure.index === staffMeasures.length - 1;
-		const widthAsSystemFirst = probeMeasureWidth(score, staffIndex, measure, ss, {
-			isSystemFirst: true,
-			isScoreFirst,
-			isLast
-		});
-
+	for (const measureIndex of all) {
+		const widthAsSystemFirst = column(widths.first, measureIndex);
 		if (current.length === 0) {
-			current.push(measure.index);
+			current.push(measureIndex);
 			currentWidth = widthAsSystemFirst;
 			continue;
 		}
-
-		const widthAsMidSystem = probeMeasureWidth(score, staffIndex, measure, ss, {
-			isSystemFirst: false,
-			isScoreFirst: false,
-			isLast
-		});
-
+		const widthAsMidSystem = column(widths.mid, measureIndex);
 		if (currentWidth + widthAsMidSystem > availableWidth) {
 			systems.push(current);
-			current = [measure.index];
+			current = [measureIndex];
 			currentWidth = widthAsSystemFirst;
 		} else {
-			current.push(measure.index);
+			current.push(measureIndex);
 			currentWidth += widthAsMidSystem;
 		}
 	}
@@ -1540,11 +1584,11 @@ function planSystems(
  * rather than this function needing its own separate note-summing logic to
  * keep in sync.
  *
- * `spacingScale` (M2 Slice 4) is only ever passed by `layoutScore`'s own
- * `naturalWidths` probe, which needs each staff's *natural* width at its
- * already-decided justification scale, to feed `columnWidth`'s cross-staff
- * max; `planSystems`'s own casting-off probes (below) always omit it, since
- * a system's scale is not yet decided at the point casting-off runs.
+ * `spacingScale` (M2 Slice 4) is only passed by `layoutScore`'s
+ * `columnNaturalWidths` probe and `relayoutMeasure`, which need each staff's
+ * width at the system's already-decided justification scale, to feed
+ * `columnWidth`'s cross-staff max; `probeNaturalWidths`'s casting-off probes
+ * always omit it, since a system's scale is not yet decided at that point.
  */
 function probeMeasureWidth(
 	score: Score,
@@ -1577,8 +1621,8 @@ function probeMeasureWidth(
  * canvas itself, which is exactly the single-system check this replaces.
  *
  * `staffSystems`/`systemIndex` (M2 Slice 3) are already scoped to one staff's
- * own systems (see `relayoutMeasure`, the only caller): `layout.systems` is
- * now a merge of every staff's own systems concatenated together, so walking
+ * own systems (see `relayoutMeasure`, the only caller): `layout.systems` holds
+ * one entry per staff per system, interleaved, so walking
  * neighbours in that flat array directly would, at a staff's own first or
  * last system, incorrectly treat an unrelated *other* staff's adjacent system
  * as this one's neighbour. `layout.measures` itself has no such problem
@@ -1673,10 +1717,15 @@ export function relayoutMeasure(
 	// ink back to the single-staff band (staffTopY to staffTopY + 4*ss)
 	// instead of its correct shared span, a latent bug from M2 Slice 4 that
 	// nothing caught because no existing test exercised `relayoutMeasure` on
-	// a measure whose barline is actually shared across staves. `columnWidth`
-	// is left alone: fixing it would need probing every other staff's own
-	// natural width at this column, which is out of this slice's scope; that
-	// remains a separate, documented, pre-existing gap.
+	// a measure whose barline is actually shared across staves.
+	//
+	// The column's shared width (M6 Slice 10), recomputed the way
+	// `layoutScore` does: every staff's natural width at this column at the
+	// system's scale, the edited staff's included. An edit on a narrower
+	// staff therefore keeps the padded width and stays scoped; one that
+	// changes the widest staff's width changes the column, which the width
+	// check below sends to a full layout (the system may no longer fit).
+	// Skipped for a single staff, whose column is its own natural width.
 	// Lyrics (M6 Slice 9): the row's verse lines must be the ones it was laid
 	// out with, or the staff gap, the barline joins and every syllable of the
 	// row are stale (an op dropped the last syllable of a verse).
@@ -1692,17 +1741,29 @@ export function relayoutMeasure(
 		ss,
 		barlineJoins(staffIndex, score.staves.length, (above?.lyricVerses?.length ?? 0) > 0, verses.length > 0)
 	);
+	const flags = {
+		isSystemFirst: system.measureIndices[0] === measureIndex,
+		isScoreFirst: measureIndex === 0,
+		isLast: measureIndex === staff.measures.length - 1
+	};
+	const columnWidth =
+		score.staves.length > 1
+			? Math.max(
+					...score.staves.map((other, s) =>
+						probeMeasureWidth(score, s, other.measures[measureIndex]!, ss, flags, system.spacingScale)
+					)
+				)
+			: undefined;
 	const base = layoutMeasure(score, measure, {
 		ss,
 		staffTopY: system.topY,
 		startX: previous.region.x,
-		isSystemFirst: system.measureIndices[0] === measureIndex,
-		isScoreFirst: measureIndex === 0,
-		isLast: measureIndex === staff.measures.length - 1,
+		...flags,
 		spacingScale: system.spacingScale,
 		staffIndex,
 		clef,
 		lines: CLEF_LINES[clef],
+		columnWidth,
 		barlineTop: span.top,
 		barlineBottom: span.bottom
 	});

@@ -221,6 +221,33 @@ describe('SFCC corpus: import + layout', () => {
 	}
 });
 
+describe('SFCC corpus: shared system breaks (M6 Slice 10)', () => {
+	// Every staff breaks at the same measures, sharing each barline's x, and
+	// no measure ends past `systemWidthPx` unless it sits alone in its system
+	// (a measure cannot be split, so a lone over-wide one is allowed to).
+	it.each(fixtures.flatMap((name) => [958, 1400].map((width) => ({ name, width }))))('$name at $width px', ({ name, width }) => {
+		const score = importMusicXml(readFileSync(join(FIXTURE_DIR, name), 'utf8'));
+		const layout = layoutScore(score, { staffSpacePx: 11, systemWidthPx: width });
+		const rows = (staffIndex: number) => layout.systems.filter((s) => s.staffIndex === staffIndex);
+		const systems = rows(0);
+		for (let staffIndex = 1; staffIndex < score.staves.length; staffIndex++) {
+			expect(rows(staffIndex).map((s) => s.measureIndices)).toEqual(systems.map((s) => s.measureIndices));
+		}
+		const rightEdges = new Map<number, number[]>();
+		for (const m of layout.measures) {
+			rightEdges.set(m.index, [...(rightEdges.get(m.index) ?? []), m.region.x + m.region.width]);
+		}
+		for (const system of systems) {
+			for (const index of system.measureIndices) {
+				const edges = rightEdges.get(index)!;
+				expect(edges).toHaveLength(score.staves.length);
+				for (const edge of edges) expect(edge).toBeCloseTo(edges[0]!, 6);
+				if (system.measureIndices.length > 1) expect(edges[0]!).toBeLessThanOrEqual(width + 0.001);
+			}
+		}
+	});
+});
+
 describe('SFCC corpus: lossless round trip (M6 Slice 3)', () => {
 	for (const name of fixtures) {
 		it(name, () => {

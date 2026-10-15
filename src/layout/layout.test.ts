@@ -990,6 +990,50 @@ describe('multi-staff systems', () => {
 		expect(summary(measureAt(layout, 1, 0).ops)).toEqual([['fClef'], 0, 3]);
 	});
 
+	describe('sharing system breaks between a sparse and a dense staff (M6 Slice 10)', () => {
+		/** Whole notes over sixteenths, eight measures: the dense staff sets
+		 *  every column's width, so casting off on the sparse one overflowed. */
+		function sparseOverDense(): Score {
+			const score = buildScore(Array.from({ length: 8 }, (): MeasureSpec => [['C5', 'whole']]), { keyFifths: 0 });
+			score.appendStaff('bass');
+			for (let i = 0; i < 8; i++) {
+				const dense = score.appendMeasure(1);
+				for (let n = 0; n < 16; n++) score.appendNote(dense, { pitch: parsePitch(n % 2 ? 'C3' : 'E3'), value: '16th' });
+			}
+			return score;
+		}
+		const WIDTH = { staffSpacePx: SS, systemWidthPx: 900 };
+		const rows = (layout: LaidOutScore, staffIndex: number) =>
+			layout.systems.filter((s) => s.staffIndex === staffIndex);
+
+		it('breaks every staff at the same measures, filling each system without running past it', () => {
+			const layout = layoutScore(sparseOverDense(), WIDTH);
+			const systems = rows(layout, 0);
+			expect(systems.length).toBeGreaterThan(1);
+			expect(rows(layout, 1).map((s) => s.measureIndices)).toEqual(systems.map((s) => s.measureIndices));
+			expect(layout.width).toBeLessThanOrEqual(WIDTH.systemWidthPx + 0.001);
+			for (const [i, system] of systems.entries()) {
+				const last = system.measureIndices.at(-1)!;
+				const right = (staffIndex: number) => measureAt(layout, staffIndex, last).region;
+				expect(right(1).x + right(1).width).toBeCloseTo(right(0).x + right(0).width, 6);
+				// Justified to the right margin, except the last system.
+				if (i < systems.length - 1) expect(right(0).x + right(0).width).toBeCloseTo(WIDTH.systemWidthPx - layout.measures[0]!.region.x, 0);
+			}
+		});
+
+		it('keeps an edit on the narrower staff scoped, matching a full layout', () => {
+			const score = sparseOverDense();
+			const layout = layoutScore(score, WIDTH);
+			const touched = score.transposeNote(score.staves[0]!.measures[1]!.notes[0]!.id, 1)!;
+			const updated = relayoutMeasure(score, layout, touched, WIDTH, 0);
+			expect(updated).not.toBeNull();
+			const full = measureAt(layoutScore(score, WIDTH), 0, touched);
+			const scoped = measureAt(updated!, 0, touched);
+			for (const key of ['x', 'y', 'width', 'height'] as const) expect(scoped.region[key]).toBeCloseTo(full.region[key], 6);
+			expect(findGlyph(scoped.ops, 'noteheadWhole')!.x).toBeCloseTo(findGlyph(full.ops, 'noteheadWhole')!.x, 6);
+		});
+	});
+
 	it('rejects a score whose staves disagree on measure count', () => {
 		const score = buildScore([[['C4', 'quarter']]]);
 		score.appendStaff('bass');

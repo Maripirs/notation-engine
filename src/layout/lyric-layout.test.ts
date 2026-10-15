@@ -197,9 +197,9 @@ describe('layout: hyphens and extenders (M6 Slice 9)', () => {
 		// Both verses do it.
 		expect(hyphensIn(m(4), top2!).filter((h) => h.x < ry.x)).toHaveLength(2);
 
-		// At 900px the break falls after measure 3, inside "light,"'s melisma:
+		// At 1050px the break falls after measure 3, inside "light,"'s melisma:
 		// its extender runs to the end of the system and resumes under the G4.
-		const melisma = layoutScore(score, { staffSpacePx: SS, systemWidthPx: 900 });
+		const melisma = layoutScore(score, { staffSpacePx: SS, systemWidthPx: 1050 });
 		const sm = (index: number) => measureAt(melisma, 0, index);
 		const [s1, s2] = melisma.systems.filter((s) => s.staffIndex === 0);
 		expect(s1!.measureIndices).toEqual([0, 1, 2]);

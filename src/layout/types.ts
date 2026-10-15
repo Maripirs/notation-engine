@@ -192,12 +192,15 @@ export interface LaidOutScore {
 	 * a single measure out at its system's already-decided scale without
 	 * recomputing the whole system's justification on every incremental edit.
 	 *
-	 * `staffIndex` (M2 Slice 3) says which staff this system belongs to: this
-	 * array is now a merge of every staff's own systems (each staff is cast
-	 * off into systems independently), not one staff's alone, so a
-	 * `measureIndices` entry is only unique *within* the same `staffIndex`,
-	 * the same reason `LaidOutMeasure` itself needs the pair, not `index`
-	 * alone.
+	 * `staffIndex` (M2 Slice 3) says which staff this row belongs to: there
+	 * is one entry per staff per system (a 6-staff score cast off into 20
+	 * systems has 120 entries, in system order, staves top to bottom within
+	 * each), since each staff's row has its own `topY` and lyric line. Every
+	 * staff's entries share the same `measureIndices` and `spacingScale`
+	 * (casting-off and justification are decided once per score, M6 Slice
+	 * 10), so a `measureIndices` entry is only unique *within* the same
+	 * `staffIndex`, the same reason `LaidOutMeasure` itself needs the pair,
+	 * not `index` alone. Count systems by filtering to one staff.
 	 */
 	readonly systems: readonly {
 		readonly measureIndices: readonly number[];

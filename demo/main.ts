@@ -162,8 +162,15 @@ function sizeCanvas(): void {
 	const dpr = Math.min(window.devicePixelRatio || 1, MAX_CANVAS_DEVICE_PX / Math.max(layout.width, layout.height));
 	canvas.width = Math.ceil(layout.width * dpr);
 	canvas.height = Math.ceil(layout.height * dpr);
+	// Height follows width through the aspect ratio rather than being pinned:
+	// `#score`'s `max-width: 100%` shrinks the box when the score is wider
+	// than its container, and a fixed height then squashed it horizontally
+	// only, stretching the music tall (M6 Slice 10 found Les Djinns drawn
+	// about twice its height that way). Hit-testing and follow-scroll scale
+	// by the box's actual size, so a shrunk canvas still lines up.
 	canvas.style.width = `${layout.width}px`;
-	canvas.style.height = `${layout.height}px`;
+	canvas.style.height = 'auto';
+	canvas.style.aspectRatio = `${layout.width} / ${layout.height}`;
 	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 }
 
@@ -503,15 +510,17 @@ canvas.addEventListener('pointerdown', (event) => {
 	// keeps every system within `systemWidthPx`, so this is normally a no-op),
 	// but `max-width: 100%` on #score is kept as a belt-and-suspenders safety
 	// net for a viewport narrower than even one system, which still shrinks
-	// the CSS box below layout.width and would otherwise point at the wrong
-	// note (or none).
+	// the CSS box below layout.width (keeping its aspect ratio, see
+	// `sizeCanvas`) and would otherwise point at the wrong note (or none).
+	// Measured against the content box (`clientLeft`/`clientWidth` leave out
+	// the 1px border), which is what the drawing is scaled into.
 	const rect = canvas.getBoundingClientRect();
-	const scaleX = layout.width / rect.width;
-	const scaleY = layout.height / rect.height;
+	const scaleX = layout.width / canvas.clientWidth;
+	const scaleY = layout.height / canvas.clientHeight;
 	const hit = hitTest(
 		layout,
-		(event.clientX - rect.left) * scaleX,
-		(event.clientY - rect.top) * scaleY
+		(event.clientX - rect.left - canvas.clientLeft) * scaleX,
+		(event.clientY - rect.top - canvas.clientTop) * scaleY
 	);
 	const changed = renderer.setSelection(hit ? hit.noteId : null);
 	selected = hit ? hit.noteId : null;
@@ -828,10 +837,13 @@ let onsetFlushQueued = false;
 function followPlaybackCursor(noteId: NoteId): void {
 	const region = regionForNote(layout, noteId);
 	if (!region) return;
-	const top = canvas.offsetTop + region.y;
+	// Layout pixels to CSS pixels, should `max-width` have shrunk the canvas.
+	const scale = canvas.clientHeight / layout.height;
+	const top = canvas.offsetTop + canvas.clientTop + region.y * scale;
+	const height = region.height * scale;
 	const viewTop = scoreScroll.scrollTop;
-	if (top >= viewTop && top + region.height <= viewTop + scoreScroll.clientHeight) return;
-	const targetTop = top + region.height / 2 - scoreScroll.clientHeight / 2;
+	if (top >= viewTop && top + height <= viewTop + scoreScroll.clientHeight) return;
+	const targetTop = top + height / 2 - scoreScroll.clientHeight / 2;
 	scoreScroll.scrollTo({ top: Math.max(0, targetTop), behavior: 'smooth' });
 }
 
