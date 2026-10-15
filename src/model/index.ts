@@ -17,6 +17,8 @@ export type {
 	ClefType,
 	CrossStaffBeam,
 	Fermata,
+	GraceNote,
+	GraceRun,
 	MeasureSpec,
 	MeasureValidation,
 	NoteId,
@@ -48,10 +50,13 @@ export { NO_PASSTHROUGH, opaqueElementKey, withoutNoteMarkup, withoutTieMarkup }
 export { EditHistory } from './edit-history.js';
 export type { EditHistoryOptions } from './edit-history.js';
 export {
+	ACCIACCATURA,
+	APPOGGIATURA,
 	ARTICULATIONS,
 	buildScore,
 	eventArticulations,
 	eventFermata,
+	graceRuns,
 	Measure,
 	measureCapacityWholes,
 	measureDurationWholes,

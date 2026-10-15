@@ -72,6 +72,7 @@ import {
 	type Wedge,
 	type WedgeKind,
 	type Fermata,
+	type GraceNote,
 	type MeasurePassthrough,
 	type Note,
 	type NoteId,
@@ -398,13 +399,15 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 			// Measure 0's first `<clef>` per staff is that staff's initial clef,
 			// already read by the staves pass; `applyClefs` skips it.
 			const initialClefPending = new Set<number>(m === 0 ? measureObjs.map((_, k) => k) : []);
-			for (const el of measureEl.children) {
+			const measureChildren = measureEl.children;
+			for (let ci = 0; ci < measureChildren.length; ci++) {
+				const el = measureChildren[ci]!;
 				if (el.name === 'note') {
-					if (child(el, 'grace')) {
-						// A grace note takes no time and the model has none (M6 Slice
-						// 8), so it is kept whole, verbatim, in front of the note
-						// that follows it in its own voice. A grace chord's
-						// `<chord/>` members carry `<grace>` too and go the same way.
+					if (child(el, 'grace') && !isModelledGrace(el, measureChildren, ci)) {
+						// A grace note the model cannot hold (M6 Slice 8: a grace
+						// chord, a grace rest, a tupleted grace; none in the corpus)
+						// is kept whole, verbatim, in front of the note that follows
+						// it in its own voice, as every grace note was before Slice 8.
 						chordState.last = null;
 						anchors.grace(el);
 						report.keep('grace');
@@ -1119,8 +1122,9 @@ const OWNED_ATTRIBUTE_CONTENT: Readonly<Record<string, ReadonlySet<string>>> = {
 
 /** `<note>` children the model reads, merges (`rest`, `notations`, `tie`:
  *  see `finalizeNotePassthrough`) or regenerates (`stem`, `beam`,
- *  `accidental`). `grace` never gets this far (a grace note is passed through
- *  whole), and `unpitched` is the one dropped child. */
+ *  `accidental`). `grace` is read since M6 Slice 8 (a grace note the model
+ *  cannot hold never gets this far: it is passed through whole), and
+ *  `unpitched` is the one dropped child. */
 const NOTE_OWNED: ReadonlySet<string> = new Set([
 	'chord',
 	'pitch',
@@ -1166,8 +1170,43 @@ interface ChordState {
 	} | null;
 }
 
-/** Build one non-grace `<note>`; returns it and the staff (within the part)
- *  it landed on, or `null` if it was dropped. */
+/**
+ * Whether the grace `<note>` at `children[i]` becomes a model grace note (M6
+ * Slice 8): a pitched note that is not a chord member, not tupleted, and not
+ * the anchor of a grace chord (the next `<note>` is not a `<grace>` with
+ * `<chord/>`). Anything else stays passthrough whole, the pre-Slice-8 path,
+ * since the model has no grace chords or grace rests (`NoteSpec.grace`).
+ */
+function isModelledGrace(noteEl: XmlElement, children: readonly XmlElement[], i: number): boolean {
+	if (!child(noteEl, 'pitch') || child(noteEl, 'chord') || child(noteEl, 'time-modification')) return false;
+	for (let j = i + 1; j < children.length; j++) {
+		if (children[j]!.name !== 'note') continue;
+		return !(child(children[j]!, 'grace') && child(children[j]!, 'chord'));
+	}
+	return true;
+}
+
+/** A `<grace>` element's attributes as a `GraceNote`. Steal-time percentages
+ *  are kept as numbers; `make-time` is in `<divisions>`, so it is converted to
+ *  wholes (export converts back at its own divisions). */
+function readGrace(graceEl: XmlElement, divisions: number): GraceNote {
+	const percent = (text: string | undefined): number | null => {
+		if (text === undefined) return null;
+		const value = Number.parseFloat(text);
+		return Number.isFinite(value) ? value : null;
+	};
+	const makeTime = percent(graceEl.attrs['make-time']);
+	return Object.freeze({
+		slash: graceEl.attrs.slash === 'yes',
+		stealTimePrevious: percent(graceEl.attrs['steal-time-previous']),
+		stealTimeFollowing: percent(graceEl.attrs['steal-time-following']),
+		makeTime: makeTime === null ? null : makeTime / (divisions * 4)
+	});
+}
+
+/** Build one `<note>` (a grace note too, since M6 Slice 8, when
+ *  `isModelledGrace`); returns it and the staff (within the part) it landed
+ *  on, or `null` if it was dropped. */
 function buildNote(
 	noteEl: XmlElement,
 	info: { baseStaffIndex: number; staffCount: number },
@@ -1255,10 +1294,15 @@ function buildNote(
 		});
 	} else {
 		const typeText = childText(noteEl, 'type');
+		const graceEl = child(noteEl, 'grace');
+		// A grace note has no `<duration>` to derive a value from, so one with
+		// no usable `<type>` is drawn as an eighth, the commonest grace value.
 		const { value, dots } =
 			typeText !== undefined && isNoteValue(typeText)
 				? { value: typeText, dots: statedDots }
-				: deriveValueFromDuration(childText(noteEl, 'duration'), divisions, tuplet, statedDots, report, typeText);
+				: graceEl
+					? { value: 'eighth' as const, dots: statedDots }
+					: deriveValueFromDuration(childText(noteEl, 'duration'), divisions, tuplet, statedDots, report, typeText);
 		note = score.appendNote(targetMeasure, {
 			pitch,
 			value,
@@ -1267,12 +1311,16 @@ function buildNote(
 			tuplet,
 			chordWithPrevious,
 			articulations: marks.articulations,
-			fermata: marks.fermata
+			fermata: marks.fermata,
+			grace: graceEl ? readGrace(graceEl, divisions) : null
 		});
 	}
 	// A member keeps pointing a further `<chord/>` at the same chord: the
 	// measure, staff and voice are the anchor's either way.
-	chordState.last = { measure: targetMeasure, k, staffIndex: globalStaffIndex, voice, pitched: pitch !== null };
+	// A grace note is no event, so a `<chord/>` after it has nothing to join.
+	chordState.last = note.isGrace
+		? null
+		: { measure: targetMeasure, k, staffIndex: globalStaffIndex, voice, pitched: pitch !== null };
 
 	// Tie state: `<tie>` is authoritative; fall back to `<notations><tied>`
 	// only when there is no `<tie>` at all.

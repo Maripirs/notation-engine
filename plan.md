@@ -1042,7 +1042,7 @@ element by Slice 3 and stays there.
       the next member (the rough edge E2's spike hit). Demo: keyboard
       shortcuts for each in `npm run dev`, fixing a mis-read rest in Les
       Djinns' first page.
-- [ ] **Slice 8: Grace notes.** Model a grace note (with/without slash)
+- [x] **Slice 8: Grace notes.** Model a grace note (with/without slash)
       attached before its principal note, taking no measure time; layout
       draws it cue-sized with its own small stem/flag/slash, spacing
       before the principal; playback steals a fixed short time from the
@@ -3097,3 +3097,105 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   between voices; `transposeNote` still returns a bare measure index rather
   than `MeasureRef[]`; Les Djinns page 1 has no British-rest misreads to fix
   (its rests are real), so the demo flow fixes a real rest as a stand-in.
+- 2026-10-14: M6 Slice 8 (grace notes) done, via subagent. Model:
+  `Note.grace: GraceNote | null` (`{ slash, stealTimePrevious,
+  stealTimeFollowing, makeTime }`, percentages as numbers, `make-time` held
+  in wholes so it survives `<divisions>` rescaling; `ACCIACCATURA` /
+  `APPOGGIATURA` constants for literals, `buildScore` extra `grace`). A grace
+  is an ordinary `Note` stored inline in `measure.notes` right before its
+  principal (the next event anchor of its voice in the measure), chosen over
+  a list on the principal for the chord model's reason: per-head id, so
+  hit-testing, selection, transpose, slurs, ties, clone/undo and passthrough
+  work unchanged. The cost is paid in one place: a grace is *not an event*.
+  `durationWholes` is 0, `noteEvents` skips graces, `measureDurationWholes`/
+  `validateMeasure` skip them (a grace-only voice is no voice to fill),
+  `appendNote` never lets a chord member stand on one, `buildScore`'s tie
+  resolution skips them, and `noteDurationQuarters` (io) is 0; so every time
+  walk (onsets, columns, beaming, playback measure starts, export cursor,
+  correction-op event logic) is untouched. New `graceRuns(notes)` is the one
+  place that groups graces into per-voice runs with their principal, or
+  `null` for a run ending its voice (Brahms m86's grace is written at the
+  end of m85, OMR's spelling of a grace before the next downbeat). Not
+  modelled (constructor throws; import keeps them passthrough whole, the old
+  path): grace rests, grace chords (`<grace/><chord/>`, also the anchor of
+  one), tupleted graces; none in the corpus. Clone/`specOf`/equivalence
+  (slash and every attribute) cover it. Correction ops: `noteToRest` on a
+  grace removes it outright (ties, slurs re-anchored or dropped, payload,
+  cross-staff beam), the only op that changes a grace's existence;
+  `setDuration`, `addChordMember`, `removeChordMember`, `editTie`,
+  `tieTargetFor` refuse a grace; `transposeNote` works; editing a principal
+  ignores its graces (a consumed rest's graces stay and attach to the next
+  event).
+  Import: a `<grace>` note that is modelled goes through `buildNote` (no
+  `<duration>`; no usable `<type>` falls back to eighth), joins slur pairing
+  and tie linking like any note, and anchors positional passthrough on its
+  stream exactly where the passthrough grace used to be. Export writes each
+  run right before its principal (after positional anchors at that onset) or
+  at the stream end for a trailing run: `<grace>` first (`slash="yes"` only
+  when set, steal/make times as read), no `<duration>`, stem up (down for an
+  even voice in a multi-voice measure), `<beam>` begin/continue/end for a
+  run of two or more beamable graces; `make-time` folds into `<divisions>`.
+  Corpus: `grace` passthrough 0 everywhere (Brahms 11, Faure 8 now model
+  notes: beamed 16th pairs, eighth pairs, single slashed/unslashed eighths,
+  one trailing, graces before invisible rests, two grace-to-principal slurs
+  per file); the test now asserts model notes = source `<note>` + `<forward>`
+  for all 7 files and model graces = source `<grace>`; the snapshot gains
+  `graces` and `modelNotes` +11/+8, and `slur` passthrough drops 9 -> 7 in
+  both (grace slur ends now pair). Updated deliberately (only those lines).
+  Lossless round trip, re-import equivalence, byte-identical second export
+  and transpose+undo unchanged and green.
+  Layout (`planGraceRun`/`layoutGraceRun`): `GRACE_SCALE` 0.65 (SMuFL's
+  engravingDefaults and Bravura publish no cue scale; Gould gives roughly
+  60-70%, MuseScore's `graceNoteMag` is 0.7), every glyph via the op's
+  `fontSizePx`, rects/curves sized in `g = 0.65 ss`, vertical positions on
+  the real staff. Room for the widest run at a column is inserted before it
+  as a fixed, unjustified width (`graceInsertPx`, the clef-change pattern),
+  each voice's run right-aligned against its principal with
+  `GRACE_PRINCIPAL_GAP` 0.55 ss, graces 0.3 ss apart; a trailing run draws
+  after the last column, before the barline. Stem always up in a single
+  voice (`graceStemUp`; voice parity in multi-voice), length `STEM_LENGTH`
+  in grace spaces; cue flag; acciaccatura slash as a straight curve op
+  through stem and flag (through the first stem of a slashed beamed run);
+  consecutive beamable graces beamed with cue-thickness beams and secondary
+  levels; cue accidentals judged against the measure's state but not
+  updating it (a grace accidental applies to the grace alone, so the
+  principal restates its own); cue-width ledger lines; hit boxes and
+  `NotePlacement` (new `scale`) per grace, ties/slurs read head extents
+  through it. A slur starting on a grace is drawn as the short grace slur
+  under (away from the stem of) the two heads. The run's ink becomes the
+  voice's previous ink, so the principal's accidental clears it. All ops in
+  the measure's own ops, so `measureRegion` covers them (tested).
+  Playback (`timeline.ts`, documented constants): graces play on the beat,
+  stealing from the principal's start; a lone unslashed grace takes 1/2 of
+  the principal (2/3 if dotted), anything else (acciaccatura, runs of 2+)
+  takes a 32nd each, capped so a run takes at most 1/2 of the principal;
+  `steal-time-following` overrides; total capped at 3/4; a trailing run
+  plays before the next measure's first event of its voice; graces play at
+  the dynamic level, never open ties; `steal-time-previous`/`make-time` are
+  round-trip only.
+  Demo: `createGraceShowcaseScore` (6 measures: acciaccatura/appoggiaturas,
+  beamed 16th pair and slashed beamed eighths, cue accidentals and ledger
+  lines, grace slur and grace before a chord, two voices, trailing grace)
+  appended to `createFullDemoScore` (`appendMeasures` copies `grace`) and
+  exported. Verified headlessly in system Chrome (demo bottom, only the
+  pre-existing 404) and offline via node-canvas at staff space 14: Brahms
+  m14-15, m63-64, m100, m129, m234, m279 and Les Djinns m22-24, m71-73,
+  m84-86, m102-104 (beamed grace 16ths, slashed down-stem graces in the
+  piano LH, a slashed grace slurred under to its principal, the trailing
+  Bb3 before m86's barline).
+  Tests: 626 -> 662 (model 14 in new `src/model/grace-notes.test.ts`, io 6
+  in new `src/io/grace-notes.test.ts`, layout 9 in new
+  `src/layout/grace-layout.test.ts`, playback 7 in new
+  `src/playback/grace-playback.test.ts`; the passthrough grace test now
+  covers a grace chord, the diagnostics tests expect `grace` modelled);
+  `check`/`build` green. Bench scoped edit 0.351/0.289/0.288/0.328 ms at
+  4/16/64/124 measures, full redraw 31.0 ms at 124, i.e. unchanged.
+  Noticed, not fixed: in multi-staff systems the grace insert (like a clef
+  change insert) shifts only its own staff's later columns, so the staves'
+  rhythmic columns drift apart by up to a run's width; the source
+  `<stem>` of a grace is not kept (Les Djinns' LH voice-2 graces say up, the
+  multi-voice rule draws them down); dots on a grace and articulations on a
+  grace are modelled but not drawn; a grace's ledger lines can visually
+  merge with its principal's; `<type size="cue">` and `print-object="no"`
+  rests the graces precede are not honoured (the latter pre-existing); no
+  edit op inserts a grace (by scope).

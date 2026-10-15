@@ -16,7 +16,7 @@
 // this fixture.
 
 import { parsePitch } from './model/pitch.js';
-import { buildScore, Score, TRIPLET, type NoteId, type NoteValue } from './model/score.js';
+import { ACCIACCATURA, APPOGGIATURA, buildScore, Score, TRIPLET, type NoteId, type NoteValue } from './model/score.js';
 
 export function createDemoScore(): Score {
 	return buildScore(
@@ -1045,6 +1045,75 @@ export function createDynamicsShowcaseScore(): Score {
 	);
 }
 
+/**
+ * M6 Slice 8's grace-note showcase, six measures of 4/4 in C:
+ *
+ * 1. An acciaccatura (slashed eighth) before a quarter, an appoggiatura
+ *    (plain eighth) before a quarter, and one before a half.
+ * 2. A beamed pair of grace 16ths (the Brahms shape) and a slashed beamed
+ *    pair of grace eighths before high notes.
+ * 3. Cue-size accidentals and ledger lines: a sharp grace before its
+ *    principal (which states its own sharp again), a flat grace below the
+ *    staff, and a high A grace on a ledger line.
+ * 4. A grace slurred to its principal (the slur drawn below, under the two
+ *    heads), and a grace before a chord.
+ * 5. Two voices, each with a grace before its downbeat: the upper stems up,
+ *    the lower down.
+ * 6. A whole note, then a grace left at the end of the measure (OMR's
+ *    spelling of a grace before the next downbeat), drawn before the barline.
+ */
+export function createGraceShowcaseScore(): Score {
+	return buildScore(
+		[
+			{
+				keyFifths: 0,
+				notes: [
+					['D5', 'eighth', { grace: ACCIACCATURA }],
+					['C5', 'quarter'],
+					['F4', 'eighth', { grace: APPOGGIATURA }],
+					['E4', 'quarter'],
+					['B4', 'eighth', { grace: APPOGGIATURA }],
+					['A4', 'half']
+				]
+			},
+			[
+				['B4', '16th', { grace: APPOGGIATURA }],
+				['D5', '16th', { grace: APPOGGIATURA }],
+				['C5', 'half'],
+				['A5', 'eighth', { grace: ACCIACCATURA }],
+				['B5', 'eighth', { grace: ACCIACCATURA }],
+				['G5', 'half']
+			],
+			[
+				['F#4', 'eighth', { grace: ACCIACCATURA }],
+				['F#4', 'quarter'],
+				['Bb3', 'eighth', { grace: APPOGGIATURA }],
+				['A3', 'quarter'],
+				['A5', 'eighth', { grace: ACCIACCATURA }],
+				['G5', 'half']
+			],
+			[
+				['A4', 'eighth', { grace: APPOGGIATURA }],
+				['G4', 'half'],
+				['D5', 'eighth', { grace: ACCIACCATURA }],
+				[['C5', 'E5'], 'half']
+			],
+			[
+				['F5', 'eighth', { grace: ACCIACCATURA, voice: 1 }],
+				['E5', 'whole', { voice: 1 }],
+				['D4', 'eighth', { grace: APPOGGIATURA, voice: 2 }],
+				['C4', 'whole', { voice: 2 }]
+			],
+			[
+				['C5', 'whole'],
+				['B4', 'eighth', { grace: ACCIACCATURA }]
+			]
+		],
+		{ keyFifths: 0, time: { beats: 4, beatType: 4 } },
+		[{ start: [3, 0], end: [3, 1] }]
+	);
+}
+
 /** Copy every note of `source`'s measures onto the end of `score`, preserving
  *  each note's full spec, including any tie or slur. The showcases are built
  *  as standalone scores (so their own unit tests can lay them out and
@@ -1093,7 +1162,8 @@ function appendMeasures(score: Score, source: Score): void {
 				measureRestWholes: note.measureRestWholes,
 				chordWithPrevious: note.chordWithPrevious,
 				articulations: note.articulations,
-				fermata: note.fermata
+				fermata: note.fermata,
+				grace: note.grace
 			});
 			copiedIdOf.set(note.id, copiedNote.id);
 		}
@@ -1123,8 +1193,8 @@ function appendMeasures(score: Score, source: Score): void {
  * barline showcase, M2 Slice 1's two-voice showcase and M2 Slice 2's voice-
  * collision showcase, so a human can see all eight render without disturbing
  * `createDemoScore`'s frozen shape (see the comment on it above). M6 Slice 2's
- * chord showcase follows them, then M6 Slice 5's articulation showcase and M6
- * Slice 6's dynamics showcase, each
+ * chord showcase follows them, then M6 Slice 5's articulation showcase, M6
+ * Slice 6's dynamics showcase and M6 Slice 8's grace-note showcase, each
  * last when added so every earlier measure keeps the index it always had.
  */
 export function createFullDemoScore(): Score {
@@ -1140,5 +1210,6 @@ export function createFullDemoScore(): Score {
 	appendMeasures(score, createChordShowcaseScore());
 	appendMeasures(score, createArticulationShowcaseScore());
 	appendMeasures(score, createDynamicsShowcaseScore());
+	appendMeasures(score, createGraceShowcaseScore());
 	return score;
 }

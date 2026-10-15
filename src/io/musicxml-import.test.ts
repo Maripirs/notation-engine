@@ -372,11 +372,12 @@ describe('importMusicXml — tolerance for unsupported content', () => {
 
 		const score = importMusicXml(xml);
 
-		// The grace note is not a model note (it is passthrough since M6 Slice
-		// 3); the four real quarter notes survive intact.
-		const notes = score.staves[0]!.measures[0]!.notes;
+		// The grace note is a model grace note since M6 Slice 8 (passthrough
+		// in Slices 3-7); the four real quarter notes survive intact.
+		const notes = score.staves[0]!.measures[0]!.notes.filter((n) => !n.isGrace);
 		expect(notes.map((n) => n.pitch?.step)).toEqual(['C', 'D', 'E', 'F']);
 		expect(notes.every((n) => n.value === 'quarter')).toBe(true);
+		expect(score.staves[0]!.measures[0]!.notes.filter((n) => n.isGrace).map((n) => n.pitch?.step)).toEqual(['D']);
 
 		const messages = warn.mock.calls.map((call) => String(call[0]));
 		expect(messages.some((m) => m.includes('florble'))).toBe(true);
@@ -628,11 +629,11 @@ describe('importMusicXml: drop and passthrough diagnostics (M6 Slices 1, 3)', ()
 			// The tempo direction is exactly export's own shape in the first
 			// measure, so it is `Score.tempoBpm`, not passthrough.
 			// (Its staccato and fermata are modelled since M6 Slice 5, the
-			// `<p/>` since Slice 6; its direction's `<sound>` stays payload.
-			// The hairpin start has no stop to pair with, so it stays too.)
+			// `<p/>` since Slice 6, the grace note since Slice 8; its
+			// direction's `<sound>` stays payload. The hairpin start has no stop
+			// to pair with, so it stays too.)
 			ending: 1,
 			florble: 1,
-			grace: 1,
 			lyric: 1,
 			print: 1,
 			'score-instrument': 1,

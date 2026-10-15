@@ -227,6 +227,40 @@ export const ARTICULATIONS: readonly Articulation[] = Object.freeze([
  */
 export type Fermata = 'upright' | 'inverted';
 
+/**
+ * What makes a note a grace note (M6 Slice 8; MusicXML `<grace>`): an
+ * ornamental note drawn small before the note it decorates (its *principal*),
+ * taking no measure time of its own. `slash` is the acciaccatura (a stroke
+ * through stem and flag, played as short as possible); without it the note
+ * is an appoggiatura (played on the beat, taking a real share of the
+ * principal).
+ *
+ * `stealTimePrevious`/`stealTimeFollowing` are MusicXML's percentage
+ * attributes (how much of the previous/following note's time the grace
+ * takes); `null` when unstated. Playback honours `stealTimeFollowing`; both
+ * are kept so a round trip writes them back. `makeTime` (MusicXML
+ * `make-time`, time the grace adds rather than steals) is held in wholes so
+ * it survives export's `<divisions>` rescaling; nothing interprets it.
+ * Immutable, so a clone may share it.
+ */
+export interface GraceNote {
+	readonly slash: boolean;
+	readonly stealTimePrevious: number | null;
+	readonly stealTimeFollowing: number | null;
+	readonly makeTime: number | null;
+}
+
+/** A plain grace note (no slash, no steal/make time), for literals. */
+export const APPOGGIATURA: GraceNote = Object.freeze({
+	slash: false,
+	stealTimePrevious: null,
+	stealTimeFollowing: null,
+	makeTime: null
+});
+
+/** A slashed grace note (acciaccatura), for literals. */
+export const ACCIACCATURA: GraceNote = Object.freeze({ ...APPOGGIATURA, slash: true });
+
 /** The empty `Note.articulations`, shared (and frozen) so the common case
  *  costs no allocation per note. */
 export const NO_ARTICULATIONS: readonly Articulation[] = Object.freeze([]);
@@ -329,6 +363,32 @@ export interface NoteSpec {
 	 *  `articulations`, it sits on the head it was written on, and layout and
 	 *  playback read the chord's union (`eventFermata`). */
 	readonly fermata?: Fermata | null;
+	/**
+	 * Makes this a grace note (M6 Slice 8; see `GraceNote`). A grace note sits
+	 * in `measure.notes` like any note, right before its principal: the next
+	 * non-grace event of its own voice in the same measure (`graceRuns`). A
+	 * run of grace notes with nothing after them in their voice (OMR writes a
+	 * grace for the next measure's downbeat at the end of this one) has no
+	 * principal in the measure; playback gives it the voice's first event in
+	 * the next measure.
+	 *
+	 * Why inline rather than a list on the principal: every grace keeps its
+	 * own id and its own entry in the one notes array, so hit-testing,
+	 * selection, `transposeNote`, slurs, ties, undo (`clone`) and passthrough
+	 * keep working per head with no new storage, exactly the argument that
+	 * settled the chord model. The price is again paid in one place: a grace
+	 * note is *not an event*. `durationWholes` is 0, `noteEvents` leaves it
+	 * out, and `validateMeasure` skips it, so every walk that counts time
+	 * (validation, onsets, beaming, playback, export's cursor, the correction
+	 * ops' event logic) sees exactly the measure it saw before; only the code
+	 * that draws, plays or writes a grace asks for it (`graceRuns`).
+	 *
+	 * Only valid on a pitched note that is not a chord member, a measure rest
+	 * or a tuplet (the constructor throws): grace chords and grace rests are
+	 * not modelled (none in the SFCC corpus; import keeps them as
+	 * passthrough).
+	 */
+	readonly grace?: GraceNote | null;
 	/** See `Note.passthrough`. */
 	readonly passthrough?: readonly OpaqueElement[];
 }
@@ -355,6 +415,8 @@ export class Note {
 	articulations: readonly Articulation[];
 	/** See `NoteSpec.fermata`. `null` for none. */
 	fermata: Fermata | null;
+	/** See `NoteSpec.grace`. `null` for every ordinary note or rest. */
+	readonly grace: GraceNote | null;
 	/**
 	 * Unmodelled children of this note's `<note>` (M6 Slice 3, see
 	 * `passthrough.ts`), in source order: `<lyric>`, `<notehead>`, `<cue>`, a
@@ -379,13 +441,22 @@ export class Note {
 		this.chordWithPrevious = spec.chordWithPrevious ?? false;
 		this.articulations = normalizeArticulations(spec.articulations);
 		this.fermata = spec.fermata ?? null;
+		this.grace = spec.grace ?? null;
 		this.passthrough = spec.passthrough ?? NO_PASSTHROUGH;
+		if (this.grace !== null && (this.pitch === null || this.chordWithPrevious || this.tuplet !== null)) {
+			throw new Error(`Note ${id}: grace is only valid on a pitched note that is not a chord member or a tuplet`);
+		}
 		if (this.measureRestWholes !== null && this.pitch !== null) {
 			throw new Error(`Note ${id}: measureRestWholes is only valid on a rest (pitch: null)`);
 		}
 		if (this.chordWithPrevious && this.pitch === null) {
 			throw new Error(`Note ${id}: chordWithPrevious is only valid on a pitched note, not a rest`);
 		}
+	}
+
+	/** Whether this is a grace note; see `NoteSpec.grace`. */
+	get isGrace(): boolean {
+		return this.grace !== null;
 	}
 
 	/** Whether this is a whole-measure rest; see `NoteSpec.measureRestWholes`. */
@@ -410,6 +481,11 @@ export class Note {
 	 * signature's capacity.
 	 */
 	get durationWholes(): number {
+		// A grace note (M6 Slice 8) takes no measure time: its `value` only
+		// picks its glyph and flag, and playback steals its sounding time from
+		// the principal. Zero here is what keeps any duration sum that does
+		// meet one correct without a special case.
+		if (this.grace !== null) return 0;
 		// A whole-measure rest fills its measure, not its notated value: a 3/4
 		// bar's measure rest is drawn as a whole rest but lasts three quarters.
 		if (this.measureRestWholes !== null) return this.measureRestWholes;
@@ -661,8 +737,12 @@ export interface TimeSignature {
  */
 export function measureDurationWholes(measure: Measure): number {
 	// A chord member (`Note.chordWithPrevious`) shares its anchor's onset and
-	// takes no time of its own, so only anchors and plain notes count.
-	return measure.notes.reduce((sum, note) => (note.chordWithPrevious ? sum : sum + note.durationWholes), 0);
+	// takes no time of its own, so only anchors and plain notes count; a grace
+	// note (M6 Slice 8) takes none either.
+	return measure.notes.reduce(
+		(sum, note) => (note.chordWithPrevious || note.grace !== null ? sum : sum + note.durationWholes),
+		0
+	);
 }
 
 /**
@@ -683,11 +763,16 @@ export function measureDurationWholes(measure: Measure): number {
  * notes freely; one with no such event (only reachable by bypassing
  * `Score.appendNote`'s check) starts an event of its own rather than being
  * lost.
+ *
+ * Grace notes (M6 Slice 8) are left out entirely: they take no time, so they
+ * are not events, and every caller here walks time. The few that draw, play
+ * or write graces ask `graceRuns` for them.
  */
 export function noteEvents(notes: readonly Note[]): Note[][] {
 	const events: Note[][] = [];
 	const lastEventOfVoice = new Map<number, Note[]>();
 	for (const note of notes) {
+		if (note.grace !== null) continue;
 		const open = note.chordWithPrevious ? lastEventOfVoice.get(note.voice) : undefined;
 		if (open) {
 			open.push(note);
@@ -698,6 +783,49 @@ export function noteEvents(notes: readonly Note[]): Note[][] {
 		lastEventOfVoice.set(note.voice, event);
 	}
 	return events;
+}
+
+/**
+ * One run of consecutive grace notes in one voice (M6 Slice 8): the graces in
+ * `measure.notes` order, and the principal they ornament, the anchor of the
+ * voice's next event in the measure, or `null` when the run ends its voice
+ * (see `NoteSpec.grace`). A run is never empty.
+ */
+export interface GraceRun {
+	readonly voice: number;
+	readonly notes: readonly Note[];
+	readonly principal: Note | null;
+}
+
+/**
+ * A measure's grace notes grouped into runs, per voice, in the order each
+ * run's first grace appears. A run ends at the voice's next event anchor (its
+ * principal); a chord member of a voice never ends one (it cannot sit between
+ * a grace and its principal, since members follow their anchor). The single
+ * place "which note does this grace belong to" is answered, the way
+ * `noteEvents` is for chords.
+ */
+export function graceRuns(notes: readonly Note[]): GraceRun[] {
+	const runs: { voice: number; notes: Note[]; principal: Note | null }[] = [];
+	const open = new Map<number, (typeof runs)[number]>();
+	for (const note of notes) {
+		if (note.grace !== null) {
+			let run = open.get(note.voice);
+			if (!run) {
+				run = { voice: note.voice, notes: [], principal: null };
+				runs.push(run);
+				open.set(note.voice, run);
+			}
+			run.notes.push(note);
+		} else if (!note.chordWithPrevious) {
+			const run = open.get(note.voice);
+			if (run) {
+				run.principal = note;
+				open.delete(note.voice);
+			}
+		}
+	}
+	return runs;
 }
 
 /** How much duration a time signature's measure holds, as a fraction of a whole note. */
@@ -773,8 +901,10 @@ export function validateMeasure(measure: Measure, time: TimeSignature): MeasureV
 	// by both the model's own validation and layout's rendering).
 	const wholesByVoice = new Map<number, number>();
 	for (const note of measure.notes) {
-		// A chord counts once: its members ride on the anchor's duration.
-		if (note.chordWithPrevious) continue;
+		// A chord counts once: its members ride on the anchor's duration. A
+		// grace note takes no time (M6 Slice 8), and a voice holding only grace
+		// notes is no voice to fill.
+		if (note.chordWithPrevious || note.grace !== null) continue;
 		wholesByVoice.set(note.voice, (wholesByVoice.get(note.voice) ?? 0) + note.durationWholes);
 	}
 	// Tuplets land on repeating fractions like 1/3, which do not terminate in
@@ -1133,7 +1263,8 @@ export class Score {
 			const voice = spec.voice ?? 1;
 			let anchorCandidate: Note | undefined;
 			for (let i = measure.notes.length - 1; i >= 0 && !anchorCandidate; i--) {
-				if (measure.notes[i]!.voice === voice) anchorCandidate = measure.notes[i];
+				// A grace note is no event, so not something to stand on.
+				if (measure.notes[i]!.voice === voice && measure.notes[i]!.grace === null) anchorCandidate = measure.notes[i];
 			}
 			if (!anchorCandidate || anchorCandidate.pitch === null) {
 				throw new Error(
@@ -1564,11 +1695,17 @@ export class Score {
 	 * note at its end; a slur with nothing left inside to land on is dropped.
 	 * A cross-staff beam loses the note (a rest has no stem), and is dropped
 	 * when a side is left with fewer than two notes.
+	 *
+	 * A grace note (M6 Slice 8) is removed outright instead: a grace rest is
+	 * not a thing, and since a grace takes no time nothing shifts either way.
+	 * Its ties, slurs (re-anchored as above) and payload go with it. This is
+	 * the only op that changes a grace note's existence; no op inserts one.
 	 */
 	noteToRest(id: NoteId): readonly MeasureRef[] | null {
 		const found = this.#locate(id);
 		if (!found || found.note.pitch === null) return null;
 		const { measure, note } = found;
+		if (note.grace !== null) return this.#removeGrace(measure, note);
 		const event = this.#eventOf(measure, note);
 		if (event.length > 1) return this.#removeHead(measure, event, note);
 		const touched = new TouchedMeasures();
@@ -1657,10 +1794,16 @@ export class Score {
 	 * still valid). A head that becomes longer than an eighth leaves any
 	 * cross-staff beam (it has no beam to join). Chord members' own
 	 * `value`/`dots` follow the anchor, since they choose the head glyph.
+	 *
+	 * Refused on a grace note (M6 Slice 8): it takes no measure time, so
+	 * there is no capacity to keep and no event to resize; its written value
+	 * only picks a flag, and changing that is not a correction this op makes.
+	 * Consuming a rest that has grace notes before it leaves them in place,
+	 * where they attach to the voice's next event (`graceRuns`).
 	 */
 	setDuration(id: NoteId, value: NoteValue, dots: 0 | 1 | 2 = 0): readonly MeasureRef[] | null {
 		const found = this.#locate(id);
-		if (!found) return null;
+		if (!found || found.note.grace !== null) return null;
 		const { measure, note } = found;
 		const events = this.#voiceEvents(measure, note.voice);
 		const k = events.findIndex((event) => event.includes(note));
@@ -1737,11 +1880,12 @@ export class Score {
 	 * Returns `null` for an unknown id, a rest (a rest has no stem to share),
 	 * or a pitch the event already has (a unison head is not a correction
 	 * anyone needs, and layout draws one over the other). Use `findNote` on
-	 * the event afterwards to reach the new head; its id is fresh.
+	 * the event afterwards to reach the new head; its id is fresh. Refused on
+	 * a grace note (M6 Slice 8): grace chords are not modelled.
 	 */
 	addChordMember(id: NoteId, pitch: Pitch): readonly MeasureRef[] | null {
 		const found = this.#locate(id);
-		if (!found || found.note.pitch === null) return null;
+		if (!found || found.note.pitch === null || found.note.grace !== null) return null;
 		const { measure, note } = found;
 		const event = this.#eventOf(measure, note);
 		if (event.some((head) => head.pitch !== null && pitchesEqual(head.pitch, pitch))) return null;
@@ -1780,7 +1924,8 @@ export class Score {
 	 */
 	removeChordMember(id: NoteId): readonly MeasureRef[] | null {
 		const found = this.#locate(id);
-		if (!found || found.note.pitch === null) return null;
+		// A grace note is never in a chord (M6 Slice 8).
+		if (!found || found.note.pitch === null || found.note.grace !== null) return null;
 		const event = this.#eventOf(found.measure, found.note);
 		if (event.length < 2) return null;
 		return this.#removeHead(found.measure, event, found.note);
@@ -1803,10 +1948,13 @@ export class Score {
 	 * each end twice. Untying strips the source's stray start too, so "untie"
 	 * also removes a dangling OMR tie start the model never linked (and is
 	 * not a no-op when that is all there is).
+	 *
+	 * Refused on a grace note (M6 Slice 8): a grace is not an event, so it has
+	 * no "next event" to tie into, and no event's next is a grace either.
 	 */
 	editTie(sourceId: NoteId, targetId: NoteId | null): readonly MeasureRef[] | null {
 		const found = this.#locate(sourceId);
-		if (!found || found.note.pitch === null) return null;
+		if (!found || found.note.pitch === null || found.note.grace !== null) return null;
 		const { measure, note: source } = found;
 		const touched = new TouchedMeasures();
 		touched.addMeasure(measure);
@@ -1848,7 +1996,7 @@ export class Score {
 	tieTargetFor(sourceId: NoteId): NoteId | null {
 		const found = this.#locate(sourceId);
 		const pitch = found?.note.pitch;
-		if (!found || !pitch) return null;
+		if (!found || !pitch || found.note.grace !== null) return null;
 		const next = this.#nextEventInVoice(found.measure, found.note);
 		return next?.find((head) => head.pitch !== null && pitchesEqual(head.pitch, pitch))?.id ?? null;
 	}
@@ -1902,6 +2050,18 @@ export class Score {
 			this.#tieSourceOfTarget.delete(note.id);
 			source.tiedToId = null;
 		}
+	}
+
+	/** `noteToRest` on a grace note (M6 Slice 8): take it out of the score. */
+	#removeGrace(measure: Measure, note: Note): readonly MeasureRef[] {
+		const touched = new TouchedMeasures();
+		touched.addMeasure(measure);
+		this.#untie(note, touched);
+		this.#reanchorSlurs(note.id, measure, null, touched);
+		this.#detachFromCrossStaffBeam(note.id, measure, null, touched);
+		measure.notes.splice(measure.notes.indexOf(note), 1);
+		this.#measureOfNote.delete(note.id);
+		return touched.list();
 	}
 
 	/** `noteToRest`/`removeChordMember` on a head of a chord with others. */
@@ -2103,6 +2263,7 @@ export class Score {
 						chordWithPrevious: note.chordWithPrevious,
 						articulations: note.articulations,
 						fermata: note.fermata,
+						grace: note.grace,
 						passthrough: note.passthrough
 					});
 					// Set directly, not through the spec's `tiedToId` (which would
@@ -2166,6 +2327,7 @@ function specOf(note: Note): NoteSpec {
 		chordWithPrevious: note.chordWithPrevious,
 		articulations: note.articulations,
 		fermata: note.fermata,
+		grace: note.grace,
 		passthrough: note.passthrough
 	};
 }
@@ -2220,6 +2382,9 @@ export type MeasureSpec = readonly (readonly [
 		articulations?: readonly Articulation[];
 		/** M6 Slice 5; on a chord, set on the anchor only. */
 		fermata?: Fermata;
+		/** M6 Slice 8: a grace note before the voice's next event (see
+		 *  `NoteSpec.grace`), e.g. `['D5', 'eighth', { grace: ACCIACCATURA }]`. */
+		grace?: GraceNote;
 	}
 ])[];
 
@@ -2345,7 +2510,8 @@ export function buildScore(
 					// Marks are the chord's, so only the anchor carries them:
 					// the shape an exporter (and MuseScore) writes.
 					articulations: i === 0 ? extra?.articulations : undefined,
-					fermata: i === 0 ? extra?.fermata : undefined
+					fermata: i === 0 ? extra?.fermata : undefined,
+					grace: extra?.grace
 				});
 				builtNotes.push(note);
 				if (extra?.tiedToNext) tieRequests.push(note);
@@ -2363,7 +2529,8 @@ export function buildScore(
 		// `setTie` reports the pitch mismatch, as it always has.
 		const startAt = builtNotes.indexOf(source) + 1;
 		const rest = builtNotes.slice(startAt).filter((candidate) => candidate.voice === source.voice);
-		const anchorAt = rest.findIndex((candidate) => !candidate.chordWithPrevious);
+		// Grace notes are not events (M6 Slice 8): a tie skips over them.
+		const anchorAt = rest.findIndex((candidate) => !candidate.chordWithPrevious && candidate.grace === null);
 		if (anchorAt === -1) {
 			throw new Error(
 				`tiedToNext on a note with no following note in voice ${source.voice} to tie to`

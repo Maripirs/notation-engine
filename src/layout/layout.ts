@@ -22,6 +22,7 @@ import type {
 	Articulation,
 	ClefType,
 	CrossStaffBeam,
+	GraceRun,
 	Measure,
 	Note,
 	NoteId,
@@ -31,7 +32,7 @@ import type {
 	Slur,
 	TimeSignature
 } from '../model/score.js';
-import { eventArticulations, eventFermata, measureDurationWholes, noteEvents } from '../model/score.js';
+import { eventArticulations, eventFermata, graceRuns, measureDurationWholes, noteEvents } from '../model/score.js';
 import type { DynamicKind, DynamicMark, Placement, Wedge } from '../model/directions.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
@@ -1842,6 +1843,23 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// `middleLineOf` gives each note its own clef's middle line for the stem,
 	// beam and tie directions, which are decided by distance from it.
 	const onsets = noteOnsets(measure.notes);
+	// Grace notes (M6 Slice 8): each run keyed by the principal it precedes,
+	// and the runs that end their voice (drawn before the barline). A grace
+	// takes its principal's onset (or its voice's end) so the clef lookups
+	// below place it like the note it belongs to.
+	const graceRunBefore = new Map<NoteId, GraceRun>();
+	const trailingGraceRuns: GraceRun[] = [];
+	for (const run of graceRuns(measure.notes)) {
+		let at: number;
+		if (run.principal) {
+			graceRunBefore.set(run.principal.id, run);
+			at = onsets.get(run.principal.id) ?? 0;
+		} else {
+			trailingGraceRuns.push(run);
+			at = (eventsByVoiceGroups.get(run.voice) ?? []).reduce((sum, event) => sum + event[0]!.durationWholes, 0);
+		}
+		for (const grace of run.notes) onsets.set(grace.id, at);
+	}
 	const clefChanges = measure.clefChanges;
 	const ctxByClef = new Map<ClefType, MeasureContext>([[ctx.clef, ctx]]);
 	const ctxForClef = (clef: ClefType): MeasureContext => {
@@ -2007,6 +2025,9 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	let nextClefChange = 0;
 	let noteCtx = ctx;
 	let clefInsertPx = 0;
+	// The fixed (unjustified) width grace runs drawn so far have pushed every
+	// later column right by (M6 Slice 8), the same idea as `clefInsertPx`.
+	let graceInsertPx = 0;
 	/**
 	 * Draw every not-yet-drawn change at or before `onset` at `x`, as one
 	 * change clef: only the last one is in force there, and a change to the
@@ -2042,9 +2063,24 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		if (nextClefChange < clefChanges.length) {
 			drawClefChangesUpTo(
 				column.onset,
-				cursor + columnOffsetPx.get(key)! + clefInsertPx + Math.max(0, ...shiftAccumByVoice.values())
+				cursor + columnOffsetPx.get(key)! + clefInsertPx + graceInsertPx + Math.max(0, ...shiftAccumByVoice.values())
 			);
 		}
+		// Grace runs before this column's events (M6 Slice 8): room for the
+		// widest is inserted before the column (after any clef change drawn
+		// above), and each voice's run is drawn right-aligned against its own
+		// principal in the voice loop below.
+		const gracePlans = new Map<number, GracePlan>();
+		let graceRoom = 0;
+		for (const voice of voiceNumbers) {
+			const event = eventsByVoiceGroups.get(voice)?.[voiceNoteIndex.get(voice)!];
+			const run = event && onsetKey(onsets.get(event[0]!.id)!) === key ? graceRunBefore.get(event[0]!.id) : undefined;
+			if (!run) continue;
+			const plan = planGraceRun(run, keyFifths, lastStatedAlterForStepByVoice.get(voice)!, graceStemUp(voice, multiVoice), ss);
+			gracePlans.set(voice, plan);
+			graceRoom = Math.max(graceRoom, plan.widthPx);
+		}
+		graceInsertPx += graceRoom;
 		atThisColumnByVoice = new Map();
 		// Ink deposited so far *in this column* by an earlier-processed
 		// voice: what lets an accidental in one voice check the other
@@ -2053,7 +2089,8 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		let columnInkRightSoFar: number | null = null;
 
 		for (const voice of voiceNumbers) {
-			const voiceEvents = eventsByVoiceGroups.get(voice)!;
+			// A voice holding only grace notes here has no events at all.
+			const voiceEvents = eventsByVoiceGroups.get(voice) ?? [];
 			const index = voiceNoteIndex.get(voice)!;
 			// One event per voice per column (M6 Slice 2): a chord's members
 			// share its anchor's onset, so the whole chord is taken here at once.
@@ -2063,7 +2100,23 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			voiceNoteIndex.set(voice, index + 1);
 
 			const shiftAccum = shiftAccumByVoice.get(voice)!;
-			const baseCellX = cursor + columnOffsetPx.get(key)! + clefInsertPx + shiftAccum;
+			const baseCellX = cursor + columnOffsetPx.get(key)! + clefInsertPx + graceInsertPx + shiftAccum;
+			const gracePlan = gracePlans.get(voice);
+			if (gracePlan) {
+				const graceInk = layoutGraceRun(
+					ops,
+					notes,
+					placements,
+					gracePlan,
+					baseCellX - gracePlan.widthPx,
+					graceStemUp(voice, multiVoice),
+					noteCtx
+				);
+				// The principal's accidental (if any) clears the run like any
+				// earlier ink in its voice.
+				const own = previousInkRightByVoice.get(voice)!;
+				previousInkRightByVoice.set(voice, own === null ? graceInk : Math.max(own, graceInk));
+			}
 
 			// Voice-to-voice notehead offset: a second-interval clash against
 			// any earlier-numbered voice already placed at this same column
@@ -2158,8 +2211,23 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	if (nextClefChange < clefChanges.length) {
 		drawClefChangesUpTo(
 			Number.POSITIVE_INFINITY,
-			cursor + columnsWidthPx + clefInsertPx + Math.max(0, ...finalShiftByVoice.values())
+			cursor + columnsWidthPx + clefInsertPx + graceInsertPx + Math.max(0, ...finalShiftByVoice.values())
 		);
+	}
+	// Grace runs that end their voice (M6 Slice 8; OMR's spelling of a grace
+	// before the next downbeat) are drawn after the last column, before the
+	// barline, like a clef change there.
+	if (trailingGraceRuns.length > 0) {
+		const x = cursor + columnsWidthPx + clefInsertPx + graceInsertPx + Math.max(0, ...finalShiftByVoice.values());
+		let room = 0;
+		for (const run of trailingGraceRuns) {
+			const up = graceStemUp(run.voice, multiVoice);
+			const stated = lastStatedAlterForStepByVoice.get(run.voice) ?? new Map<Step, number>();
+			const plan = planGraceRun(run, keyFifths, stated, up, ss);
+			layoutGraceRun(ops, notes, placements, plan, x, up, noteCtx);
+			room = Math.max(room, plan.widthPx);
+		}
+		graceInsertPx += room;
 	}
 	for (const group of beamGroups) layoutBeamGroup(ops, group, stems, ctx, undefined, stemTips);
 	for (const { group, beamY } of crossStaffGroups) layoutBeamGroup(ops, group, stems, ctx, beamY, stemTips);
@@ -2168,7 +2236,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// furthest past it. A single voice's shift is the only one that can ever
 	// be nonzero, so this reduces to exactly the same total the old flat
 	// cursor always produced.
-	cursor += columnsWidthPx + clefInsertPx + Math.max(0, ...finalShiftByVoice.values());
+	cursor += columnsWidthPx + clefInsertPx + graceInsertPx + Math.max(0, ...finalShiftByVoice.values());
 	cursor += SPACING.measureTrailOut * ss;
 
 	// Staff lines are per measure, spanning exactly this measure's band, for the
@@ -2306,13 +2374,16 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		const point = placements.get(note.id);
 		if (!point) continue; // a rest, which can never be tied
 
+		// A grace head (M6 Slice 8) is smaller, and so is its gap to a curve.
+		const unit = ss * (point.scale ?? 1);
 		if (note.tiedToId !== null) {
 			const curvesBelow = tieCurvesBelow(point, middleLineOf(note));
-			const x0 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxNE[0] * ss + TIE_NOTE_GAP * ss;
+			const x0 = point.noteX + (GLYPH_METRICS[point.headGlyph].bBoxNE[0] + TIE_NOTE_GAP) * unit;
 			const target =
 				score.measureOfNote(note.tiedToId) === measure ? placements.get(note.tiedToId) : undefined;
 			if (target) {
-				const x1 = target.noteX + GLYPH_METRICS[target.headGlyph].bBoxSW[0] * ss - TIE_NOTE_GAP * ss;
+				const targetUnit = ss * (target.scale ?? 1);
+				const x1 = target.noteX + (GLYPH_METRICS[target.headGlyph].bBoxSW[0] - TIE_NOTE_GAP) * targetUnit;
 				pushTieCurve(ops, x0, point.y, x1, target.y, curvesBelow, note.id, ctx);
 			} else {
 				// Target lands in a later measure: draw only the outgoing half,
@@ -2329,7 +2400,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 			// measure: draw only the incoming half, starting from this
 			// measure's own left edge.
 			const curvesBelow = tieCurvesBelow(point, middleLineOf(note));
-			const x1 = point.noteX + GLYPH_METRICS[point.headGlyph].bBoxSW[0] * ss - TIE_NOTE_GAP * ss;
+			const x1 = point.noteX + (GLYPH_METRICS[point.headGlyph].bBoxSW[0] - TIE_NOTE_GAP) * unit;
 			pushTieCurve(ops, startX, point.y, x1, point.y, curvesBelow, tiedFrom.id, ctx);
 		}
 	}
@@ -2369,12 +2440,20 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		if (measure.index < startMeasure.index || measure.index > endMeasure.index) continue;
 
 		const spanNotes = slurSpanNotes(score, slur, startMeasure.staffIndex);
-		const curvesBelow =
-			stemDirectionForNotes(
-				spanNotes.flatMap((spanNote) => (spanNote.pitch ? [diatonicIndex(spanNote.pitch)] : [])),
-				ctx.lines.middleLine
-			) === 'up';
-		const roofY = slurRoofY(spanNotes, curvesBelow, ctx);
+		// A slur from a grace note (M6 Slice 8) to its principal is the short
+		// grace slur: on the side away from the grace's stem (below, for the
+		// usual up-stem grace), from under the grace head to under the
+		// principal's, arching just clear of the two heads rather than over
+		// the whole staff.
+		const startNote = spanNotes[0];
+		const graceStart = startNote?.grace != null ? startNote : undefined;
+		const curvesBelow = graceStart
+			? graceStemUp(graceStart.voice, multiVoice)
+			: stemDirectionForNotes(
+					spanNotes.flatMap((spanNote) => (spanNote.pitch ? [diatonicIndex(spanNote.pitch)] : [])),
+					ctx.lines.middleLine
+				) === 'up';
+		let roofY = slurRoofY(spanNotes, curvesBelow, ctx);
 
 		// A true endpoint only has a recorded position when it belongs to
 		// *this* measure (`placements` only ever holds this measure's own
@@ -2383,14 +2462,24 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 		const startPoint = measure.index === startMeasure.index ? placements.get(slur.startNoteId) : undefined;
 		const endPoint = measure.index === endMeasure.index ? placements.get(slur.endNoteId) : undefined;
 
-		const x0 = startPoint
-			? startPoint.noteX + GLYPH_METRICS[startPoint.headGlyph].bBoxNE[0] * ss + SLUR_NOTE_GAP * ss
+		let x0 = startPoint
+			? startPoint.noteX + (GLYPH_METRICS[startPoint.headGlyph].bBoxNE[0] + SLUR_NOTE_GAP) * ss * (startPoint.scale ?? 1)
 			: startX;
-		const y0 = startPoint ? startPoint.y : roofY;
-		const x1 = endPoint
-			? endPoint.noteX + GLYPH_METRICS[endPoint.headGlyph].bBoxSW[0] * ss - SLUR_NOTE_GAP * ss
+		let y0 = startPoint ? startPoint.y : roofY;
+		let x1 = endPoint
+			? endPoint.noteX + (GLYPH_METRICS[endPoint.headGlyph].bBoxSW[0] - SLUR_NOTE_GAP * (endPoint.scale ?? 1)) * ss
 			: barlineX;
-		const y1 = endPoint ? endPoint.y : roofY;
+		let y1 = endPoint ? endPoint.y : roofY;
+		if (graceStart && startPoint && endPoint) {
+			const dir = curvesBelow ? 1 : -1;
+			const startWidth = GLYPH_METRICS[startPoint.headGlyph].advance * ss * (startPoint.scale ?? 1);
+			const endWidth = GLYPH_METRICS[endPoint.headGlyph].advance * ss * (endPoint.scale ?? 1);
+			x0 = startPoint.noteX + startWidth / 2;
+			y0 = startPoint.y + dir * 0.5 * ss;
+			x1 = endPoint.noteX + endWidth * 0.4;
+			y1 = endPoint.y + dir * 0.7 * ss;
+			roofY = (curvesBelow ? Math.max(y0, y1) : Math.min(y0, y1)) + dir * 0.6 * ss;
+		}
 
 		pushSlurSegment(ops, x0, y0, x1, y1, roofY, slur.startNoteId, ctx);
 	}
@@ -2666,6 +2755,10 @@ interface NotePlacement {
 	 *  multi-head chord (M6 Slice 2; see `layoutNote`): `true` below, `false`
 	 *  above. `undefined` for a lone note, whose tie follows `up` as always. */
 	readonly tieBelow?: boolean;
+	/** The head's size relative to a normal note: `GRACE_SCALE` for a grace
+	 *  note (M6 Slice 8), `undefined` (1) otherwise. Ties and slurs read the
+	 *  head's extent through it. */
+	readonly scale?: number;
 }
 
 /**
@@ -3333,6 +3426,292 @@ function layoutStemAndFlag(
 		y: tipY + flagAnchor[1] * ss,
 		noteId
 	});
+}
+
+// --- Grace notes (M6 Slice 8) ------------------------------------------------
+//
+// A grace note is drawn cue-sized just left of its principal, in room of its
+// own: `layoutMeasure` inserts a run's width before the principal's column,
+// a fixed (unjustified) width the way a mid-measure clef change gets one, so
+// the measure's rhythmic spacing is untouched and the run sits tight against
+// the note it ornaments. Everything a grace draws is one of the ordinary
+// primitives at a smaller size: glyphs with a `fontSizePx` override, rects
+// and curves sized in `g` (one staff space times `GRACE_SCALE`). Vertical
+// positions stay on the real staff (`staffY` in full staff spaces), so a
+// grace's head sits on its true line or space.
+
+/**
+ * A grace note's size relative to a normal note. SMuFL's `engravingDefaults`
+ * (and Bravura's metadata) publish no cue or grace scale, so this follows
+ * engraving practice: Gould (*Behind Bars*, "Grace notes") puts grace notes
+ * at roughly 60-70% of normal size, and MuseScore's default `graceNoteMag` is
+ * 0.7; 0.65 sits in that band while keeping a 16th grace's two beams clearly
+ * apart at small staff sizes.
+ */
+export const GRACE_SCALE = 0.65;
+/** Stem length of a grace note, in *its own* (scaled) staff spaces: the
+ *  normal `STEM_LENGTH` scaled with the head, the usual proportion. */
+const GRACE_STEM_LENGTH = STEM_LENGTH;
+/** Gap between two grace notes of one run, full staff spaces. */
+const GRACE_NOTE_GAP = 0.3;
+/** Gap between a run's last ink and its principal (the principal's
+ *  accidental, if it has one, or its head), full staff spaces: tight, so the
+ *  run reads as belonging to the note after it. */
+const GRACE_PRINCIPAL_GAP = 0.55;
+
+/**
+ * A grace note's stem direction (M6 Slice 8): always up in a single voice,
+ * whatever the pitch, the standard grace engraving (it keeps the small note
+ * from tangling with the principal's stem and slur); in a multi-voice measure
+ * it follows the voice's side like every other stem there.
+ */
+export function graceStemUp(voice: number, multiVoice: boolean): boolean {
+	return voiceStemOverride(voice, multiVoice) !== 'down';
+}
+
+/** One grace note's horizontal plan within its run. */
+interface PlannedGrace {
+	readonly note: Note;
+	readonly d: number;
+	readonly accidental: GlyphName | null;
+	/** Head x, relative to the run's left edge. */
+	readonly headX: number;
+}
+
+/** A grace run planned for drawing: positions relative to its left edge, and
+ *  its total width including the gap before the principal. */
+interface GracePlan {
+	readonly run: GraceRun;
+	readonly graces: readonly PlannedGrace[];
+	/** Indices into `graces` of each beamed group (two or more consecutive
+	 *  beamable graces); a grace in none draws its own stem and flag. */
+	readonly beamGroups: readonly (readonly number[])[];
+	readonly widthPx: number;
+}
+
+/**
+ * Plan a run of grace notes: which need an accidental, where each head goes,
+ * and how wide the run is. An accidental is judged like an ordinary note's
+ * (against the key and anything already stated in the measure,
+ * `lastStatedAlterForStep`, read but not updated): by the usual convention an
+ * accidental on a grace note applies to the grace alone (Gould), so the
+ * principal still shows its own.
+ */
+function planGraceRun(
+	run: GraceRun,
+	keyFifths: number,
+	lastStatedAlterForStep: ReadonlyMap<Step, number>,
+	up: boolean,
+	ss: number
+): GracePlan {
+	const g = GRACE_SCALE * ss;
+	const beamable = (note: Note) => note.value in FLAG_GLYPHS;
+	const beamGroups: number[][] = [];
+	let current: number[] = [];
+	run.notes.forEach((note, i) => {
+		if (beamable(note)) {
+			current.push(i);
+			return;
+		}
+		if (current.length >= 2) beamGroups.push(current);
+		current = [];
+	});
+	if (current.length >= 2) beamGroups.push(current);
+	const beamed = new Set(beamGroups.flat());
+
+	const graces: PlannedGrace[] = [];
+	let x = 0;
+	run.notes.forEach((note, i) => {
+		const pitch = note.pitch!;
+		const implied = lastStatedAlterForStep.get(pitch.step) ?? keyAlterForStep(keyFifths, pitch.step);
+		const accidental =
+			pitch.alter === implied
+				? null
+				: ACCIDENTAL_GLYPHS[String(clampAlter(pitch.alter)) as keyof typeof ACCIDENTAL_GLYPHS];
+		if (i > 0) x += GRACE_NOTE_GAP * ss;
+		if (accidental) x += (GLYPH_METRICS[accidental].advance + SPACING.accidentalGap) * g;
+		const headGlyph = NOTEHEAD_GLYPHS[note.value];
+		graces.push({ note, d: diatonicIndex(pitch), accidental, headX: x });
+		x += GLYPH_METRICS[headGlyph].advance * g;
+		// An unbeamed up-stem flag sticks out right of the head; leave it room.
+		const flag = FLAG_GLYPHS[note.value];
+		if (up && flag && !beamed.has(i)) x += Math.max(0, GLYPH_METRICS[flag.up].bBoxNE[0]) * g;
+	});
+	return { run, graces, beamGroups, widthPx: x + GRACE_PRINCIPAL_GAP * ss };
+}
+
+/**
+ * Draw a planned run with its left edge at `left`, against `ctx`'s clef.
+ * Records each head's hit box (`notes`) and `NotePlacement` (`placements`,
+ * so ties and slurs reach graces), every op tagged with its note's id so a
+ * selection tints it. Returns the run's rightmost ink, for the principal's
+ * accidental clearance.
+ */
+function layoutGraceRun(
+	ops: DrawOp[],
+	notes: LaidOutNote[],
+	placements: Map<NoteId, NotePlacement>,
+	plan: GracePlan,
+	left: number,
+	up: boolean,
+	ctx: MeasureContext
+): number {
+	const { ss } = ctx;
+	const g = GRACE_SCALE * ss;
+	const sized = { fontSizePx: ss * STAFF_SPACES_PER_EM * GRACE_SCALE };
+	const stemThickness = ED.stemThickness * g;
+	let inkRight = left;
+	const stems: { readonly left: number; readonly attachY: number; readonly headY: number; readonly note: Note }[] = [];
+
+	for (const grace of plan.graces) {
+		const { note, d } = grace;
+		const headGlyph = NOTEHEAD_GLYPHS[note.value];
+		const headX = left + grace.headX;
+		const y = staffY(d, ctx);
+		const headWidth = GLYPH_METRICS[headGlyph].advance * g;
+		if (grace.accidental) {
+			const ax = headX - (SPACING.accidentalGap + GLYPH_METRICS[grace.accidental].advance) * g;
+			ops.push({ kind: 'glyph', glyph: grace.accidental, x: ax, y, noteId: note.id, ...sized });
+		}
+		ops.push({ kind: 'glyph', glyph: headGlyph, x: headX, y, noteId: note.id, ...sized });
+		// Ledger lines: on the real staff's line positions, cue-width.
+		const extension = ED.legerLineExtension * g;
+		const thickness = ED.legerLineThickness * ss;
+		const ledger = (position: number) =>
+			ops.push({
+				kind: 'rect',
+				x: headX - extension,
+				y: staffY(position, ctx) - thickness / 2,
+				width: headWidth + 2 * extension,
+				height: thickness,
+				noteId: note.id
+			});
+		for (let p = ctx.lines.topLine + 2; p <= d; p += 2) ledger(p);
+		for (let p = ctx.lines.bottomLine - 2; p >= d; p -= 2) ledger(p);
+		inkRight = Math.max(inkRight, headX + GLYPH_METRICS[headGlyph].bBoxNE[0] * g);
+		if (d >= ctx.lines.topLine + 2 || d <= ctx.lines.bottomLine - 2) inkRight = Math.max(inkRight, headX + headWidth + extension);
+
+		if (note.value !== 'whole') {
+			const anchor = glyphMetrics(headGlyph).anchors[up ? 'stemUpSE' : 'stemDownNW'];
+			const edges = stemXEdges(headGlyph, headX, up, g);
+			if (anchor && edges) stems.push({ left: edges.left, attachY: y - anchor[1] * g, headY: y, note });
+		}
+		placements.set(note.id, { noteX: headX, y, headGlyph, d, up: note.value === 'whole' ? null : up, scale: GRACE_SCALE });
+		notes.push({ id: note.id, bounds: scaledGlyphBounds(headGlyph, headX, y, g, 0.3 * ss) });
+	}
+
+	const stemOf = (note: Note) => stems.find((stem) => stem.note === note);
+	const tipFor = (headY: number) => headY + (up ? -GRACE_STEM_LENGTH * g : GRACE_STEM_LENGTH * g);
+	const pushStem = (stem: (typeof stems)[number], tipY: number) => {
+		ops.push({
+			kind: 'rect',
+			x: stem.left,
+			y: Math.min(stem.attachY, tipY),
+			width: stemThickness,
+			height: Math.abs(tipY - stem.attachY),
+			noteId: stem.note.id
+		});
+		inkRight = Math.max(inkRight, stem.left + stemThickness);
+	};
+	const beamedNotes = new Set(plan.beamGroups.flat().map((i) => plan.graces[i]!.note));
+
+	// Unbeamed graces: own stem, flag, and the acciaccatura slash.
+	for (const stem of stems) {
+		if (beamedNotes.has(stem.note)) continue;
+		const tipY = tipFor(stem.headY);
+		pushStem(stem, tipY);
+		const flag = FLAG_GLYPHS[stem.note.value];
+		if (flag) {
+			const glyph = up ? flag.up : flag.down;
+			const flagAnchor = glyphMetrics(glyph).anchors[up ? 'stemUpNW' : 'stemDownSW'];
+			if (flagAnchor) {
+				const fx = stem.left - flagAnchor[0] * g;
+				ops.push({ kind: 'glyph', glyph, x: fx, y: tipY + flagAnchor[1] * g, noteId: stem.note.id, ...sized });
+				inkRight = Math.max(inkRight, fx + GLYPH_METRICS[glyph].bBoxNE[0] * g);
+			}
+		}
+		if (stem.note.grace!.slash) pushGraceSlash(ops, stem.left + stemThickness / 2, tipY, up, stem.note.id, ctx);
+	}
+
+	// Beamed graces: one flat beam per group, at the farthest head's stem
+	// length, secondary beams by value as `layoutBeamGroup` does them.
+	for (const group of plan.beamGroups) {
+		const members = group.flatMap((i) => {
+			const stem = stemOf(plan.graces[i]!.note);
+			return stem ? [stem] : [];
+		});
+		if (members.length < 2) continue;
+		const beamY = up
+			? Math.min(...members.map((m) => tipFor(m.headY)))
+			: Math.max(...members.map((m) => tipFor(m.headY)));
+		for (const member of members) pushStem(member, beamY);
+		const beamThickness = ED.beamThickness * g;
+		const beamPitch = (ED.beamThickness + ED.beamSpacing) * g;
+		const levels = (note: Note) => BEAM_LEVELS[note.value] ?? 1;
+		const maxLevel = Math.max(...members.map((m) => levels(m.note)));
+		for (let level = 1; level <= maxLevel; level++) {
+			const barY = up ? beamY + (level - 1) * beamPitch : beamY - (level - 1) * beamPitch - beamThickness;
+			let runStart = -1;
+			for (let i = 0; i <= members.length; i++) {
+				const atLevel = i < members.length && levels(members[i]!.note) >= level;
+				if (atLevel && runStart === -1) runStart = i;
+				if (!atLevel && runStart !== -1) {
+					const from = members[runStart]!;
+					const to = members[i - 1]!;
+					// A lone member at this level gets a short stub toward its
+					// neighbour, as in `pushBeamSegment`.
+					const stub = runStart === i - 1 ? 0.9 * g : 0;
+					const towardNext = i < members.length;
+					const x0 = stub > 0 && !towardNext ? from.left - stub : from.left;
+					const width = stub > 0 ? stub + stemThickness : to.left - from.left + stemThickness;
+					ops.push({ kind: 'rect', x: x0, y: barY, width, height: beamThickness, noteId: from.note.id });
+					runStart = -1;
+				}
+			}
+		}
+		// A slashed beamed group carries one slash, through its first stem.
+		const first = members[0]!;
+		if (first.note.grace!.slash) pushGraceSlash(ops, first.left + stemThickness / 2, beamY, up, first.note.id, ctx);
+	}
+	return inkRight;
+}
+
+/**
+ * The acciaccatura stroke: a short straight line through a grace's stem near
+ * its tip (and through the flag, or the beam's first stem), rising to the
+ * right for an up stem and mirrored for a down one, the standard shape.
+ */
+function pushGraceSlash(ops: DrawOp[], stemX: number, tipY: number, up: boolean, noteId: NoteId, ctx: MeasureContext): void {
+	const g = GRACE_SCALE * ctx.ss;
+	const dir = up ? 1 : -1;
+	const cy = tipY + dir * 1.1 * g;
+	const dx = 0.8 * g;
+	const dy = -dir * 0.65 * g;
+	pushCurve(
+		ops,
+		stemX - dx,
+		cy - dy,
+		stemX - dx / 3,
+		cy - dy / 3,
+		stemX + dx / 3,
+		cy + dy / 3,
+		stemX + dx,
+		cy + dy,
+		ED.stemThickness * ctx.ss,
+		noteId
+	);
+}
+
+/** `glyphBounds` for a glyph drawn at `unit` pixels per staff space (a grace
+ *  note's `g`), padded by `padPx`. */
+function scaledGlyphBounds(glyph: GlyphName, x: number, y: number, unit: number, padPx: number): Rect {
+	const { bBoxSW, bBoxNE } = GLYPH_METRICS[glyph];
+	return {
+		x: x + bBoxSW[0] * unit - padPx,
+		y: y - bBoxNE[1] * unit - padPx,
+		width: (bBoxNE[0] - bBoxSW[0]) * unit + padPx * 2,
+		height: (bBoxNE[1] - bBoxSW[1]) * unit + padPx * 2
+	};
 }
 
 /**

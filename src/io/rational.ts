@@ -76,6 +76,8 @@ const DOT_MULTIPLIER: Readonly<Record<0 | 1 | 2, Rational>> = {
 /** A note's duration in quarter notes, exact, dots and tuplet ratio folded in
  *  the same way `Note.durationWholes` folds them, but as a reduced fraction. */
 export function noteDurationQuarters(note: Note): Rational {
+	// A grace note takes no time (M6 Slice 8), matching `Note.durationWholes`.
+	if (note.grace !== null) return ZERO;
 	if (note.measureRestWholes !== null) return quartersFromWholes(note.measureRestWholes);
 	let quarters = mul(QUARTERS_PER_VALUE[note.value], DOT_MULTIPLIER[note.dots]);
 	if (note.tuplet) {

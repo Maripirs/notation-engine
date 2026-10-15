@@ -11,6 +11,7 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
     "pp": 4,
   },
   "fallbacks": [],
+  "graces": 11,
   "marks": {
     "fermata inverted": 1,
     "fermata upright": 10,
@@ -19,7 +20,7 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
     "tenuto": 22,
   },
   "measureRests": 392,
-  "modelNotes": 8405,
+  "modelNotes": 8416,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",
@@ -32,10 +33,9 @@ exports[`SFCC corpus: import + layout > Brahms_Der_Abend.musicxml 1`] = `
     "arpeggiate": 10,
     "attributes": 8,
     "cue": 4,
-    "grace": 11,
     "identification": 1,
     "ornaments": 3,
-    "slur": 9,
+    "slur": 7,
     "technical": 43,
     "tie": 10,
     "tied": 27,
@@ -71,6 +71,7 @@ exports[`SFCC corpus: import + layout > Coleridge-Taylor_Proserpine_A4.musicxml 
     "note-value P4 m29: unsupported <type>breve</type>, duration 16 at divisions 2",
     "note-value P4 m30: unsupported <type>breve</type>, duration 16 at divisions 2",
   ],
+  "graces": 0,
   "marks": {
     "accent": 29,
     "staccato": 1,
@@ -109,6 +110,7 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
     "ppp": 4,
   },
   "fallbacks": [],
+  "graces": 8,
   "marks": {
     "accent": 20,
     "detached-legato": 1,
@@ -117,7 +119,7 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
     "tenuto": 14,
   },
   "measureRests": 151,
-  "modelNotes": 4543,
+  "modelNotes": 4551,
   "parts": [
     "Part 1: [0]",
     "Part 2: [1]",
@@ -129,11 +131,10 @@ exports[`SFCC corpus: import + layout > Faure__-_Les_djinns__Op._12.musicxml 1`]
   "passthrough": {
     "attributes": 7,
     "cue": 1,
-    "grace": 8,
     "identification": 1,
     "octave-shift": 7,
     "ornaments": 1,
-    "slur": 9,
+    "slur": 7,
     "technical": 18,
     "tie": 1,
     "tied": 7,
@@ -155,6 +156,7 @@ exports[`SFCC corpus: import + layout > GARDINER_Eglamore.musicxml 1`] = `
     "mf": 2,
   },
   "fallbacks": [],
+  "graces": 0,
   "marks": {
     "accent": 151,
     "staccato": 1,
@@ -192,6 +194,7 @@ exports[`SFCC corpus: import + layout > The_Challenge_of_Thor_Elgar.musicxml 1`]
     "ff": 28,
   },
   "fallbacks": [],
+  "graces": 0,
   "marks": {
     "accent": 168,
     "fermata upright": 6,
@@ -236,6 +239,7 @@ exports[`SFCC corpus: import + layout > The_Fay_s_Song_Massi.musicxml 1`] = `
     "f": 4,
   },
   "fallbacks": [],
+  "graces": 0,
   "marks": {
     "accent": 6,
     "staccato": 51,
@@ -276,6 +280,7 @@ exports[`SFCC corpus: import + layout > The-Frost-Myth_SATB-Score.musicxml 1`] =
     "pp": 3,
   },
   "fallbacks": [],
+  "graces": 0,
   "marks": {
     "accent": 1,
     "fermata inverted": 1,

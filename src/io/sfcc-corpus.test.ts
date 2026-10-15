@@ -134,13 +134,23 @@ describe('SFCC corpus: import + layout', () => {
 			const passthrough = sorted(diagnostics.passthrough);
 
 			// Every source <note> is either in the model, passed through whole
-			// (a grace note, `grace`), or dropped whole (`chord`, a `<chord/>`
-			// note with nothing to join, 0 across the corpus since M6 Slice 2);
-			// each <forward> gap became one rest.
+			// (a grace note the model cannot hold, `grace`: a grace chord or
+			// rest), or dropped whole (`chord`, a `<chord/>` note with nothing
+			// to join, 0 across the corpus since M6 Slice 2); each <forward> gap
+			// became one rest.
 			// Holds for any file, so it is asserted, not just snapshotted.
 			expect(modelNotes).toBe(
 				sourceNotes - (dropped.chord ?? 0) - (passthrough.grace ?? 0) + sourceForwards
 			);
+			// Since M6 Slice 8 every corpus grace note is a model grace note, so
+			// the model holds exactly the source's notes (plus <forward> rests).
+			const modelGraces = score.staves.reduce(
+				(sum, staff) => sum + staff.measures.reduce((s, m) => s + m.notes.filter((n) => n.isGrace).length, 0),
+				0
+			);
+			expect(passthrough.grace).toBeUndefined();
+			expect(modelNotes).toBe(sourceNotes + sourceForwards);
+			expect(modelGraces).toBe(descendants(source, 'grace').length);
 			expect(score.parts.filter((p) => p.name !== undefined)).toHaveLength(
 				descendants(source, 'part').length
 			);
@@ -192,6 +202,7 @@ describe('SFCC corpus: import + layout', () => {
 				sourceParts: descendants(source, 'part').length,
 				parts: score.parts.map((p) => `${p.name ?? '(group)'}: [${p.staffIndices.join(', ')}]`),
 				staves: score.staves.length,
+				graces: modelGraces,
 				measureRests: score.staves.reduce(
 					(sum, staff) =>
 						sum + staff.measures.reduce((s, m) => s + m.notes.filter((n) => n.isMeasureRest).length, 0),

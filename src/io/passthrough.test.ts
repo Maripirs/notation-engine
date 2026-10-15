@@ -224,20 +224,19 @@ describe('passthrough at a Measure onset', () => {
 		]);
 	});
 
-	it('writes a grace note back in front of the note it ornaments', () => {
-		const xml = onePart([
-			n('C', 1, 'quarter') +
-				`<note><grace slash="yes"/><pitch><step>A</step><octave>5</octave></pitch><voice>1</voice><type>eighth</type></note>` +
-				n('G', 1, 'quarter') +
-				n('E', 2, 'half')
-		]);
+	it('writes a grace chord (not modelled) back in front of the note it ornaments', () => {
+		// A plain grace note is a model note since M6 Slice 8; a grace chord
+		// still takes the passthrough path, whole.
+		const grace = (step: string, chord: boolean): string =>
+			`<note><grace slash="yes"/>${chord ? '<chord/>' : ''}<pitch><step>${step}</step><octave>5</octave></pitch><voice>1</voice><type>eighth</type></note>`;
+		const xml = onePart([n('C', 1, 'quarter') + grace('A', false) + grace('C', true) + n('G', 1, 'quarter') + n('E', 2, 'half')]);
 		const diagnostics = createImportDiagnostics();
 		importMusicXml(xml, { diagnostics });
-		expect(diagnostics.passthrough.get('grace')).toBe(1);
+		expect(diagnostics.passthrough.get('grace')).toBe(2);
 		expect(diagnostics.dropped.size).toBe(0);
 		const { score, root } = roundTrip(xml);
 		expect(score.staves[0]!.measures[0]!.notes.map((note) => note.pitch!.step)).toEqual(['C', 'G', 'E']);
-		expect(streamOf(measuresOf(root)[0]!)).toEqual(['attributes', 'note:C', 'grace:A', 'note:G', 'note:E']);
+		expect(streamOf(measuresOf(root)[0]!)).toEqual(['attributes', 'note:C', 'grace:A', 'grace:C', 'note:G', 'note:E']);
 	});
 
 	it('leads the measure with a <print>, and keeps <harmony>/<sound> in place', () => {

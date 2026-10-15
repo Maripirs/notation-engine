@@ -30,6 +30,7 @@
 
 import {
 	diatonicIndex,
+	graceRuns,
 	noteEvents,
 	type ClefType,
 	type Measure,
@@ -38,6 +39,7 @@ import {
 	type NoteId,
 	type OpaqueElement,
 	type DirectionSource,
+	type GraceNote,
 	type Part,
 	type Placement,
 	type Score,
@@ -560,6 +562,35 @@ function writeMeasureNotes(
 			const middleLineOf =
 				measure.clefChanges.length === 0 ? middleLine : streamMiddleLines(score, m, staffIndex, voiceNotes);
 			const beamPlan = buildBeamPlan(voiceNotes, time, middleLineOf);
+			// Grace notes (M6 Slice 8) are written right before their principal,
+			// after any positional passthrough at its onset (a grace belongs to
+			// the note, a direction to the moment), or at the stream's end when
+			// the run has no principal in the measure. No `<duration>`, so they
+			// never move the cursor.
+			const gracesBefore = new Map<NoteId, readonly Note[]>();
+			let trailingGraces: readonly Note[] = [];
+			const graceStem = graceStemDirection(voice, streams.length > 1);
+			for (const run of graceRuns(voiceNotes)) {
+				if (run.principal) gracesBefore.set(run.principal.id, run.notes);
+				else trailingGraces = run.notes;
+				addGraceBeams(beamPlan, run.notes, graceStem);
+			}
+			const writeGraces = (graces: readonly Note[] | undefined): void => {
+				for (const grace of graces ?? []) {
+					writeNote(xml, score, grace, {
+						divisions,
+						multiStaff,
+						staffNumber: k + 1,
+						middleLine: 0,
+						beamPlan,
+						chord: [grace],
+						previousAnchor: undefined,
+						nextAnchor: undefined,
+						regenerateTuplets: false,
+						graceStem
+					});
+				}
+			};
 			const anchors = anchorsByVoice.get(voice) ?? [];
 			const writeAnchor = (anchor: MeasurePassthrough): void => {
 				xml.element(rescaleDivisionValues(anchor.element, divisions / anchor.divisions));
@@ -578,6 +609,7 @@ function writeMeasureNotes(
 				const chord = events[ei]!;
 				while (next < anchors.length && compare(anchorOnset(anchors[next]!), t) < 0) inside.push(anchors[next++]!);
 				while (next < anchors.length && compare(anchorOnset(anchors[next]!), t) === 0) writeAnchor(anchors[next++]!);
+				writeGraces(gracesBefore.get(chord[0]!.id));
 				for (const note of chord) {
 					writeNote(xml, score, note, {
 						divisions,
@@ -599,6 +631,7 @@ function writeMeasureNotes(
 			// one placement that needs no `<forward>`.
 			while (next < anchors.length && compare(anchorOnset(anchors[next]!), t) < 0) inside.push(anchors[next++]!);
 			while (next < anchors.length) writeAnchor(anchors[next++]!);
+			writeGraces(trailingGraces);
 			// Inside an event: back up to each onset, latest first, so every
 			// step is a `<backup>`. Equal onsets keep their order.
 			inside.sort((a, b) => compare(anchorOnset(b), anchorOnset(a)));
@@ -976,6 +1009,42 @@ function buildBeamPlan(
 	return plan;
 }
 
+/**
+ * A grace note's stem (M6 Slice 8): up, the standard for a grace in a single
+ * voice whatever its pitch, so it never collides with the principal's stem
+ * pattern; in a multi-voice measure it follows the voice's side like every
+ * other stem there (odd up, even down). Mirrors layout's rule.
+ */
+function graceStemDirection(voice: number, multiVoice: boolean): 'up' | 'down' {
+	return multiVoice && voice % 2 === 0 ? 'down' : 'up';
+}
+
+/** A run of two or more consecutive beamable grace notes is one beam group
+ *  (layout draws it so); `computeBeamGroups` never sees graces, which are
+ *  not events. */
+function addGraceBeams(plan: Map<NoteId, BeamMembership>, graces: readonly Note[], direction: 'up' | 'down'): void {
+	let start = 0;
+	const flush = (end: number): void => {
+		if (end - start >= 2) {
+			for (let i = start; i < end; i++) {
+				const position = i === start ? 'begin' : i === end - 1 ? 'end' : 'continue';
+				plan.set(graces[i]!.id, { position, direction });
+			}
+		}
+	};
+	graces.forEach((grace, i) => {
+		if (!isBeamableValue(grace.value)) {
+			flush(i);
+			start = i + 1;
+		}
+	});
+	flush(graces.length);
+}
+
+function isBeamableValue(value: Note['value']): boolean {
+	return value === 'eighth' || value === '16th' || value === '32nd' || value === '64th';
+}
+
 interface NoteContext {
 	readonly divisions: number;
 	readonly multiStaff: boolean;
@@ -991,6 +1060,9 @@ interface NoteContext {
 	/** False when the source's own `<tuplet>` brackets for this note's run
 	 *  are in passthrough (`tupletRunsWithSourceBrackets`). */
 	readonly regenerateTuplets: boolean;
+	/** A grace note's stem direction (`graceStemDirection`); unset for
+	 *  everything else. */
+	readonly graceStem?: 'up' | 'down';
 }
 
 /**
@@ -1023,6 +1095,11 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 
 	xml.open('note');
 
+	// `<grace>` (M6 Slice 8) comes first of all, and a grace note has no
+	// `<duration>` (it takes no time).
+	slots.before('grace');
+	if (note.grace !== null) xml.selfClose('grace', graceAttributes(note.grace, ctx.divisions));
+
 	// `<chord/>` precedes `<pitch>` in MusicXML's fixed child order.
 	slots.before('chord');
 	if (note.chordWithPrevious) xml.selfClose('chord');
@@ -1050,7 +1127,7 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 	// Every head of a chord states the chord's (the anchor's) duration, as
 	// MusicXML expects; `<chord/>` is what keeps a reader from adding it twice.
 	slots.before('duration');
-	xml.leaf('duration', String(toDivisions(noteDurationQuarters(anchor), ctx.divisions)));
+	if (note.grace === null) xml.leaf('duration', String(toDivisions(noteDurationQuarters(anchor), ctx.divisions)));
 
 	slots.before('tie');
 	const tiedInto = score.tiedFromNote(note.id) !== undefined;
@@ -1087,8 +1164,10 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 	slots.before('stem');
 	const membership = ctx.beamPlan.get(anchor.id);
 	if (note.pitch !== null && anchor.value !== 'whole') {
-		const direction = membership
-			? membership.direction
+		const direction = ctx.graceStem
+			? ctx.graceStem
+			: membership
+				? membership.direction
 			: stemDirectionForNotes(
 					ctx.chord.flatMap((head) => (head.pitch ? [diatonicIndex(head.pitch)] : [])),
 					ctx.middleLine
@@ -1163,6 +1242,18 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 
 	slots.rest();
 	xml.close('note');
+}
+
+/** `<grace>`'s attributes: `slash` only when set (the MusicXML default is
+ *  no slash), then whichever steal/make times the source stated. `make-time`
+ *  is in divisions, rounded to the nearest whole one. */
+function graceAttributes(grace: GraceNote, divisions: number): Record<string, string> {
+	const attrs: Record<string, string> = {};
+	if (grace.stealTimePrevious !== null) attrs['steal-time-previous'] = String(grace.stealTimePrevious);
+	if (grace.stealTimeFollowing !== null) attrs['steal-time-following'] = String(grace.stealTimeFollowing);
+	if (grace.makeTime !== null) attrs['make-time'] = String(Math.round(grace.makeTime * 4 * divisions));
+	if (grace.slash) attrs.slash = 'yes';
+	return attrs;
 }
 
 /** The model's right-hand barline for a resolved end-barline type: `normal`
@@ -1398,7 +1489,11 @@ function divisionsForPart(
 	clefChangeOnsets: readonly number[]
 ): number {
 	let divisions = 1;
-	for (const note of notes) divisions = lcm(divisions, noteDurationQuarters(note).den);
+	for (const note of notes) {
+		divisions = lcm(divisions, noteDurationQuarters(note).den);
+		// A grace's `make-time` (M6 Slice 8) is written in divisions too.
+		if (note.grace?.makeTime != null) divisions = lcm(divisions, quartersFromWholes(note.grace.makeTime).den);
+	}
 	for (const anchor of anchors) {
 		divisions = lcm(divisions, wholesToQuarters(anchor.onset).den);
 		divisions = lcm(divisions, anchor.divisions);

@@ -205,6 +205,13 @@ function assertMeasureNotesEquivalent(
 	}
 }
 
+function graceKey(note: Note): string {
+	const g = note.grace;
+	if (g === null) return 'none';
+	const time = (x: number | null): string => (x === null ? '-' : String(Math.round(x * 1e9) / 1e9));
+	return `${g.slash ? 'slash' : 'plain'} ${time(g.stealTimePrevious)} ${time(g.stealTimeFollowing)} ${time(g.makeTime)}`;
+}
+
 function assertNoteEquivalent(
 	where: string,
 	actualScore: Score,
@@ -227,6 +234,8 @@ function assertNoteEquivalent(
 	// keep a mark on the chord member it came from, not just on the chord.
 	assertEqual(`${where} articulations`, actualNote.articulations.join(','), expectedNote.articulations.join(','));
 	assertEqual(`${where} fermata`, actualNote.fermata, expectedNote.fermata);
+	// Grace notes (M6 Slice 8): being one, and every attribute of one.
+	assertEqual(`${where} grace`, graceKey(actualNote), graceKey(expectedNote));
 	assertEqual(`${where} passthrough`, notePayloadKey(actualNote.passthrough), notePayloadKey(expectedNote.passthrough));
 
 	// Tie linkage: both must either start no tie, or start one that lands on a

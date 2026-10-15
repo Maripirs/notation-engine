@@ -2,10 +2,12 @@ import {
 	DYNAMIC_KINDS,
 	eventArticulations,
 	eventFermata,
+	graceRuns,
 	measureCapacityWholes,
 	noteEvents,
 	type Articulation,
 	type DynamicKind,
+	type Note,
 	type NoteId,
 	type Pitch,
 	type Score,
@@ -128,6 +130,55 @@ export const DYNAMIC_ACCENTS: Readonly<Partial<Record<DynamicKind, { attack: num
 	sfzp: { attack: 1, hold: 'p' }
 };
 export const NIENTE_LEVEL = 0.05;
+
+/**
+ * How grace notes play (M6 Slice 8). Every grace plays *on the beat*,
+ * stealing its time from the start of its principal (the classical rule, and
+ * the one MusicXML's `steal-time-following` describes), so nothing before the
+ * principal moves and the principal starts late by the run's total:
+ *
+ *  - A lone grace without a slash (an appoggiatura) takes half its
+ *    principal (`APPOGGIATURA_FRACTION`), two thirds before a dotted
+ *    principal (`DOTTED_APPOGGIATURA_FRACTION`), the C. P. E. Bach / Türk
+ *    rule every engraving guide repeats.
+ *  - Anything else (an acciaccatura, or a run of two or more graces, which
+ *    is played quick whatever its slashes) gives each grace
+ *    `ACCIACCATURA_WHOLES` (a 32nd), shrunk so the run never takes more than
+ *    `GRACE_RUN_MAX_FRACTION` of the principal.
+ *  - A grace stating `steal-time-following` takes that percentage of its
+ *    principal instead. `steal-time-previous` and `make-time` are kept for
+ *    the round trip but not played (a grace before the beat would shorten a
+ *    note in another measure).
+ *  - Whatever the rules add up to, a run takes at most
+ *    `GRACE_TOTAL_MAX_FRACTION` of its principal (scaled down evenly), so the
+ *    principal is always heard.
+ *
+ * A run with no principal in its measure (OMR writes a grace for the next
+ * downbeat at the end of the bar) ornaments its voice's first event in the
+ * next measure. A grace never opens a tie chain; graces play at the
+ * principal's dynamic level, without its articulations.
+ */
+export const APPOGGIATURA_FRACTION = 1 / 2;
+export const DOTTED_APPOGGIATURA_FRACTION = 2 / 3;
+export const ACCIACCATURA_WHOLES = 1 / 32;
+export const GRACE_RUN_MAX_FRACTION = 1 / 2;
+export const GRACE_TOTAL_MAX_FRACTION = 3 / 4;
+
+/** Each grace's played length in written wholes, for a run before a
+ *  principal lasting `principalWholes` (see `APPOGGIATURA_FRACTION`). */
+export function graceLengthsWholes(graces: readonly Note[], principal: Note): number[] {
+	const principalWholes = principal.durationWholes;
+	const lone = graces.length === 1 && !graces[0]!.grace!.slash;
+	const lengths = graces.map((grace) => {
+		const stated = grace.grace!.stealTimeFollowing;
+		if (stated !== null) return (Math.max(0, stated) / 100) * principalWholes;
+		if (lone) return principalWholes * (principal.dots > 0 ? DOTTED_APPOGGIATURA_FRACTION : APPOGGIATURA_FRACTION);
+		return Math.min(ACCIACCATURA_WHOLES, (principalWholes * GRACE_RUN_MAX_FRACTION) / graces.length);
+	});
+	const total = lengths.reduce((a, b) => a + b, 0);
+	const cap = principalWholes * GRACE_TOTAL_MAX_FRACTION;
+	return total > cap && total > 0 ? lengths.map((l) => (l * cap) / total) : lengths;
+}
 
 /** The plain ladder, softest first, for one-step moves. */
 const LADDER: readonly DynamicKind[] = DYNAMIC_KINDS.filter((kind) => DYNAMIC_LEVELS[kind] !== undefined);
@@ -407,9 +458,20 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 			// keeps one tie chain open per head at once, and each head's
 			// continuation must extend its own head's event, not a neighbour's.
 			let openByTarget = new Map<NoteId, number>();
+			// Grace notes (M6 Slice 8) waiting for their principal: a run before
+			// an event in this measure, or one left over from the end of the
+			// previous measure (see `APPOGGIATURA_FRACTION`).
+			let pendingGraces: Note[] = [];
 
 			for (const measure of staff.measures) {
 				cursorWholes = measureStarts[measure.index]!;
+				const gracesBefore = new Map<NoteId, readonly Note[]>();
+				const trailingGraces: Note[] = [];
+				for (const run of graceRuns(measure.notes)) {
+					if (run.voice !== voice) continue;
+					if (run.principal) gracesBefore.set(run.principal.id, run.notes);
+					else trailingGraces.push(...run.notes);
+				}
 				// One step per event (M6 Slice 2), not per note: every head of a
 				// chord sounds at the same `cursorWholes`, and the cursor
 				// advances once by the anchor's duration after all of them.
@@ -420,9 +482,31 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 					// Played span of this event (the fermata warp applied), and
 					// how much of it sounds (a staccato's shortening).
 					const marks = eventArticulations(chord);
-					const startSeconds = seconds(warp(cursorWholes));
+					const level = dynamicLevel ? dynamicLevel(cursorWholes) : 1;
+					// Grace notes before this event play from its onset, and the
+					// event itself starts once they are done.
+					const graces = [...pendingGraces, ...(gracesBefore.get(anchor.id) ?? [])];
+					pendingGraces = [];
+					let stolenWholes = 0;
+					if (graces.length > 0) {
+						const lengths = graceLengthsWholes(graces, anchor);
+						graces.forEach((grace, i) => {
+							const from = cursorWholes + stolenWholes;
+							const to = from + lengths[i]!;
+							const graceStart = seconds(warp(from));
+							events.push({
+								noteId: grace.id,
+								pitch: grace.pitch!,
+								startSeconds: graceStart,
+								durationSeconds: seconds(warp(to)) - graceStart,
+								...(level !== 1 ? { velocity: level } : {})
+							});
+							stolenWholes = to - cursorWholes;
+						});
+					}
+					const startSeconds = seconds(warp(cursorWholes + stolenWholes));
 					const spanSeconds = seconds(warp(cursorWholes + anchor.durationWholes)) - startSeconds;
-					const velocity = attackVelocity(marks) * (dynamicLevel ? dynamicLevel(cursorWholes) : 1);
+					const velocity = attackVelocity(marks) * level;
 
 					for (const note of chord) {
 						if (note.isRest) continue;
@@ -457,6 +541,7 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 					openByTarget = stillOpen;
 					cursorWholes += anchor.durationWholes;
 				}
+				pendingGraces.push(...trailingGraces);
 			}
 		}
 	}
