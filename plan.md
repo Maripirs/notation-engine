@@ -910,7 +910,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       (the renderer's selection/redraw API in particular), slices 4-6 may
       need a light re-check.
 
-### M6 — Phase 6: Real-world edge cases [~]
+### M6 — Phase 6: Real-world edge cases [?]
 
 Open-ended; this pass scopes the first 9 slices. Scoped 2026-10-14
 (Claude, with the human picking the fidelity strategy) while M2-M5 are
