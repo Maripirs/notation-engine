@@ -30,6 +30,9 @@ export interface LookaheadSchedulerOptions<T extends SchedulableEvent> {
 	 *  other queue) is entirely up to the caller: this class's only job is
 	 *  calling it once, on time, per event. */
 	readonly onSchedule: (event: T) => void;
+	/** Called at the end of every pass, after any `onSchedule` calls. Lets
+	 *  `PlaybackEngine` notice the piece has ended without a timer of its own. */
+	readonly onTick?: () => void;
 	/**
 	 * How far ahead of `getCurrentTime()` to look when deciding an event is
 	 * due, in seconds. Defaults to 0.1 (100ms), the value used by the classic
@@ -86,6 +89,7 @@ export class LookaheadScheduler<T extends SchedulableEvent> {
 	private readonly events: readonly T[];
 	private readonly getCurrentTime: () => number;
 	private readonly onSchedule: (event: T) => void;
+	private readonly onTick: (() => void) | undefined;
 	private readonly lookaheadSeconds: number;
 	private readonly intervalMs: number;
 	private readonly scheduledIndices = new Set<number>();
@@ -95,6 +99,7 @@ export class LookaheadScheduler<T extends SchedulableEvent> {
 		this.events = options.events;
 		this.getCurrentTime = options.getCurrentTime;
 		this.onSchedule = options.onSchedule;
+		this.onTick = options.onTick;
 		this.lookaheadSeconds = options.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS;
 		this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
 	}
@@ -125,6 +130,7 @@ export class LookaheadScheduler<T extends SchedulableEvent> {
 				this.onSchedule(event);
 			}
 		}
+		this.onTick?.();
 	}
 
 	/**

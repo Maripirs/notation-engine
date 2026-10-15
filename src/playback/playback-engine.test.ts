@@ -4,43 +4,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { PlaybackEngine } from './playback-engine.js';
+import { mockAudioContext } from './test-helpers.js';
 import type { OnsetEvent } from './timeline.js';
-
-/** A minimal `AudioContext` stub with a settable `currentTime`. Every
- *  oscillator created is recorded, with the times its `stop()` was called. */
-function mockAudioContext() {
-	let currentTime = 0;
-	const oscillators: { stoppedAt: number[] }[] = [];
-	const param = { value: 0, setValueAtTime() {}, linearRampToValueAtTime() {} };
-	const audioContext = {
-		get currentTime() {
-			return currentTime;
-		},
-		destination: {},
-		createOscillator() {
-			const osc = {
-				type: '',
-				frequency: { ...param },
-				stoppedAt: [] as number[],
-				connect() {},
-				start() {},
-				stop(when: number) {
-					osc.stoppedAt.push(when);
-				}
-			};
-			oscillators.push(osc);
-			return osc;
-		},
-		createGain() {
-			return { gain: { ...param }, connect() {} };
-		}
-	};
-	return {
-		audioContext: audioContext as unknown as AudioContext,
-		setCurrentTime: (value: number) => (currentTime = value),
-		oscillators
-	};
-}
 
 const A4: OnsetEvent['pitch'] = { step: 'A', alter: 0, octave: 4 };
 
@@ -56,11 +21,13 @@ const event = (noteId: string, startSeconds: number, durationSeconds: number): O
 function setup(events: OnsetEvent[]) {
 	const mock = mockAudioContext();
 	const onsets: OnsetEvent[] = [];
+	const ends: number[] = [];
 	const engine = new PlaybackEngine({
 		events,
 		audioContext: mock.audioContext,
 		lookaheadSeconds: 0.1,
-		onOnset: (onset) => onsets.push(onset)
+		onOnset: (onset) => onsets.push(onset),
+		onEnd: () => ends.push(engine.positionSeconds)
 	});
 	const run = () => {
 		for (let i = 0; i < 20; i++) {
@@ -68,7 +35,7 @@ function setup(events: OnsetEvent[]) {
 			engine.tick();
 		}
 	};
-	return { ...mock, engine, onsets, run };
+	return { ...mock, engine, onsets, ends, run };
 }
 
 describe('PlaybackEngine', () => {
@@ -155,5 +122,16 @@ describe('PlaybackEngine', () => {
 		engine.tick();
 		expect(onsets.map((e) => e.startSeconds)).toEqual([2]);
 		engine.stop();
+	});
+
+	it('stops by itself once past the last note, reporting the end once and rewinding', () => {
+		const { engine, ends, oscillators, run } = setup([event('a', 0, 0.5), event('b', 1, 1)]);
+		engine.play();
+		run();
+		expect(engine.isPlaying).toBe(false);
+		expect(engine.durationSeconds).toBe(2);
+		expect(ends).toEqual([0]);
+		// No early cut: each note keeps only its own end-of-note stop.
+		for (const osc of oscillators) expect(osc.stoppedAt).toHaveLength(1);
 	});
 });

@@ -29,6 +29,13 @@ export interface PlaybackEngineOptions {
 	 * scheduler's own use.
 	 */
 	readonly onOnset?: (event: OnsetEvent) => void;
+	/**
+	 * Called once when playback runs past the last note's end
+	 * (`durationSeconds`). By then the engine has already reset itself as
+	 * `stop()` would (not playing, position 0), so a following `play()`
+	 * starts over from the top. Not called on an explicit `pause`/`stop`.
+	 */
+	readonly onEnd?: () => void;
 }
 
 /**
@@ -66,6 +73,8 @@ export class PlaybackEngine {
 	private readonly lookaheadSeconds: number | undefined;
 	private readonly intervalMs: number | undefined;
 	private readonly onOnset: ((event: OnsetEvent) => void) | undefined;
+	private readonly onEnd: (() => void) | undefined;
+	private readonly endSeconds: number;
 
 	private basePosition = 0;
 	private baseAudioTime: number | null = null;
@@ -80,11 +89,19 @@ export class PlaybackEngine {
 		this.lookaheadSeconds = options.lookaheadSeconds;
 		this.intervalMs = options.intervalMs;
 		this.onOnset = options.onOnset;
+		this.onEnd = options.onEnd;
+		this.endSeconds = this.events.reduce((end, event) => Math.max(end, event.startSeconds + event.durationSeconds), 0);
 	}
 
-	/** True while the engine is actively scheduling/sounding events. */
+	/** True while the engine is actively scheduling/sounding events. Turns
+	 *  false on its own once playback reaches `durationSeconds`. */
 	get isPlaying(): boolean {
 		return this.playing;
+	}
+
+	/** Where the last note ends, in piece-time seconds: the piece's length. */
+	get durationSeconds(): number {
+		return this.endSeconds;
 	}
 
 	/** Elapsed position in the piece, in seconds. 0 at construction, frozen
@@ -154,6 +171,7 @@ export class PlaybackEngine {
 					durationSeconds: event.durationSeconds
 				});
 			},
+			onTick: () => this.endIfFinished(),
 			lookaheadSeconds: this.lookaheadSeconds,
 			intervalMs: this.intervalMs
 		});
@@ -238,6 +256,23 @@ export class PlaybackEngine {
 	 */
 	tick(): void {
 		this.scheduler?.tick();
+	}
+
+	/**
+	 * Run after every scheduling pass: once the position passes the last
+	 * note's end, every oscillator has already stopped at its own end time,
+	 * so this only drops the scheduler and the references (no early cut,
+	 * which would clip a release still ringing), rewinds, and reports it.
+	 */
+	private endIfFinished(): void {
+		if (!this.playing || this.positionSeconds < this.endSeconds) return;
+		this.scheduler?.stop();
+		this.scheduler = null;
+		this.playing = false;
+		this.activeOscillators.clear();
+		this.basePosition = 0;
+		this.baseAudioTime = null;
+		this.onEnd?.();
 	}
 
 	/**

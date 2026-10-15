@@ -1203,7 +1203,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       Follow-up: where the host's tooling breaks that URL (Vite 6/7 dev
       pre-bundling, esbuild), the default load falls back to a lazily
       imported data-URL chunk, `dist/Bravura-inline.js`.
-- [ ] **Slice 3: Embed API.** `mountScore(container, source, options)`
+- [x] **Slice 3: Embed API.** `mountScore(container, source, options)`
       where `source` is a MusicXML string or a `Score`, returning a
       handle: `load(source)`, `play()`/`pause()`/`stop()`/`seek()`,
       `setZoom()`, `on('noteclick' | 'onset' | 'end', ...)`,
@@ -1217,6 +1217,12 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       play and cursor movement; unit tests for handle lifecycle (load
       replaces, destroy is idempotent and leaves no listeners) against
       stubbed DOM/audio.
+      Done as `src/view/` (`mountScore`, `ScoreView`), the one DOM-owning
+      layer. Beyond the scoped handle it adds `seekToNote`, `scrollToNote`,
+      `staffSpacePx`, `durationSeconds`, and `setScore(score)`: the one extra
+      hatch the demo needed, since `EditHistory.undo()` swaps in a different
+      `Score` object and `load` would stop playback and scroll to the top.
+      `PlaybackEngine` now ends on its own (`onEnd`, `durationSeconds`).
 - [ ] **Slice 4: Public surface + packaging.** Move the `create*Showcase
       Score` fixtures out of the main entry (a `notation-engine/examples`
       subpath, or internal only). Scrub private-project references from
@@ -1271,9 +1277,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 - [Layout] Natural spacing is loose for dense multi-staff music: Les
   Djinns at 958px (ss 11) casts off 114 systems for 124 measures, about
   79k CSS px tall.
-- [Demo] `systemWidthForViewport` overestimates the score box at narrow
-  windows (a 709px layout in a 652px box at a 700px window), so the
-  canvas scales down; the staff-select canvas still pins its height.
+- [Demo] The staff-select canvas still pins its height and width.
 - [Ties/slurs] Each tie/slur half picks its direction from its own note,
   so halves can bulge oppositely around a beamed note; `slurRoofY` and
   slur direction use the downbeat clef, so a slur across a clef change
@@ -1331,19 +1335,24 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   voices; `transposeNote` returns a bare index, not `MeasureRef[]`; no
   ops add/remove marks, dynamics, hairpins, graces or lyrics.
 - [Playback] Single score-wide tempo; `LookaheadScheduler.tick()` scans
-  every event; `activeOscillators` is pruned only by stop/seek (no
-  `onended`); `isPlaying` never turns false at the end, so the demo
-  counter keeps running.
+  every event; `activeOscillators` is pruned only by stop/seek/end (no
+  `onended`).
 - [Render] `redrawMeasures` takes one `staffIndex` per batch; scoped
   redraw leaves faint anti-aliasing differences at fractional region
   edges; `relayoutMeasure` and `layoutScore` differ in the last float ulp
   of staff-line y; seam strip height varies per measure.
-- [Demo] Digit keys reset dots; zoom bounds (5-20) are arbitrary;
-  follow-scroll tracks only an onset's first note; the seam toggle's
-  system-break boundary goes stale after a resize.
+- [Demo] Digit keys reset dots; zoom bounds (5-20) are arbitrary; the seam
+  toggle's system-break boundary goes stale after a resize; auditioning a
+  selected note uses a second `AudioContext`, since the view's is private.
+- [View] Follow-scroll tracks only an onset's first note; `setZoom` keeps
+  the scrolled fraction of the score's height, not the exact system in
+  view; a container with no height bound grows to the whole score and the
+  canvas with it (past the browser's canvas size limit on long scores);
+  an edit during playback is heard only after the next pause or stop; the
+  resize re-cast could in principle flip-flop when a scrollbar appearing
+  is exactly what tips the system width.
 - [Viewport] `drawAll` with a viewport still draws every `partDecorations`
-  op (no region to cull by); the demo's zoom keeps scrollTop in px, not
-  the score position; Flash maps `lastScopedMeasures` through
+  op (no region to cull by); Flash maps `lastScopedMeasures` through
   `layout.measures[index]` (wrong on multi-staff); one click in ~18 takes
   ~200ms to paint in headless Chrome before and after Slice 11 (handler
   <1ms, likely `auditionNote`).
@@ -1358,8 +1367,8 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   is caught). Playback drops a hairpin cut by a jump back (its stop measure
   not reached before the repeat), and a tie into a measure entered by a
   jump is re-struck rather than held (Frost Myth m65 is all such ties).
-  The demo has no play-from-note control, so `firstOnsetSeconds` is
-  exported but not wired in.
+  `firstOnsetSeconds` is wired in only as `ScoreView.seekToNote`; the demo
+  has no play-from-note control.
 - [M7] The opt-in corpus test keeps its private name (`sfcc-corpus.test.ts`,
   its snapshot, `SFCC corpus:` suite titles, "finds all 7 fixtures"); rename
   to a neutral "corpus" when Slice 4 scrubs private references (the rename

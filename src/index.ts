@@ -1,6 +1,6 @@
 // Public API.
 //
-// Five layers, exported as one flat surface. `model` is the editable score and
+// Five layers, plus a convenience layer on top, exported as one flat surface. `model` is the editable score and
 // knows nothing about drawing; `layout` turns a score into positioned drawing
 // operations and knows nothing about a canvas; `render` executes those
 // operations against a `CanvasRenderingContext2D`; `playback` turns model
@@ -10,6 +10,10 @@
 // reviewed exception noted in `io/musicxml-export.ts`), and knows nothing
 // about a canvas. Nothing in any of the five touches a UI framework, so a
 // Svelte/React/plain-DOM host is a thin wrapper that owns events and calls in.
+// `view` is that wrapper for the common case: `mountScore` owns a canvas in a
+// host element and wires scrolling, resizing, zoom and playback with a moving
+// cursor. It is the only layer that touches the DOM, `ResizeObserver` or
+// `AudioContext`, and it builds only on the five layers' public functions.
 // See README.md for the design principles.
 //
 // Phase 0 scope: one staff, one voice, standard undotted durations, one clef,
@@ -36,3 +40,4 @@ export * from './layout/index.js';
 export * from './render/index.js';
 export * from './playback/index.js';
 export * from './io/index.js';
+export * from './view/index.js';

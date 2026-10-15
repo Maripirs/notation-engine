@@ -26,7 +26,6 @@
 				max-width: 44rem;
 				line-height: 1.5;
 			}
-			#score,
 			.demo-canvas {
 				display: block;
 				background: #fff;
@@ -36,35 +35,20 @@
 				max-width: 100%;
 			}
 			/*
-			 * Wraps #score only (M4 Slice 4). max-height is fixed and deliberately
-			 * smaller than the full demo score's laid-out height at any typical
-			 * viewport width (the full score, `createFullDemoScore`, already casts
-			 * off into well over a dozen systems there, see main.ts's own comment
-			 * on `scoreScroll` for the check that confirmed this), so the score
-			 * overflows vertically and this wrapper scrolls, giving the playback-
-			 * cursor auto-scroll (M4 Slice 4) something real to demonstrate. It also
-			 * carries the border #score used to have (see #score below).
+			 * The container `mountScore` renders into (M7 Slice 3): it scrolls,
+			 * and the view keeps a window-sized canvas stuck to its top. max-height
+			 * is deliberately smaller than the full demo score, so the score
+			 * overflows and playback's follow-scroll has something to show.
 			 */
 			#score-scroll {
-				position: relative;
 				max-height: 22rem;
 				overflow-y: auto;
 				background: #fff;
 				border: 1px solid #ddd;
 				border-radius: 4px;
 			}
-			/*
-			 * M6 Slice 11: #score is only as tall as the visible window and sticks
-			 * to the wrapper's top while #score-spacer (after it) supplies the rest
-			 * of the score's height to scroll through; main.ts repaints the visible
-			 * band on scroll. The border moved to the wrapper, since a border on a
-			 * window-sized canvas would frame the window, not the score.
-			 */
-			#score {
-				position: sticky;
-				top: 0;
-				border: none;
-				border-radius: 0;
+			#score-scroll canvas {
+				cursor: pointer;
 			}
 			.controls {
 				display: flex;
@@ -136,20 +120,20 @@
 	<body>
 		<h1>notation-engine, Phase 0 spike</h1>
 		<p class="lede">
-			Own model, own layout, own canvas renderer, Bravura for glyph shapes. Click a notehead or
+			Own model, own layout, own canvas renderer, Bravura for glyph shapes. The score below is one
+			<code>mountScore</code> call (M7 Slice 3); the editing on it is the demo's own, built on
+			the view's escape hatches. Click a notehead or
 			rest to select it, then transpose it with the buttons or <kbd>&uarr;</kbd> /
 			<kbd>&darr;</kbd>. Each edit re-lays-out and repaints only the measure that changed; the
-			timings below compare that against repainting the whole system. The score is capped at a
-			fixed width, so it casts measures off onto a new system (a new staff line) rather than
+			timings below compare that against repainting the whole system. The score is capped at its
+			box's width, so it casts measures off onto a new system (a new staff line) rather than
 			shrinking to fit; each system repeats the clef and key signature, as real engraving does.
 			Zoom in/out (M4 Slice 3) re-lays-out the whole score at a different <code>staffSpacePx</code>,
 			the single knob that scales the whole render: whatever note is currently selected or under
 			the playback cursor stays correctly highlighted through the rescale, with no extra call
 			telling it to. The score sits in a height-capped scrolling box, so it does not all fit
 			on screen at once; during playback (below) the box auto-scrolls to keep the playback
-			cursor's current measure in view as it moves into later systems (M4 Slice 4), using
-			<code>regionForNote</code> for the target rectangle and a plain <code>scrollTo</code>
-			here in the demo for the actual scroll. Every transpose is recorded in an
+			cursor's current measure in view as it moves into later systems (M4 Slice 4). Every transpose is recorded in an
 			<code>EditHistory</code>, so Undo / Redo (or <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>,
 			<kbd>Shift</kbd>+<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>) step back and forth through
 			it with a whole-score re-layout, and Save downloads the current score as MusicXML and
@@ -162,10 +146,7 @@
 			an OMR export or a score saved from MuseScore. Every
 			chord head is its own note: click one and transpose it alone.
 		</p>
-		<div id="score-scroll">
-			<canvas id="score"></canvas>
-			<div id="score-spacer"></div>
-		</div>
+		<div id="score-scroll"></div>
 		<div class="controls">
 			<button id="down" disabled>&darr; semitone</button>
 			<button id="up" disabled>&uarr; semitone</button>
