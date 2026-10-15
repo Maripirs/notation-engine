@@ -910,12 +910,16 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       (the renderer's selection/redraw API in particular), slices 4-6 may
       need a light re-check.
 
-### M6 — Phase 6: Real-world edge cases [?]
+### M6 — Phase 6: Real-world edge cases [~]
 
 Open-ended; this pass scopes the first 9 slices. Scoped 2026-10-14
 (Claude, with the human picking the fidelity strategy) while M2-M5 are
 still `[?]`; the human chose to start M6 rather than block on those
-reviews.
+reviews. Slices 12-15 (repeats and voltas) were scoped 2026-10-15 as the
+second pass, the human picking repeats + voltas over also modelling
+navigation marks (segno, coda, D.C./D.S./Fine). The corpus barely
+exercises this: only Frost Myth has a repeat (one measure, m65) and no
+SFCC score has an ending, so these slices lean on a hand-built fixture.
 
 **Driven by measurement, not the roadmap list.** Every SFCC choral score
 in `divisi-omr-editor/Backend/fixtures/SFCC/` (7 real Audiveris-era
@@ -1105,6 +1109,31 @@ element by Slice 3 and stays there.
       (or one system) times DPR; Les Djinns renders at full DPR; a
       selection click on Les Djinns paints within one or two frames in
       the headless probe; existing renderer tests green.
+- [ ] **Slice 12: Volta model + IO.** Bring `<ending>` out of
+      passthrough into per-measure model fields, mirroring
+      `startBarline`/`endBarline`: a start carries its numbers (`1`,
+      `1, 2`) and optional label text; an end is `stop` (hooked) or
+      `discontinue` (open). Read a backward `<repeat>`'s `times`. A
+      malformed ending (start with no stop) stays passthrough.
+      Acceptance: a hand-built fixture with 1st/2nd endings round-trips;
+      SFCC corpus snapshots unchanged.
+- [ ] **Slice 13: Volta layout + render.** Brackets above each system's
+      top staff: hooked start, number label, hooked or open end, and a
+      continuation across a system break (no left hook on the continued
+      piece). Clear above-staff marks and dynamics the way the existing
+      above-staff stacking does; scoped redraw stays correct.
+      Acceptance: relational layout tests; demo check.
+- [ ] **Slice 14: Playback unfolding.** Build a measure play order: a
+      backward repeat jumps to the nearest forward repeat (or the score
+      start), honouring `times`; each pass takes the ending whose numbers
+      match. The timeline plays measures in that order, so a note id can
+      appear in several events. A tie chain ends at a jump; fermatas,
+      dynamics and graces apply per pass. Acceptance: timeline tests on
+      the hand-built fixture; Frost Myth m65 plays twice.
+- [ ] **Slice 15: Cursor and seek across repeats.** The playback cursor
+      and follow-scroll jump back with the music; pause/resume keeps the
+      current pass; seeking from a note starts at its first pass.
+      Acceptance: headless demo probe on the fixture.
 
 **Tasks — Human:**
 - [ ] Review this scoping (slice order, the chord model decision, the
@@ -1113,8 +1142,7 @@ element by Slice 3 and stays there.
 - [ ] Get a real Audiveris output that contains lyrics, if Audiveris can
       produce one from an SFCC PDF, so Slice 9 has a real fixture.
 
-**Not yet scoped (later M6 passes):** repeats/endings/codas with playback
-semantics (only Frost Myth has repeats); cross-page ties beyond Slice 7's
+**Not yet scoped (later M6 passes):** cross-page ties beyond Slice 7's
 manual re-tie (the page join itself is Divisi's E3/E10); divisi splits
 where the staff count changes between pages (Divisi's segmentation
 problem; the engine side is covered by chords); British rests beyond
@@ -1215,3 +1243,6 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   `layout.measures[index]` (wrong on multi-staff); one click in ~18 takes
   ~200ms to paint in headless Chrome before and after Slice 11 (handler
   <1ms, likely `auditionNote`).
+- [Repeats] Not modelled: segno, coda, D.C./D.S./Fine (navigation marks
+  and `<sound>` jumps), nested repeats, and edit ops that add or remove
+  repeats or endings.
