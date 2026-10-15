@@ -233,7 +233,7 @@ describe('passthrough in measure attributes and barlines', () => {
 		expect(streamOf(measuresOf(root)[0]!)).toEqual(['attributes', 'note:C', 'attributes', 'note:D']);
 	});
 
-	it('merges an <ending> into the barline the model writes, and keeps a barline it cannot read', () => {
+	it('merges an unpaired <ending> into the barline the model writes, and keeps a barline it cannot read', () => {
 		const xml = onePart(
 			[
 				n('C', 4, 'whole') + `<barline location="right"><bar-style>dashed</bar-style></barline>`,

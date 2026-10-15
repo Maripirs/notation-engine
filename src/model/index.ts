@@ -13,6 +13,8 @@ export {
 export type {
 	Articulation,
 	BarlineType,
+	EndingEnd,
+	EndingStart,
 	ClefChange,
 	ClefType,
 	CrossStaffBeam,

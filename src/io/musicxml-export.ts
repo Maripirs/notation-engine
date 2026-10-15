@@ -39,6 +39,8 @@ import {
 	type NoteId,
 	type OpaqueElement,
 	type DirectionSource,
+	type EndingEnd,
+	type EndingStart,
 	type GraceNote,
 	type Part,
 	type Placement,
@@ -343,6 +345,8 @@ function writePart(
 	const measureCount = score.staves[firstStaffIndex]!.measures.length;
 
 	xml.open('part', { id: part.id });
+	// The volta open at the current measure, whose numbers its end restates.
+	let openEnding: EndingStart | undefined;
 	for (let m = 0; m < measureCount; m++) {
 		xml.open('measure', { number: String(m + 1) });
 		const firstMeasure = score.staves[firstStaffIndex]!.measures[m]!;
@@ -356,9 +360,11 @@ function writePart(
 		// A repeat-start barline is conventionally attached to the measure it
 		// opens (MusicXML's `<barline location="left">`), and the model keeps it
 		// on `Measure.startBarline` for the same reason, so it leads the measure.
+		// So does the start of a volta.
+		if (firstMeasure.endingStart) openEnding = firstMeasure.endingStart;
 		writeBarlines(
 			xml,
-			firstMeasure.startBarline === 'repeatStart' ? { style: 'heavy-light', repeat: 'forward' } : undefined,
+			leftBarlineMarkup(firstMeasure),
 			firstMeasure.barlinePassthrough.filter((b) => b.attrs.location === 'left'),
 			'left'
 		);
@@ -384,10 +390,11 @@ function writePart(
 
 		writeBarlines(
 			xml,
-			rightBarlineMarkup(score.endBarlineAt(m, firstStaffIndex)),
+			rightBarlineMarkup(score.endBarlineAt(m, firstStaffIndex), firstMeasure, openEnding),
 			firstMeasure.barlinePassthrough.filter((b) => b.attrs.location !== 'left'),
 			'right'
 		);
+		if (firstMeasure.endingEnd) openEnding = undefined;
 		xml.close('measure');
 	}
 	xml.close('part');
@@ -1266,33 +1273,66 @@ function graceAttributes(grace: GraceNote, divisions: number): Record<string, st
 	return attrs;
 }
 
-/** The model's right-hand barline for a resolved end-barline type: `normal`
- *  (and the `repeatStart` a boundary resolves to when the *next* measure
- *  opens a repeat, which that measure's own left barline draws) is none at
+/** The model's left-hand barline for a measure: a repeat start and/or the
+ *  start of a volta, or none at all. */
+function leftBarlineMarkup(measure: Measure): BarlineMarkup | undefined {
+	const ending = measure.endingStart && endingElement('start', measure.endingStart.numbers, measure.endingStart);
+	if (measure.startBarline === 'repeatStart') return { style: 'heavy-light', repeat: { direction: 'forward' }, ending };
+	return ending && { ending };
+}
+
+/** The model's right-hand barline for a resolved end-barline type, plus the
+ *  end of the volta `open` when this measure closes it: `normal` (and the
+ *  `repeatStart` a boundary resolves to when the *next* measure opens a
+ *  repeat, which that measure's own left barline draws) is no bar-style at
  *  all, which is what a plain measure boundary looks like in MusicXML. */
-function rightBarlineMarkup(end: ReturnType<Score['endBarlineAt']>): BarlineMarkup | undefined {
+function rightBarlineMarkup(
+	end: ReturnType<Score['endBarlineAt']>,
+	measure: Measure,
+	open: EndingStart | undefined
+): BarlineMarkup | undefined {
+	const ending = measure.endingEnd && open && endingElement(measure.endingEnd.kind, open.numbers, measure.endingEnd);
 	switch (end) {
 		case 'double':
-			return { style: 'light-light' };
+			return { style: 'light-light', ending };
 		case 'final':
-			return { style: 'light-heavy' };
-		case 'repeatEnd':
-			return { style: 'light-heavy', repeat: 'backward' };
+			return { style: 'light-heavy', ending };
+		case 'repeatEnd': {
+			const times = measure.repeatTimes;
+			return { style: 'light-heavy', ending, repeat: { direction: 'backward', times } };
+		}
 		default:
-			return undefined;
+			return ending && { ending };
 	}
 }
 
+/** An `<ending>` for a volta's start or end, with the source's own
+ *  attributes after the `number`/`type` the model states. */
+function endingElement(
+	type: 'start' | EndingEnd['kind'],
+	numbers: readonly number[],
+	ending: EndingStart | EndingEnd
+): OpaqueElement {
+	return {
+		name: 'ending',
+		attrs: { number: numbers.join(', '), type, ...ending.attrs },
+		children: NO_EXTRAS,
+		text: 'text' in ending ? (ending.text ?? '') : ''
+	};
+}
+
 interface BarlineMarkup {
-	readonly style: string;
-	readonly repeat?: 'forward' | 'backward';
+	/** Omitted for a barline the model writes only for its ending. */
+	readonly style?: string;
+	readonly repeat?: { readonly direction: 'forward' | 'backward'; readonly times?: number };
+	readonly ending?: OpaqueElement;
 }
 
 /**
  * The `<barline>`s at one location: the model's own (`markup`), with the
  * first passthrough barline there merged into it (its attributes, and its
- * children slotted around the model's `<bar-style>`/`<repeat>`, minus any
- * `bar-style`/`repeat` of its own the model now states), then any further
+ * children slotted around the model's `<bar-style>`/`<ending>`/`<repeat>`,
+ * minus any `bar-style`/`repeat` of its own the model now states), then any further
  * passthrough barline as-is. With no model barline, the passthrough ones are
  * written as they were read.
  */
@@ -1308,14 +1348,21 @@ function writeBarlines(
 	}
 	const merged = extras[0];
 	const mergedChildren = merged
-		? merged.children.filter((c) => c.name !== 'bar-style' && !(markup.repeat && c.name === 'repeat'))
+		? merged.children.filter(
+				(c) => !(markup.style && c.name === 'bar-style') && !(markup.repeat && c.name === 'repeat')
+			)
 		: NO_EXTRAS;
 	xml.open('barline', { ...merged?.attrs, location });
 	const slots = new SlotMerger(xml, mergedChildren, BARLINE_ORDER);
 	slots.before('bar-style');
-	xml.leaf('bar-style', markup.style);
+	if (markup.style) xml.leaf('bar-style', markup.style);
+	slots.before('ending');
+	if (markup.ending) xml.element(markup.ending);
 	slots.before('repeat');
-	if (markup.repeat) xml.selfClose('repeat', { direction: markup.repeat });
+	if (markup.repeat) {
+		const { direction, times } = markup.repeat;
+		xml.selfClose('repeat', times === undefined ? { direction } : { direction, times: String(times) });
+	}
 	slots.rest();
 	xml.close('barline');
 	for (let i = 1; i < extras.length; i++) xml.element(extras[i]!);

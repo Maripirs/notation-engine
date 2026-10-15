@@ -117,6 +117,14 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 				actualStaff.measures[m]!.startBarline ?? 'none',
 				expectedStaff.measures[m]!.startBarline ?? 'none'
 			);
+			// Repeat count and voltas (M6 Slice 12) compared as written: they
+			// sit on the measure that states them, with no resolution step.
+			assertEqual(
+				`${where} repeatTimes`,
+				actualStaff.measures[m]!.repeatTimes ?? 'none',
+				expectedStaff.measures[m]!.repeatTimes ?? 'none'
+			);
+			assertEqual(`${where} endings`, endingsKey(actualStaff.measures[m]!), endingsKey(expectedStaff.measures[m]!));
 
 			assertMeasurePassthroughEquivalent(where, actualStaff.measures[m]!, expectedStaff.measures[m]!);
 			assertEqual(
@@ -137,6 +145,20 @@ export function assertScoresEquivalent(actual: Score, expected: Score): void {
 
 function onsetKey(onset: number): string {
 	return String(Math.round(onset * 1e9) / 1e9);
+}
+
+function endingsKey(measure: Measure): string {
+	const attrsKey = (attrs: Readonly<Record<string, string>>): string =>
+		Object.keys(attrs)
+			.sort()
+			.map((k) => `${k}=${attrs[k]}`)
+			.join(' ');
+	const start = measure.endingStart;
+	const end = measure.endingEnd;
+	return (
+		(start ? `start ${start.numbers.join(',')} ${JSON.stringify(start.text)} [${attrsKey(start.attrs)}]` : 'no start') +
+		(end ? ` / ${end.kind} [${attrsKey(end.attrs)}]` : ' / no end')
+	);
 }
 
 function directionSourceKey(source: DirectionSource | null): string {

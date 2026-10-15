@@ -1109,7 +1109,7 @@ element by Slice 3 and stays there.
       (or one system) times DPR; Les Djinns renders at full DPR; a
       selection click on Les Djinns paints within one or two frames in
       the headless probe; existing renderer tests green.
-- [ ] **Slice 12: Volta model + IO.** Bring `<ending>` out of
+- [x] **Slice 12: Volta model + IO.** Bring `<ending>` out of
       passthrough into per-measure model fields, mirroring
       `startBarline`/`endBarline`: a start carries its numbers (`1`,
       `1, 2`) and optional label text; an end is `stop` (hooked) or
@@ -1245,4 +1245,6 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   <1ms, likely `auditionNote`).
 - [Repeats] Not modelled: segno, coda, D.C./D.S./Fine (navigation marks
   and `<sound>` jumps), nested repeats, and edit ops that add or remove
-  repeats or endings.
+  repeats or endings. `buildScore` specs cannot state endings or
+  `repeatTimes`; a modelled backward `<repeat>` drops `winged`/`after-jump`;
+  export writes an `<ending>` `number` canonically (`"1, 2"`).

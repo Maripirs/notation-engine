@@ -152,12 +152,39 @@ export type NoteId = string;
  * `Measure.startBarline`/`endBarline` for which measure owns which end of the
  * boundary, and why they are two separate fields rather than one).
  *
- * This slice draws each shape and nothing more: no repeat-playback semantics
- * (jumping back to a `repeatStart` when a `repeatEnd` is reached, counting
- * endings) exist anywhere in this model. That is real, but separate, work for
- * whichever later phase adds a player.
+ * The model states the repeat structure and nothing more: how many times a
+ * `repeatEnd` sends the music back is `Measure.repeatTimes`, and 1st/2nd
+ * endings are `Measure.endingStart`/`endingEnd` (M6 Slice 12). Turning that
+ * into a play order is playback's job (M6 Slice 14).
  */
 export type BarlineType = 'normal' | 'double' | 'final' | 'repeatStart' | 'repeatEnd';
+
+/**
+ * Where a volta (a 1st/2nd ending bracket, MusicXML `<ending type="start">`)
+ * opens: on the first measure it covers (`Measure.endingStart`). `numbers` are
+ * the passes it is played on (`[1]`, `[1, 2]`), ascending; `text` is the
+ * label the source printed in the bracket (`"1."`, `"1.-3."`), or `null` to
+ * label it from `numbers`. `attrs` are the source element's other attributes
+ * (`default-y`, `print-object`, `end-length`, ...), which the model does not
+ * interpret but export writes back.
+ */
+export interface EndingStart {
+	readonly numbers: readonly number[];
+	readonly text: string | null;
+	readonly attrs: Readonly<Record<string, string>>;
+}
+
+/**
+ * Where a volta closes: on the last measure it covers (`Measure.endingEnd`),
+ * which may be the measure that opened it. `'stop'` draws a closing hook
+ * down to the staff (an ending followed by a jump back); `'discontinue'`
+ * leaves the bracket open (the last ending, which the music runs on from).
+ * The numbers it closes are the open `EndingStart`'s. `attrs` as there.
+ */
+export interface EndingEnd {
+	readonly kind: 'stop' | 'discontinue';
+	readonly attrs: Readonly<Record<string, string>>;
+}
 
 /**
  * The clefs this engine draws. `treble` and `bass` are the ordinary G and F
@@ -639,6 +666,23 @@ export class Measure {
 	 */
 	startBarline?: 'repeatStart';
 	/**
+	 * How many times the section a `repeatEnd` closes is played in all
+	 * (MusicXML `<repeat times>`), when the source stated it; `undefined`
+	 * means the usual 2. Only meaningful beside `endBarline: 'repeatEnd'`.
+	 */
+	repeatTimes?: number;
+	/**
+	 * A volta opening at the start of this measure (M6 Slice 12; see
+	 * `EndingStart`). An ending spans every measure from here to the next
+	 * measure with an `endingEnd`, inclusive; import only sets the pair, never
+	 * a start with no end or an end with no start (that `<ending>` stays
+	 * `barlinePassthrough`). Set on every staff of the part, like the barline
+	 * fields, though only the part's first staff is read on export.
+	 */
+	endingStart?: EndingStart;
+	/** The volta closing at the end of this measure; see `endingStart`. */
+	endingEnd?: EndingEnd;
+	/**
 	 * `<measure>` children the model does not hold, each anchored at the onset
 	 * and voice stream it was read at (M6 Slice 3; see `MeasurePassthrough`).
 	 * Held by the staff the stream belongs to. Replaced wholesale, never
@@ -658,7 +702,8 @@ export class Measure {
 	/**
 	 * `<barline>` elements, minus whatever the model read out of them into
 	 * `startBarline`/`endBarline` (`bar-style`, and `repeat` when the model
-	 * holds the repeat), each still carrying its `location`: an `<ending>`, a
+	 * holds the repeat) and `endingStart`/`endingEnd` (a well-formed
+	 * `<ending>`), each still carrying its `location`: an unpaired `<ending>`, a
 	 * `<fermata>`, a `bar-style` the model has no shape for (`dashed`,
 	 * `heavy`, ...). Export merges each into the barline it writes at that
 	 * location, or writes it alone. Kept on the part's first staff, like
@@ -2269,6 +2314,10 @@ export class Score {
 				}
 				if (measure.endBarline !== undefined) measureCopy.endBarline = measure.endBarline;
 				if (measure.startBarline !== undefined) measureCopy.startBarline = measure.startBarline;
+				if (measure.repeatTimes !== undefined) measureCopy.repeatTimes = measure.repeatTimes;
+				// Endings are immutable, so the copy shares them.
+				if (measure.endingStart !== undefined) measureCopy.endingStart = measure.endingStart;
+				if (measure.endingEnd !== undefined) measureCopy.endingEnd = measure.endingEnd;
 				// Passthrough payloads are immutable (see `passthrough.ts`), so the
 				// copy shares them; only reassigning the field can change one.
 				measureCopy.passthrough = measure.passthrough;

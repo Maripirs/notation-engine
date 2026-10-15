@@ -25,7 +25,7 @@
 //     each with the onset and voice stream it sat in; see `MeasurePassthrough`.
 //   - `Measure.attributesPassthrough` / `Measure.barlinePassthrough`: the
 //     unowned children of an `<attributes>`/`<barline>` the model *does* read
-//     (a `<staff-details>` next to a `<clef>`, an `<ending>` on a final
+//     (a `<staff-details>` next to a `<clef>`, a `<fermata>` on a final
 //     barline), merged back into the one export writes.
 //   - `Score.headerPassthrough` and `Part.passthrough`: the score header
 //     (`<work>`, `<identification>`, `<defaults>`, `<credit>`, ...) and the

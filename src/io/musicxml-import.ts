@@ -69,6 +69,8 @@ import {
 	type DirectionSource,
 	type DynamicKind,
 	type DynamicMark,
+	type EndingEnd,
+	type EndingStart,
 	type Placement,
 	type Wedge,
 	type WedgeKind,
@@ -350,6 +352,7 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 		// `<direction>`s carrying a dynamic or hairpin end, promoted once the
 		// whole part is read (`promoteDirections`).
 		const candidates: DirectionCandidate[] = [];
+		const endings = pairedEndings(measureEls);
 
 		for (let m = 0; m < measureCount; m++) {
 			const measureEl = measureEls[m]!;
@@ -384,7 +387,7 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 
 			const barlineExtras: OpaqueElement[] = [];
 			for (const barlineEl of children(measureEl, 'barline')) {
-				const kept = applyBarline(barlineEl, measureObjs, isLastMeasure);
+				const kept = applyBarline(barlineEl, measureObjs, isLastMeasure, endings);
 				if (kept) {
 					barlineExtras.push(kept);
 					if (kept === barlineEl) report.keep('barline');
@@ -1033,11 +1036,58 @@ function applyAttributeChanges(
 // --- Barlines --------------------------------------------------------------
 
 /**
+ * The `<ending>`s of one part the model can hold (M6 Slice 12): a `start` on
+ * a left barline paired with the next `stop`/`discontinue`, on a right
+ * barline, that names the same passes. Anything else (a start never closed, a
+ * stop with no start, numbers that do not parse or do not match, an ending on
+ * the other side of its measure) is malformed and stays passthrough, as does
+ * the start it interrupts.
+ */
+function pairedEndings(measureEls: readonly XmlElement[]): Set<XmlElement> {
+	const paired = new Set<XmlElement>();
+	let open: { readonly el: XmlElement; readonly numbers: string } | undefined;
+	for (const measureEl of measureEls) {
+		for (const barlineEl of children(measureEl, 'barline')) {
+			const ending = child(barlineEl, 'ending');
+			if (!ending) continue;
+			const location = barlineEl.attrs.location ?? 'right';
+			const numbers = endingNumbers(ending.attrs.number)?.join();
+			const type = ending.attrs.type;
+			if (type === 'start' && location === 'left' && numbers !== undefined) {
+				open = { el: ending, numbers };
+				continue;
+			}
+			if ((type === 'stop' || type === 'discontinue') && location === 'right' && open?.numbers === numbers) {
+				paired.add(open!.el);
+				paired.add(ending);
+			}
+			open = undefined;
+		}
+	}
+	return paired;
+}
+
+/** An `<ending number>` (`"1"`, `"1, 2"`, `"1 2"`) as ascending pass
+ *  numbers, or `undefined` when it names none or anything but positive
+ *  integers. */
+function endingNumbers(text: string | undefined): number[] | undefined {
+	const parts = (text ?? '').split(/[\s,]+/).filter((p) => p !== '');
+	if (parts.length === 0 || !parts.every((p) => /^[1-9]\d*$/.test(p))) return undefined;
+	return [...new Set(parts.map(Number))].sort((a, b) => a - b);
+}
+
+/** An `<ending>`'s attributes beyond the `number`/`type` the model reads. */
+function endingAttrs(ending: XmlElement): Readonly<Record<string, string>> {
+	const { number: _number, type: _type, ...rest } = ending.attrs;
+	return Object.freeze(rest);
+}
+
+/**
  * Map a `<barline>` onto `Measure.startBarline` / `Measure.endBarline`, and
  * return what of it the model did not take, for `Measure.barlinePassthrough`:
  * `undefined` when the model took all of it, the barline itself when it took
  * nothing (a `dashed` or `heavy` bar-style, a left barline that opens no
- * repeat), or a copy with only the unowned children (an `<ending>` or
+ * repeat or ending), or a copy with only the unowned children (a
  * `<fermata>` beside a bar-style the model did read) otherwise. `repeat` is
  * owned only when the model holds the repeat it states: a `light-light`
  * barline with a backward repeat reads as `'double'`, and its `<repeat>`
@@ -1049,14 +1099,20 @@ function applyAttributeChanges(
  * `'final'`, so writing it explicitly there would make an otherwise-equal
  * round-trip compare unequal. Its bar-style is owned either way, since export
  * writes that final barline back.
+ *
+ * An `<ending>` in `endings` (see `pairedEndings`) is owned too, onto
+ * `Measure.endingStart`/`endingEnd`, whatever the bar-style beside it; a
+ * backward `<repeat>`'s `times` goes to `Measure.repeatTimes`.
  */
 function applyBarline(
 	barlineEl: XmlElement,
 	measureObjs: readonly Measure[],
-	isLastMeasure: boolean
+	isLastMeasure: boolean,
+	endings: ReadonlySet<XmlElement>
 ): XmlElement | undefined {
 	const location = barlineEl.attrs.location ?? 'right';
-	const repeatDirection = child(barlineEl, 'repeat')?.attrs.direction;
+	const repeatEl = child(barlineEl, 'repeat');
+	const repeatDirection = repeatEl?.attrs.direction;
 	const barStyle = childText(barlineEl, 'bar-style');
 	let ownsStyle = false;
 	let ownsRepeat = false;
@@ -1072,7 +1128,11 @@ function applyBarline(
 			for (const measure of measureObjs) measure.endBarline = 'double';
 			ownsStyle = true;
 		} else if (barStyle === 'light-heavy' && repeatDirection === 'backward') {
-			for (const measure of measureObjs) measure.endBarline = 'repeatEnd';
+			const times = repeatEl!.attrs.times;
+			for (const measure of measureObjs) {
+				measure.endBarline = 'repeatEnd';
+				if (times !== undefined && /^[1-9]\d*$/.test(times)) measure.repeatTimes = Number(times);
+			}
 			ownsStyle = true;
 			ownsRepeat = true;
 		} else if (barStyle === 'light-heavy') {
@@ -1081,9 +1141,27 @@ function applyBarline(
 		}
 	}
 
-	if (!ownsStyle) return barlineEl;
+	const endingEl = child(barlineEl, 'ending');
+	const ownsEnding = endingEl !== undefined && endings.has(endingEl);
+	if (ownsEnding) {
+		const attrs = endingAttrs(endingEl);
+		if (endingEl.attrs.type === 'start') {
+			const start: EndingStart = Object.freeze({
+				numbers: Object.freeze(endingNumbers(endingEl.attrs.number)!),
+				text: endingEl.text.trim() || null,
+				attrs
+			});
+			for (const measure of measureObjs) measure.endingStart = start;
+		} else {
+			const end: EndingEnd = Object.freeze({ kind: endingEl.attrs.type as EndingEnd['kind'], attrs });
+			for (const measure of measureObjs) measure.endingEnd = end;
+		}
+	}
+
+	if (!ownsStyle && !ownsEnding) return barlineEl;
 	const kept = barlineEl.children.filter(
-		(c) => !(c.name === 'bar-style' || (ownsRepeat && c.name === 'repeat'))
+		(c) =>
+			!((ownsStyle && c.name === 'bar-style') || (ownsRepeat && c.name === 'repeat') || (ownsEnding && c === endingEl))
 	);
 	if (kept.length === 0) return undefined;
 	return Object.freeze({ ...barlineEl, children: Object.freeze(kept) });
