@@ -1193,7 +1193,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       `keywords`/`author`. Acceptance: green suite on a tree with no
       `sfcc/`; corpus tests still pass with the env var pointed at a
       local copy.
-- [ ] **Slice 2: Ship the font.** Package `Bravura.woff2` and `OFL.txt`
+- [x] **Slice 2: Ship the font.** Package `Bravura.woff2` and `OFL.txt`
       in the published files; `loadSmuflFont()` gets a default URL
       resolved via `new URL(..., import.meta.url)` so Vite, webpack 5,
       esbuild and plain ESM-from-CDN all find it without host config.
@@ -1359,3 +1359,10 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   its snapshot, `SFCC corpus:` suite titles, "finds all 7 fixtures"); rename
   to a neutral "corpus" when Slice 4 scrubs private references (the rename
   regenerates the snapshot file's keys, so re-run with the env var and `-u`).
+- [M7] Default font URL breaks in Vite 6/7 dev (dep pre-bundling moves the
+  module to `node_modules/.vite/deps/`; Vite 8 and all builds are fine) and
+  esbuild never rewrites `new URL(..., import.meta.url)`; both workarounds
+  are in the `font.ts` header, carry them into the Slice 5 README, or have
+  `mountScore` (Slice 3) fall back gracefully.
+- [M7] `assets/bravura/README.md` still says only the woff2 "is shipped to
+  the browser"; mention the package also ships it as `dist/Bravura.woff2`.

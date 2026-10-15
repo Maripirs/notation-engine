@@ -6,7 +6,6 @@
 // principle in practice, and it is what makes the eventual Svelte adapter for
 // Divisi's editor and player a wrapper rather than a port.
 
-import bravuraUrl from '../assets/bravura/Bravura.woff2?url';
 // M6 Slice 9's hand-written SATB-with-lyrics fixture, one click away.
 import satbLyricsXml from '../src/test/fixtures/satb-lyrics.musicxml?raw';
 import {
@@ -1286,7 +1285,7 @@ staffSelectRedoButton.addEventListener('click', () => {
 async function start(): Promise<void> {
 	// Canvas has no "the font arrived" callback: text drawn before the font
 	// loads renders as tofu and stays that way, so the first draw waits.
-	await loadSmuflFont(bravuraUrl);
+	await loadSmuflFont();
 	sizeCanvas();
 	lastFullDrawMs = drawAll();
 	lastScopedMeasures = [...renderer.lastRedrawnMeasures];
