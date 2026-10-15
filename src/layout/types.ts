@@ -217,6 +217,13 @@ export interface LaidOutScore {
 		 */
 		readonly lyricVerses?: readonly string[];
 		readonly lyricBaseline?: number;
+		/**
+		 * The canvas y of this system's volta bracket line (M6 Slice 13; see
+		 * `layout.ts`'s volta section), on the top staff's row only, and only
+		 * when an ending reaches the system. Recorded so `relayoutMeasure` can
+		 * tell whether an edit moved the bracket (a full relayout) or not.
+		 */
+		readonly voltaY?: number;
 	}[];
 	/**
 	 * Part-grouping decorations (M2 Slice 5): a brace or bracket per

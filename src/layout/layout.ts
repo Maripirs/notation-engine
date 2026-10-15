@@ -1191,6 +1191,7 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 		staffIndex: number;
 		lyricVerses?: readonly string[];
 		lyricBaseline?: number;
+		voltaY?: number;
 	}[] = [];
 	// Each staff's lyrics (M6 Slice 9), indexed once for every row.
 	const lyricIndexes = score.staves.map((_, staffIndex) => staffLyricIndex(score, staffIndex));
@@ -1209,6 +1210,10 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	// reach above the top staff's own top line by an amount not known until
 	// after laying it out).
 	let groupTopY = 0;
+	// The previous system's lowest ink, which a volta bracket keeps clear of.
+	let previousBottom: number | null = null;
+	// The top staff's 1st/2nd endings (M6 Slice 13).
+	const endings = scoreEndings(score);
 
 	for (let systemIndex = 0; systemIndex < systemPlans.length; systemIndex++) {
 		const plan = systemPlans[systemIndex]!;
@@ -1315,15 +1320,45 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 				lyricBottom = sung.bottom;
 				lyricBaselineY = sung.baseline;
 			}
-			const directed = layoutDirectionRow(score, { staffIndex, measures: rowMeasures, staffTopY, ss, systemOf, lyricBottom });
-			rowMeasures.splice(0, rowMeasures.length, ...directed);
+			const directionRow: DirectionRow = { staffIndex, measures: rowMeasures, staffTopY, ss, systemOf, lyricBottom };
+			const directed = layoutDirectionRow(score, directionRow);
+			// Volta brackets (M6 Slice 13), above the top staff, clearing its
+			// dynamics. A bracket that would come within
+			// `VOLTA.systemClearance` of the system above moves this whole
+			// system down (only the top staff exists so far).
+			let voltaY: number | undefined;
+			const voltaLine =
+				staffIndex === 0 && rowHasEndings(endings, plan[0]!, plan[plan.length - 1]!)
+					? voltaLineY(score, directionRow, directionBaselines(score, directionRow), endings)
+					: null;
+			if (voltaLine !== null) {
+				const bracketTop = voltaLine - (ED.thinBarlineThickness * ss) / 2;
+				const dy = previousBottom === null ? 0 : Math.max(0, previousBottom + VOLTA.systemClearance * ss - bracketTop);
+				const shifted = dy > 0 ? directed.map((m) => translateMeasure(m, dy)) : directed;
+				if (dy > 0) {
+					lyricBaselineY = lyricBaselineY === undefined ? undefined : lyricBaselineY + dy;
+					lyricBottom = lyricBottom === null ? null : lyricBottom + dy;
+					staffTopY += dy;
+					staffTopYs[staffIndex] = staffTopY;
+				}
+				voltaY = voltaLine + dy;
+				const row: DirectionRow = { ...directionRow, measures: shifted, staffTopY };
+				rowMeasures.splice(
+					0,
+					rowMeasures.length,
+					...shifted.map((m) => withDirectionOps(m, voltaOpsForMeasure(row, endings, voltaY!, m), staffTopY, ss))
+				);
+			} else {
+				rowMeasures.splice(0, rowMeasures.length, ...directed);
+			}
 			measures.push(...rowMeasures);
 			systems.push({
 				measureIndices: [...plan],
 				topY: staffTopY,
 				spacingScale: scale,
 				staffIndex,
-				...(lyricBaselineY !== undefined ? { lyricVerses: verses, lyricBaseline: lyricBaselineY } : {})
+				...(lyricBaselineY !== undefined ? { lyricVerses: verses, lyricBaseline: lyricBaselineY } : {}),
+				...(voltaY !== undefined ? { voltaY } : {})
 			});
 
 			const rowBottom = Math.max(staffTopY + 4 * ss, ...rowMeasures.map((m) => m.region.y + m.region.height));
@@ -1350,17 +1385,19 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 			...layoutSystemPartDecorations(score, ss, decorationPlan, staffTopYs, padding, systemIndex === 0)
 		);
 
+		previousBottom = groupBottom;
 		groupTopY = groupBottom + SPACING.systemGap * ss;
 	}
 
 	const top = Math.min(0, ...measures.map((m) => m.region.y));
 	const shiftY = padding - top;
 	const shiftedMeasures = measures.map((m) => translateMeasure(m, shiftY));
-	const shiftedSystems = systems.map((s) =>
-		s.lyricBaseline === undefined
-			? { ...s, topY: s.topY + shiftY }
-			: { ...s, topY: s.topY + shiftY, lyricBaseline: s.lyricBaseline + shiftY }
-	);
+	const shiftedSystems = systems.map((s) => ({
+		...s,
+		topY: s.topY + shiftY,
+		...(s.lyricBaseline !== undefined ? { lyricBaseline: s.lyricBaseline + shiftY } : {}),
+		...(s.voltaY !== undefined ? { voltaY: s.voltaY + shiftY } : {})
+	}));
 	// Part decorations never reach above the topmost measure's own region (a
 	// brace/bracket's ink is bounded exactly to its own staves' span by
 	// construction, and a label sits well inside its own staff's band; see
@@ -1828,6 +1865,27 @@ export function relayoutMeasure(
 			a === null || b === null ? a !== b : Math.abs(a - b) > 0.001;
 		if (moved(old.above, baselines.above) || moved(old.below, baselines.below)) return null;
 		laid = withDirectionOps(laid, directionOpsForMeasure(score, after, baselines, laid), system.topY, ss);
+	}
+
+	// Volta brackets (M6 Slice 13), likewise: one line per system, so an edit
+	// that moves it is a full relayout. A measure's piece reads only its own
+	// region, the row's cached regions and the first measure's notes, so no
+	// other measure's piece can go stale on the scoped path.
+	const endings = staffIndex === 0 ? scoreEndings(score) : [];
+	const hasVolta = rowHasEndings(endings, first, last);
+	if (hasVolta !== (system.voltaY !== undefined)) return null;
+	if (hasVolta) {
+		const row: DirectionRow = {
+			staffIndex,
+			measures: system.measureIndices.map((i) => (i === measureIndex ? laid : cached(i))),
+			staffTopY: system.topY,
+			ss,
+			systemOf,
+			lyricBottom
+		};
+		const y = voltaLineY(score, row, directionBaselines(score, row), endings);
+		if (y === null || Math.abs(y - system.voltaY!) > 0.001) return null;
+		laid = withDirectionOps(laid, voltaOpsForMeasure(row, endings, y, laid), system.topY, ss);
 	}
 
 	// Sub-pixel tolerance: the same arithmetic run twice should agree exactly,
@@ -4796,14 +4854,26 @@ function sideOf(placement: Placement | null, row: DirectionRow): Placement {
  * none. One value per side is what lines a system's marks up.
  */
 function directionBaselines(score: Score, row: DirectionRow): { above: number | null; below: number | null } {
-	const { ss, staffIndex } = row;
+	const { ss } = row;
 	let lowest: number | null = null;
 	let highest: number | null = null;
-	const mark = (laid: LaidOutMeasure, side: Placement): void => {
+	forEachDirectionMark(score, row, (laid, side) => {
 		const extent = laid.inkExtent ?? { top: row.staffTopY, bottom: row.staffTopY + 4 * ss };
 		if (side === 'below') lowest = Math.max(lowest ?? extent.bottom, extent.bottom);
 		else highest = Math.min(highest ?? extent.top, extent.top);
+	});
+	// Below a row's lyrics, not between them and the staff.
+	if (lowest !== null && row.lyricBottom != null) lowest = Math.max(lowest, row.lyricBottom);
+	return {
+		below: lowest === null ? null : lowest + (DIRECTION.clearance + DIRECTION.ascent) * ss,
+		above: highest === null ? null : highest - (DIRECTION.clearance + DIRECTION.descent) * ss
 	};
+}
+
+/** Calls `mark` for every measure of `row` carrying a dynamic or a piece of a
+ *  hairpin, once per such mark, with the side it is drawn on. */
+function forEachDirectionMark(score: Score, row: DirectionRow, mark: (laid: LaidOutMeasure, side: Placement) => void): void {
+	const { staffIndex } = row;
 	const first = row.measures[0]?.index ?? 0;
 	const last = row.measures[row.measures.length - 1]?.index ?? -1;
 	const staff = score.staves[staffIndex]!;
@@ -4818,12 +4888,6 @@ function directionBaselines(score: Score, row: DirectionRow): { above: number | 
 			if (laid.index >= wedge.start.measureIndex && laid.index <= stop.measureIndex) mark(laid, sideOf(wedge.placement, row));
 		}
 	}
-	// Below a row's lyrics, not between them and the staff.
-	if (lowest !== null && row.lyricBottom != null) lowest = Math.max(lowest, row.lyricBottom);
-	return {
-		below: lowest === null ? null : lowest + (DIRECTION.clearance + DIRECTION.ascent) * ss,
-		above: highest === null ? null : highest - (DIRECTION.clearance + DIRECTION.descent) * ss
-	};
 }
 
 /**
@@ -5041,6 +5105,157 @@ function layoutDirectionRow(score: Score, row: DirectionRow): LaidOutMeasure[] {
 	return row.measures.map((laid) =>
 		withDirectionOps(laid, directionOpsForMeasure(score, row, baselines, laid), row.staffTopY, row.ss)
 	);
+}
+
+// --- Voltas (M6 Slice 13) ----------------------------------------------------
+//
+// A 1st/2nd ending's bracket sits above each system's top staff only. Like a
+// hairpin it spans measures and systems, so it is cut at barlines, each
+// measure owning its piece (the start measure also owns the left hook and the
+// label, the end measure the right hook), and every measure recomputes the
+// same bracket from the model and its row. A scoped redraw of one measure
+// therefore repaints exactly its own piece.
+//
+// Height: one bracket line per system, clear of the highest ink of every
+// ending measure in it (notes, marks, and above-staff dynamics and hairpins,
+// read off `inkExtent` and the row's dynamics baseline rather than the
+// measures' regions, which a cached measure has already grown by its piece).
+// `layoutScore` moves a system down when its bracket would come too close to
+// the system above.
+
+const VOLTA = {
+	/** Blank between the highest ink a bracket clears and the bottom of its
+	 *  hooks and label, staff spaces. */
+	clearance: 0.8,
+	/** How far a hook reaches down from the bracket line. */
+	hookLength: 2.4,
+	/** Label text size, its baseline below the bracket line, and its inset
+	 *  right of the left hook. */
+	labelFontSpaces: 1.6,
+	labelBaseline: 1.9,
+	labelInset: 0.5,
+	/** Gap between a hooked end (or a start) and the barline it meets, so
+	 *  a 1st ending's closing hook and a 2nd ending's opening hook stay apart. */
+	barlineInset: 0.3,
+	/** Where a bracket starts in a system's first measure: this far left of
+	 *  the first note, after the clef and key signature. */
+	systemStartLeadIn: 1,
+	/** Minimum blank between the system above's lowest ink and a bracket. */
+	systemClearance: 2
+} as const;
+
+/** One volta on the top staff: the measures it covers, its label, and
+ *  whether it closes with a hook (`'stop'`) or stays open. */
+interface Ending {
+	readonly first: number;
+	readonly last: number;
+	readonly label: string;
+	readonly hooked: boolean;
+}
+
+/** The top staff's endings, in order. A start with no end (import never
+ *  leaves one) is skipped. */
+function scoreEndings(score: Score): Ending[] {
+	const measures = score.staves[0]?.measures ?? [];
+	const endings: Ending[] = [];
+	for (let i = 0; i < measures.length; i++) {
+		const start = measures[i]!.endingStart;
+		if (!start) continue;
+		let j = i;
+		while (j < measures.length && !measures[j]!.endingEnd) j++;
+		const end = measures[j]?.endingEnd;
+		if (!end) continue;
+		const label = start.text ?? `${start.numbers.join(', ')}.`;
+		endings.push({ first: i, last: j, label, hooked: end.kind === 'stop' });
+		i = j;
+	}
+	return endings;
+}
+
+/** How far a bracket's hooks or label reach below its line, pixels. */
+function voltaDepth(ss: number): number {
+	return Math.max(VOLTA.hookLength * ss, VOLTA.labelBaseline * ss + 0.3 * VOLTA.labelFontSpaces * ss);
+}
+
+/**
+ * The bracket line's y for `row` (a top staff's measures in one system), or
+ * `null` when no ending reaches this system: clear of the highest ink of
+ * every ending measure in the row, including any above-staff dynamic or
+ * hairpin (at the row's above baseline, `baselines.above`).
+ */
+function voltaLineY(
+	score: Score,
+	row: DirectionRow,
+	baselines: { above: number | null; below: number | null },
+	endings: readonly Ending[]
+): number | null {
+	const { ss } = row;
+	const covered = (index: number): boolean => endings.some((e) => index >= e.first && index <= e.last);
+	const marked = new Set<number>();
+	forEachDirectionMark(score, row, (laid, side) => {
+		if (side === 'above') marked.add(laid.index);
+	});
+	let top: number | null = null;
+	for (const laid of row.measures) {
+		if (!covered(laid.index)) continue;
+		let measureTop = laid.inkExtent?.top ?? row.staffTopY;
+		if (marked.has(laid.index) && baselines.above !== null) {
+			measureTop = Math.min(measureTop, baselines.above - DIRECTION.ascent * ss);
+		}
+		top = Math.min(top ?? measureTop, measureTop);
+	}
+	return top === null ? null : top - VOLTA.clearance * ss - voltaDepth(ss);
+}
+
+/** The ops one measure of `row` draws for its pieces of brackets, the line at
+ *  `y`. Reads only the row's regions and its first measure's notes. */
+function voltaOpsForMeasure(row: DirectionRow, endings: readonly Ending[], y: number, laid: LaidOutMeasure): DrawOp[] {
+	const { ss } = row;
+	const ops: DrawOp[] = [];
+	const rowFirst = row.measures[0]!;
+	const rowLast = row.measures[row.measures.length - 1]!;
+	const thickness = ED.thinBarlineThickness * ss;
+	const regionEnd = (m: LaidOutMeasure): number => m.region.x + m.region.width;
+	for (const ending of endings) {
+		if (laid.index < ending.first || laid.index > ending.last) continue;
+		const startHere = ending.first >= rowFirst.index;
+		const endHere = ending.last <= rowLast.index;
+		const startLaid = row.measures.find((m) => m.index === Math.max(ending.first, rowFirst.index))!;
+		// A start opening its system, or a continuation, begins at the music,
+		// past the clef and key signature; any other start just after its
+		// left barline.
+		const x0 =
+			startLaid === rowFirst
+				? Math.min(...rowFirst.notes.map((n) => n.bounds.x), regionEnd(rowFirst)) -
+					(startHere ? VOLTA.systemStartLeadIn : 0.5) * ss
+				: startLaid.region.x + VOLTA.barlineInset * ss;
+		const endLaid = row.measures.find((m) => m.index === Math.min(ending.last, rowLast.index))!;
+		// A continuation runs to the end of its system.
+		const x1 = endHere ? regionEnd(endLaid) - VOLTA.barlineInset * ss : regionEnd(endLaid);
+		const left = Math.max(x0, laid.region.x);
+		const right = Math.min(x1, regionEnd(laid));
+		if (right <= left) continue;
+		ops.push({ kind: 'rect', x: left, y: y - thickness / 2, width: right - left, height: thickness });
+		if (startHere && laid.index === ending.first) {
+			ops.push({ kind: 'rect', x: x0, y: y - thickness / 2, width: thickness, height: VOLTA.hookLength * ss });
+			ops.push({
+				kind: 'text',
+				text: ending.label,
+				x: x0 + VOLTA.labelInset * ss,
+				y: y + VOLTA.labelBaseline * ss,
+				fontSizePx: VOLTA.labelFontSpaces * ss
+			});
+		}
+		if (endHere && ending.hooked && laid.index === ending.last) {
+			ops.push({ kind: 'rect', x: x1 - thickness, y: y - thickness / 2, width: thickness, height: VOLTA.hookLength * ss });
+		}
+	}
+	return ops;
+}
+
+/** Whether any ending reaches the measures `first..last`. */
+function rowHasEndings(endings: readonly Ending[], first: number, last: number): boolean {
+	return endings.some((e) => e.first <= last && e.last >= first);
 }
 
 // --- Lyrics (M6 Slice 9) -----------------------------------------------------

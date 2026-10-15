@@ -1117,7 +1117,7 @@ element by Slice 3 and stays there.
       malformed ending (start with no stop) stays passthrough.
       Acceptance: a hand-built fixture with 1st/2nd endings round-trips;
       SFCC corpus snapshots unchanged.
-- [ ] **Slice 13: Volta layout + render.** Brackets above each system's
+- [x] **Slice 13: Volta layout + render.** Brackets above each system's
       top staff: hooked start, number label, hooked or open end, and a
       continuation across a system break (no left hook on the continued
       piece). Clear above-staff marks and dynamics the way the existing
@@ -1247,4 +1247,8 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   and `<sound>` jumps), nested repeats, and edit ops that add or remove
   repeats or endings. `buildScore` specs cannot state endings or
   `repeatTimes`; a modelled backward `<repeat>` drops `winged`/`after-jump`;
-  export writes an `<ending>` `number` canonically (`"1, 2"`).
+  export writes an `<ending>` `number` canonically (`"1, 2"`). Volta
+  labels are not clamped to their measure's band (a long label in a narrow
+  measure could overhang it), and a scoped edit in the system above a volta
+  can eat into `VOLTA.systemClearance` without falling back (only overlap
+  is caught).
