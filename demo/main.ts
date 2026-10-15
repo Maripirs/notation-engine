@@ -23,6 +23,7 @@ import {
 	layoutScore,
 	loadSmuflFont,
 	PlaybackEngine,
+	playOnsetEvent,
 	regionForNote,
 	relayoutMeasure,
 	NOTE_VALUES,
@@ -223,6 +224,25 @@ function transposeSelected(semitones: number): void {
 		? `Transposed note ${selected} in measure ${touched + 1}. Redrew measure ${touched + 1} only.`
 		: `Transposed note ${selected}: the edit changed the system's geometry, so the whole score was re-laid-out.`;
 	report(elapsed, touched, staffIndex);
+	auditionNote(noteId);
+}
+
+/**
+ * Sound one note briefly so a click or a transpose is heard, the way
+ * notation editors audition a selection. Goes through the same
+ * `playOnsetEvent` synth the playback engine uses, on the shared
+ * `AudioContext` (created here if Play has not been pressed yet; a click
+ * is a user gesture, so the browser lets it start). A rest stays silent.
+ */
+function auditionNote(noteId: NoteId): void {
+	const pitch = history.current.findNote(noteId)?.pitch;
+	if (!pitch) return;
+	audioContext ??= new AudioContext();
+	void audioContext.resume();
+	playOnsetEvent(
+		{ noteId, pitch, startSeconds: audioContext.currentTime, durationSeconds: 0.4 },
+		{ audioContext }
+	);
 }
 
 // --- Correction ops (M6 Slice 7) -------------------------------------------
@@ -524,6 +544,7 @@ canvas.addEventListener('pointerdown', (event) => {
 	);
 	const changed = renderer.setSelection(hit ? hit.noteId : null);
 	selected = hit ? hit.noteId : null;
+	if (selected !== null) auditionNote(selected);
 	// A selection change touches at most two measures (the old note's and the
 	// new one's), and in principle those can sit on two different staves, so
 	// each pair is redrawn on its own staff rather than batching them through
