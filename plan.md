@@ -1,6 +1,6 @@
 # Project Plan: notation-engine
 
-**Current milestone:** M6
+**Current milestone:** M7
 
 Roadmap and full decision record: `OMR_EDITOR_PLAN.md` milestone E13 in the
 `divisi-omr-editor` worktree. This file tracks notation-engine's own
@@ -1147,6 +1147,105 @@ manual re-tie (the page join itself is Divisi's E3/E10); divisi splits
 where the staff count changes between pages (Divisi's segmentation
 problem; the engine side is covered by chords); British rests beyond
 Slice 1 + Slice 7 (the misread itself is upstream OMR).
+
+### M7: Open-source release [~]
+
+Make the engine a plug-and-play open-source library: a stranger can
+`npm install` it, paste a few lines, and see a score render and play.
+Scoped 2026-10-15 (Claude, with the human deciding the three calls
+below). M2-M6 are still `[?]`; this milestone does not block on them.
+
+**Decisions (human, 2026-10-15):**
+- **License: MIT.** Bravura stays under its own SIL OFL, shipped with
+  its `OFL.txt`.
+- **SFCC fixtures: delete going forward, keep history.** The 7 scores
+  stay recoverable from `e311ab6` in any clone; the human accepted that.
+  Switching to a history rewrite stays possible only until the first
+  public push.
+- **Embed API scope: viewer + playback.** One call renders, scrolls,
+  zooms and plays with a moving cursor. Editing (selection, edit ops,
+  undo, export) stays on the existing lower-level API, which remains
+  public; no keybindings or edit UI policy go into the library.
+
+**Acceptance criteria (whole milestone):**
+- [ ] No SFCC file in the working tree; `npm test` green on a clean
+      clone without them
+- [ ] `npm pack` tarball installs into a fresh scratch Vite app, and the
+      README quickstart, pasted verbatim, renders and plays a score with
+      no extra font or asset wiring
+- [ ] README, LICENSE, CONTRIBUTING and CHANGELOG present and current;
+      no private-project references (Divisi plan paths, SFCC, the board)
+      left in shipped source or docs
+- [ ] CI runs `check`/`test`/`build` on every push and PR
+- [ ] `npm run check`/`test`/`build` green throughout
+
+**Tasks — Claude:**
+- [ ] **Slice 1: Fixture removal + license.** Delete
+      `src/test/fixtures/sfcc/`. The corpus test and the four other
+      tests that read SFCC files (`lyrics`, `passthrough`,
+      `correction-ops`, `repeats-playback`) either move to a local-only
+      opt-in (`NOTATION_CORPUS_DIR` env var, skipped when unset, so the
+      human keeps the regression net locally) or switch to hand-built
+      fixtures where the test is about one behaviour, not the corpus.
+      The demo's Les Djinns loader goes behind the same local path or
+      is dropped. Add `LICENSE` (MIT); `package.json` gets `license:
+      MIT`, drops `private`, gains `repository`/`homepage`/`bugs`/
+      `keywords`/`author`. Acceptance: green suite on a tree with no
+      `sfcc/`; corpus tests still pass with the env var pointed at a
+      local copy.
+- [ ] **Slice 2: Ship the font.** Package `Bravura.woff2` and `OFL.txt`
+      in the published files; `loadSmuflFont()` gets a default URL
+      resolved via `new URL(..., import.meta.url)` so Vite, webpack 5,
+      esbuild and plain ESM-from-CDN all find it without host config.
+      Document the Node/node-canvas path (`registerFont`) for headless
+      rendering. Acceptance: the scratch-app check above loads the font
+      with zero asset config; a unit test covers the default URL shape.
+- [ ] **Slice 3: Embed API.** `mountScore(container, source, options)`
+      where `source` is a MusicXML string or a `Score`, returning a
+      handle: `load(source)`, `play()`/`pause()`/`stop()`/`seek()`,
+      `setZoom()`, `on('noteclick' | 'onset' | 'end', ...)`,
+      `destroy()`. Internally reuses what the demo already wires by
+      hand: viewport rendering (M6 Slice 11), font loading, a
+      `ResizeObserver` re-cast-off, playback cursor + follow-scroll (M4),
+      repeat-aware cursor (M6 Slice 15). `destroy()` releases the
+      `AudioContext`, observers and listeners. Acceptance: the demo's
+      main canvas is rebuilt on `mountScore` (proving it covers the
+      demo's viewer path) with the headless demo probe confirming render,
+      play and cursor movement; unit tests for handle lifecycle (load
+      replaces, destroy is idempotent and leaves no listeners) against
+      stubbed DOM/audio.
+- [ ] **Slice 4: Public surface + packaging.** Move the `create*Showcase
+      Score` fixtures out of the main entry (a `notation-engine/examples`
+      subpath, or internal only). Scrub private-project references from
+      source comments (`src/index.ts`, `renderer.ts`, `score.ts`,
+      `musicxml-export.ts`, demo). Bump to `0.1.0` with
+      `NOTATION_ENGINE_VERSION` read from one place. Add an
+      `exports`-map smoke test: build, `npm pack`, install the tarball
+      into a scratch project, import every documented entry point.
+      Acceptance: smoke test passes; `npm pack --dry-run` lists only
+      `dist/`, the font, `OFL.txt`, `LICENSE`, `README.md`.
+- [ ] **Slice 5: Docs + examples.** Rewrite `README.md` for outsiders:
+      what it is, a GIF/screenshot, install, a ~10-line `mountScore`
+      quickstart, a feature list and a "known limitations" section
+      condensed from the Backlog, the lower-level API in brief, and the
+      design principles (kept, with the Divisi motivation as one
+      sentence of background). Add `CONTRIBUTING.md` (architecture
+      layers, this plan's testing policy, scripts) and `CHANGELOG.md`
+      starting at 0.1.0. Add `examples/vanilla/` (a single HTML file
+      using the package) and a short React wrapper snippet in the README.
+      Acceptance: quickstart pasted into the scratch app works verbatim.
+- [ ] **Slice 6: CI + live demo.** GitHub Actions: `check`/`test`/
+      `build` plus the pack smoke test on push and PR; a Pages workflow
+      that builds and deploys the demo so the README can link a live
+      demo. Acceptance: workflows pass on the human's first public push.
+
+**Tasks — Human:**
+- [x] Review this scoping.
+- [ ] Create the public GitHub repo and push (the last moment a history
+      rewrite is still possible, per the fixtures decision above).
+- [ ] Enable GitHub Pages for the demo workflow.
+- [ ] `npm login` and publish `0.1.0` (`notation-engine` was free on npm
+      as of 2026-10-15).
 
 ## Backlog
 
