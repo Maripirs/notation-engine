@@ -19,30 +19,15 @@ import {
 } from '../model/index.js';
 import { exportMusicXml } from './musicxml-export.js';
 import { importMusicXml } from './musicxml-import.js';
+import { n, onePart } from './test-helpers.js';
 import { child, children, parseXml } from './xml.js';
 
-function doc(measures: readonly string[]): string {
-	const body = measures
-		.map((inner, i) => {
-			const attrs =
-				i === 0
-					? `<attributes><divisions>2</divisions><key><fifths>0</fifths></key>` +
-						`<time><beats>4</beats><beat-type>4</beat-type></time>` +
-						`<clef><sign>G</sign><line>2</line></clef></attributes>`
-					: '';
-			return `<measure number="${i + 1}">${attrs}${inner}</measure>`;
-		})
-		.join('\n');
-	return (
-		`<?xml version="1.0" encoding="UTF-8"?>\n<score-partwise version="4.0">\n` +
-		`<part-list><score-part id="P1"><part-name>Voice</part-name></score-part></part-list>\n` +
-		`<part id="P1">${body}</part>\n</score-partwise>\n`
-	);
-}
+/** One 4/4 part at divisions 2 (or `divisions`). */
+const doc = (measures: readonly string[], divisions = 2): string => onePart(measures, divisions);
 
-function n(step: string, duration: number, type: string, extra = '', chord = false): string {
-	return `<note>${chord ? '<chord/>' : ''}<pitch><step>${step}</step><octave>5</octave></pitch><duration>${duration}</duration><voice>1</voice><type>${type}</type>${extra}</note>`;
-}
+/** `n` with a `<tie>` (which sits before `<voice>`) and its `<tied>`. */
+const tied = (step: string, duration: number, type: string, tie: 'start' | 'stop', extra = ''): string =>
+	n(step, duration, type, `<notations><tied type="${tie}"/>${extra}</notations>`).replace('<voice>', `<tie type="${tie}"/><voice>`);
 
 /** Export, re-import, and require the same score back. */
 function expectRoundTrip(score: Score): string {
@@ -54,59 +39,39 @@ function expectRoundTrip(score: Score): string {
 const count = (xml: string, re: RegExp): number => xml.match(re)?.length ?? 0;
 
 describe('editTie and passthrough tie markup', () => {
-	it('re-adds a tie lost at a page join, stripping the stray OMR start so export writes it once', () => {
-		const xml = doc([
-			n('C', 2, 'quarter') + n('D', 2, 'quarter') + n('E', 2, 'quarter') +
-				n('C', 2, 'quarter', '<tie type="start"/><notations><tied type="start"/></notations>'),
-			// The page join lost this note's tie stop.
-			n('C', 8, 'whole')
-		]);
-		const score = importMusicXml(xml);
+	const lead = n('C', 2, 'quarter') + n('D', 2, 'quarter') + n('E', 2, 'quarter');
+
+	it.each([
+		// The page join lost the stop: the stray OMR start sits on the source.
+		['a lost stop, stripping the stray start', [lead + tied('C', 2, 'quarter', 'start'), n('C', 8, 'whole')]],
+		// The start was the half lost: the stray stop sits on the target.
+		['a lost start, stripping the stray stop', [lead + n('C', 2, 'quarter'), tied('C', 8, 'whole', 'stop')]]
+	])('re-adds a tie broken by %s so export writes it once', (_what, measures) => {
+		const score = importMusicXml(doc(measures));
 		const source = score.staves[0]!.measures[0]!.notes[3]!;
 		const target = score.staves[0]!.measures[1]!.notes[0]!;
 		expect(source.tiedToId).toBeNull();
-		expect(source.passthrough.map((e) => e.name)).toEqual(['tie', 'notations']);
+		expect(source.passthrough.length + target.passthrough.length).toBeGreaterThan(0);
 
 		const history = new EditHistory(score);
-		const result = history.record((s) => s.editTie(source.id, target.id));
-		expect(result).toEqual<MeasureRef[]>([
+		expect(history.record((s) => s.editTie(source.id, target.id))).toEqual<MeasureRef[]>([
 			{ staffIndex: 0, measureIndex: 0 },
 			{ staffIndex: 0, measureIndex: 1 }
 		]);
 		expect(history.current.findNote(source.id)!.passthrough).toEqual([]);
+		expect(history.current.findNote(target.id)!.passthrough).toEqual([]);
 		const written = expectRoundTrip(history.current);
-		expect(count(written, /<tie type="start"\/>/g)).toBe(1);
-		expect(count(written, /<tied type="start"\/>/g)).toBe(1);
-		expect(count(written, /<tie type="stop"\/>/g)).toBe(1);
+		for (const re of [/<tie type="start"\/>/g, /<tied type="start"\/>/g, /<tie type="stop"\/>/g, /<tied type="stop"\/>/g]) {
+			expect(count(written, re)).toBe(1);
+		}
 		expect(importMusicXml(written).staves[0]!.measures[0]!.notes[3]!.tiedToId).not.toBeNull();
 
 		history.undo();
 		expect(exportMusicXml(history.current)).toBe(exportMusicXml(score));
 	});
 
-	it('strips a stray stop on the target when the start was the half lost', () => {
-		const xml = doc([
-			n('C', 2, 'quarter') + n('D', 2, 'quarter') + n('E', 2, 'quarter') + n('C', 2, 'quarter'),
-			n('C', 8, 'whole', '<tie type="stop"/><notations><tied type="stop"/></notations>')
-		]);
-		const score = importMusicXml(xml);
-		const source = score.staves[0]!.measures[0]!.notes[3]!;
-		const target = score.staves[0]!.measures[1]!.notes[0]!;
-		expect(target.passthrough.length).toBeGreaterThan(0);
-		expect(score.editTie(source.id, target.id)).not.toBeNull();
-		expect(target.passthrough).toEqual([]);
-		const written = expectRoundTrip(score);
-		expect(count(written, /<tie type="stop"\/>/g)).toBe(1);
-		expect(count(written, /<tied type="stop"\/>/g)).toBe(1);
-	});
-
 	it('untying removes a dangling OMR tie start the model never linked', () => {
-		const xml = doc([
-			n('C', 2, 'quarter') + n('D', 2, 'quarter') + n('E', 2, 'quarter') +
-				n('C', 2, 'quarter', '<tie type="start"/><notations><tied type="start"/><fermata>angled</fermata></notations>'),
-			n('D', 8, 'whole')
-		]);
-		const score = importMusicXml(xml);
+		const score = importMusicXml(doc([lead + tied('C', 2, 'quarter', 'start', '<fermata>angled</fermata>'), n('D', 8, 'whole')]));
 		const source = score.staves[0]!.measures[0]!.notes[3]!;
 		expect(score.editTie(source.id, null)).not.toBeNull();
 		// The unrelated payload stays; only the tie markup goes.
@@ -143,11 +108,11 @@ describe('deleting notes and their payloads', () => {
 		// Divisions 3, so a quarter-note triplet member lasts 2.
 		const triplet = doc([
 			n('C', 2, 'quarter', `${tm}<notations><tuplet type="start" bracket="yes"/></notations>`) +
-				n('E', 2, 'quarter', tm, true) +
+				n('E', 2, 'quarter', tm, { chord: true }) +
 				n('D', 2, 'quarter', tm) +
 				n('E', 2, 'quarter', `${tm}<notations><tuplet type="stop"/></notations>`) +
 				n('F', 6, 'half')
-		]).replace('<divisions>2</divisions>', '<divisions>3</divisions>');
+		], 3);
 		const score = importMusicXml(triplet);
 		const [anchor, member] = score.staves[0]!.measures[0]!.notes;
 		expect(member!.chordWithPrevious).toBe(true);
@@ -225,15 +190,17 @@ describe('export after every op re-imports equivalently', () => {
 		expect(rest).toBeDefined();
 		expect(chordAnchor).toBeDefined();
 
-		expect(history.record((s) => s.restToNote(rest!, parsePitch('B4')))).not.toBeNull();
-		expectRoundTrip(history.current);
-		expect(history.record((s) => s.noteToRest(rest!))).not.toBeNull();
-		expectRoundTrip(history.current);
-		// A value fix: the rest cut to an eighth, padded back to its length.
-		expect(history.record((s) => s.setDuration(rest!, 'eighth'))).not.toBeNull();
-		expectRoundTrip(history.current);
-		expect(history.record((s) => s.removeChordMember(chordAnchor!))).not.toBeNull();
-		const written = expectRoundTrip(history.current);
+		let written = original;
+		for (const op of [
+			(s: Score) => s.restToNote(rest!, parsePitch('B4')),
+			(s: Score) => s.noteToRest(rest!),
+			// A value fix: the rest cut to an eighth, padded back to its length.
+			(s: Score) => s.setDuration(rest!, 'eighth'),
+			(s: Score) => s.removeChordMember(chordAnchor!)
+		]) {
+			expect(history.record(op)).not.toBeNull();
+			written = expectRoundTrip(history.current);
+		}
 		// Still well-formed: the parser reads it and every part survives.
 		expect(children(parseXml(written), 'part')).toHaveLength(children(parseXml(original), 'part').length);
 		expect(child(parseXml(written), 'part-list')).toBeDefined();

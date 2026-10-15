@@ -1,34 +1,12 @@
-// M6 Slice 2: chord engraving. One test (or a small group) per layout rule in
-// plan.md's Slice 2 list, each on a hand-built measure small enough that the
-// geometry can be read straight off the ops. Kept in its own file rather than
-// appended to `layout.test.ts` (already ~2.9k lines) since every case here
-// shares the same few helpers for "the ops belonging to one head".
+// M6 Slice 2: chord engraving, one test (or a small group) per layout rule.
 
 import { describe, expect, it } from 'vitest';
-import { createChordShowcaseScore } from '../demo-score.js';
-import { buildScore, measureDurationWholes, validateMeasure, type MeasureSpec, type Score } from '../model/score.js';
-import { ENGRAVING_DEFAULTS as ED, GLYPH_METRICS, type GlyphName } from '../render/glyph-metrics.js';
-import { computeBeamGroups, layoutScore, middleLineForClef, relayoutMeasure } from './layout.js';
+import type { MeasureSpec } from '../model/score.js';
+import { ENGRAVING_DEFAULTS as ED, GLYPH_METRICS } from '../render/glyph-metrics.js';
+import { layoutScore, relayoutMeasure } from './layout.js';
+import { glyphOps as glyphs, headOf, ids, layoutOne, SS, type CurveOp, type RectOp } from './test-helpers.js';
 import type { DrawOp } from './types.js';
 
-const SS = 10;
-type GlyphOp = Extract<DrawOp, { kind: 'glyph' }>;
-type RectOp = Extract<DrawOp, { kind: 'rect' }>;
-type CurveOp = Extract<DrawOp, { kind: 'curve' }>;
-
-function layoutOne(measures: readonly MeasureSpec[], keyFifths = 0) {
-	const score = buildScore(measures, { keyFifths });
-	const layout = layoutScore(score, { staffSpacePx: SS });
-	return { score, layout, ops: layout.measures[0]!.ops };
-}
-
-/** Note ids of measure `m`, in `measure.notes` order (heads included). */
-const ids = (score: Score, m = 0) => score.measures[m]!.notes.map((note) => note.id);
-
-const glyphs = (ops: readonly DrawOp[], name: GlyphName) =>
-	ops.filter((op): op is GlyphOp => op.kind === 'glyph' && op.glyph === name);
-const headOf = (ops: readonly DrawOp[], id: string) =>
-	ops.find((op): op is GlyphOp => op.kind === 'glyph' && op.noteId === id && op.glyph.startsWith('notehead'))!;
 const isStem = (op: DrawOp): op is RectOp =>
 	op.kind === 'rect' && Math.abs(op.width - ED.stemThickness * SS) < 1e-6 && op.noteId !== undefined;
 const isLedger = (op: DrawOp): op is RectOp =>
@@ -214,12 +192,7 @@ describe('chord layout: beaming (M6 Slice 2)', () => {
 		];
 		const { score, ops } = layoutOne([measure]);
 		const notes = score.measures[0]!.notes;
-		const groups = computeBeamGroups(notes, score.time, middleLineForClef('treble'));
-		expect(groups).toHaveLength(1);
-		expect(groups[0]!.notes.map((note) => note.id)).toEqual([notes[0]!.id, notes[2]!.id]);
-		expect(groups[0]!.direction).toBe('up');
-
-		// Two stems (one per chord) reaching the beam, and no flags.
+		// Two stems (one per chord) reaching one beam, and no flags.
 		const stems = ops.filter(isStem);
 		expect(stems).toHaveLength(2);
 		expect(glyphs(ops, 'flag8thUp')).toHaveLength(0);
@@ -231,9 +204,9 @@ describe('chord layout: beaming (M6 Slice 2)', () => {
 	it('lets every head vote in the group direction', () => {
 		// Lone anchors C5/D5 would stem down, but the chords' far-low A3/B3
 		// heads are the farthest from the middle line: the group stems up.
-		const score = buildScore([[[['A3', 'C5'], 'eighth'], [['B3', 'D5'], 'eighth'], [null, 'quarter'], [null, 'half']]]);
-		const groups = computeBeamGroups(score.measures[0]!.notes, score.time, middleLineForClef('treble'));
-		expect(groups[0]!.direction).toBe('up');
+		const { score, ops } = layoutOne([[[['A3', 'C5'], 'eighth'], [['B3', 'D5'], 'eighth'], [null, 'quarter'], [null, 'half']]]);
+		const [, c5] = ids(score);
+		for (const stem of ops.filter(isStem)) expect(stem.y).toBeLessThan(headOf(ops, c5!).y);
 	});
 });
 
@@ -247,7 +220,6 @@ describe('chord layout: two voices of chords (M6 Slice 2)', () => {
 				[['B3', 'D4'], 'half', { voice: 2 }]
 			]
 		]);
-		expect(validateMeasure(score.measures[0]!, score.time).valid).toBe(true);
 		const [e5, , d5, , c4, , b3] = ids(score);
 		// The two voices' chords share onset columns.
 		expect(headOf(ops, c4!).x).toBeCloseTo(headOf(ops, e5!).x, 6);
@@ -267,8 +239,7 @@ describe('chord layout: per-head identity (M6 Slice 2)', () => {
 	});
 
 	it('transposes one member alone and re-lays out its displacement', () => {
-		const score = buildScore([[[['E4', 'G4'], 'half'], [null, 'half']]]);
-		const layout = layoutScore(score, { staffSpacePx: SS });
+		const { score, layout } = layoutOne([[[['E4', 'G4'], 'half'], [null, 'half']]]);
 		const [e4, g4] = ids(score);
 		expect(headOf(layout.measures[0]!.ops, g4!).x).toBe(headOf(layout.measures[0]!.ops, e4!).x);
 
@@ -280,15 +251,5 @@ describe('chord layout: per-head identity (M6 Slice 2)', () => {
 		expect(relayoutMeasure(score, layout, 0, { staffSpacePx: SS })).toBeNull();
 		const fresh = layoutScore(score, { staffSpacePx: SS }).measures[0]!.ops;
 		expect(headOf(fresh, g4!).x).toBeGreaterThan(headOf(fresh, e4!).x);
-	});
-
-	it('lays out the chord showcase with every measure full', () => {
-		const score = createChordShowcaseScore();
-		for (const measure of score.measures) {
-			expect(validateMeasure(measure, score.timeAt(measure.index)).valid).toBe(true);
-		}
-		// A single-voice chord measure sums to one 4/4 bar, not one per head.
-		expect(measureDurationWholes(score.measures[0]!)).toBeCloseTo(1, 9);
-		expect(() => layoutScore(score)).not.toThrow();
 	});
 });

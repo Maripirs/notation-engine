@@ -4,37 +4,13 @@
 // and a re-import is equivalent.
 
 import { describe, expect, it } from 'vitest';
-import { assertScoresEquivalent, buildScore, EditHistory } from '../model/index.js';
+import { buildScore } from '../model/index.js';
 import { exportMusicXml } from './musicxml-export.js';
 import { createImportDiagnostics, importMusicXml } from './musicxml-import.js';
-import { descendants, parseXml } from './xml.js';
+import { doc, n, onePart, roundTrip } from './test-helpers.js';
+import { descendants } from './xml.js';
 
-function doc(body: string): string {
-	return `<?xml version="1.0" encoding="UTF-8"?>\n<score-partwise version="4.0">\n${body}\n</score-partwise>\n`;
-}
-
-const ATTRS =
-	'<attributes><divisions>2</divisions><key><fifths>0</fifths></key>' +
-	'<time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>';
-
-const quarter = (step: string) =>
-	`<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>`;
-
-/** One single-staff part with these raw measure bodies. */
-function onePart(measures: readonly string[]): string {
-	const body = measures.map((inner, i) => `<measure number="${i + 1}">${i === 0 ? ATTRS : ''}${inner}</measure>`).join('\n');
-	return doc(`<part-list><score-part id="P1"><part-name>S</part-name></score-part></part-list>\n<part id="P1">\n${body}\n</part>`);
-}
-
-/** Import, export, re-import: equivalent, and the second export identical. */
-function roundTrip(xml: string): string {
-	const score = importMusicXml(xml);
-	const exported = exportMusicXml(score);
-	const again = importMusicXml(exported);
-	assertScoresEquivalent(again, score);
-	expect(exportMusicXml(again)).toBe(exported);
-	return exported;
-}
+const quarter = (step: string) => n(step, 2, 'quarter', '', { octave: 4 });
 
 describe('MusicXML dynamics (M6 Slice 6)', () => {
 	it('promotes a dynamic with its onset and placement, keeping the rest of its direction', () => {
@@ -60,7 +36,7 @@ describe('MusicXML dynamics (M6 Slice 6)', () => {
 		expect(diagnostics.passthrough.get('dynamics')).toBeUndefined();
 		expect(diagnostics.passthrough.get('sound')).toBe(1);
 
-		const exported = parseXml(roundTrip(xml));
+		const exported = roundTrip(xml).root;
 		const direction = descendants(exported, 'direction').find((d) => descendants(d, 'dynamics').length > 0)!;
 		expect(direction.attrs.placement).toBe('above');
 		expect(direction.children.map((c) => c.name)).toEqual(['direction-type', 'offset', 'staff', 'sound']);
@@ -138,7 +114,7 @@ describe('MusicXML hairpins (M6 Slice 6)', () => {
 
 		// Export allocates numbers afresh; overlapping hairpins get different
 		// ones, and the round trip pairs them back the same way.
-		const exported = parseXml(roundTrip(xml));
+		const exported = roundTrip(xml).root;
 		const wedges = descendants(exported, 'wedge');
 		expect(wedges.map((w) => `${w.attrs.type}${w.attrs.number}`)).toEqual(['crescendo1', 'diminuendo2', 'stop1', 'stop2']);
 		expect(wedges[0]!.attrs.spread).toBe('15');
@@ -166,7 +142,7 @@ describe('MusicXML hairpins (M6 Slice 6)', () => {
 		// <direction>.
 		const zero = score.wedges[2]!;
 		expect(zero.start.source!.element).toBe(zero.stop.source!.element);
-		const exported = parseXml(roundTrip(xml));
+		const exported = roundTrip(xml).root;
 		expect(descendants(exported, 'direction').filter((d) => descendants(d, 'wedge').length === 2)).toHaveLength(1);
 	});
 
@@ -211,24 +187,5 @@ describe('MusicXML export of dynamics and hairpins built in code (M6 Slice 6)', 
 		]);
 		expect(again.measures[0]!.passthrough).toHaveLength(0);
 		expect(exportMusicXml(again)).toBe(exported);
-	});
-
-	it('survives an edit and its undo unchanged', () => {
-		const xml = onePart([
-			'<direction><direction-type><dynamics><f/></dynamics></direction-type></direction>' +
-				'<direction><direction-type><wedge type="diminuendo"/></direction-type></direction>' +
-				quarter('C') +
-				quarter('D') +
-				quarter('E') +
-				'<direction><direction-type><wedge type="stop"/></direction-type></direction>' +
-				quarter('F')
-		]);
-		const history = new EditHistory(importMusicXml(xml));
-		const before = exportMusicXml(history.current);
-		history.record((s) => s.transposeNote(s.measures[0]!.notes[1]!.id, 1));
-		expect(history.current.wedges).toHaveLength(1);
-		expect(history.current.measures[0]!.dynamics).toHaveLength(1);
-		history.undo();
-		expect(exportMusicXml(history.current)).toBe(before);
 	});
 });

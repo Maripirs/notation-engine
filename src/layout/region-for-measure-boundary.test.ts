@@ -1,13 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { createDemoScore } from '../demo-score.js';
-import { parsePitch } from '../model/pitch.js';
-import { Score } from '../model/score.js';
 import { layoutScore } from './layout.js';
 import { regionForMeasureBoundary, SEAM_STRIP_WIDTH_STAFF_SPACES } from './region-for-measure-boundary.js';
+import { measureAt, twoStaffScore } from './test-helpers.js';
 import type { LaidOutMeasure, LaidOutScore, Rect } from './types.js';
-
-const measureAt = (layout: LaidOutScore, staffIndex: number, index: number): LaidOutMeasure =>
-	layout.measures.find((m) => m.staffIndex === staffIndex && m.index === index)!;
 
 /** The strip `regionForMeasureBoundary` should return for an edge at `edgeX`
  *  owned by `owner`, written out independently of the implementation:
@@ -25,20 +21,6 @@ const endBarline = (measure: LaidOutMeasure): { left: number; right: number } =>
 	if (last.kind !== 'rect') throw new Error('unreachable');
 	return { left: last.x, right: last.x + last.width };
 };
-
-function twoStaffScore(): Score {
-	const score = new Score({ keyFifths: 0 });
-	score.appendStaff('bass');
-	for (const staffIndex of [0, 1] as const) {
-		for (let i = 0; i < 3; i++) {
-			const measure = score.appendMeasure(staffIndex);
-			for (const pitch of ['C4', 'D4', 'E4', 'F4']) {
-				score.appendNote(measure, { pitch: parsePitch(pitch), value: 'quarter' });
-			}
-		}
-	}
-	return score;
-}
 
 describe('regionForMeasureBoundary', () => {
 	it('centres a first-system boundary on the barline between the two measures', () => {
@@ -93,16 +75,10 @@ describe('regionForMeasureBoundary', () => {
 		expect(regionForMeasureBoundary(layout, 0, 0)).toEqual(expectedStrip(layout, first, first.region.x));
 	});
 
-	it('returns null for an out-of-range or non-integer boundary', () => {
+	it('returns null for an out-of-range or non-integer boundary, or a staff with no measures', () => {
 		const layout = layoutScore(createDemoScore());
-		expect(regionForMeasureBoundary(layout, 0, 5)).toBeNull();
-		expect(regionForMeasureBoundary(layout, 0, -1)).toBeNull();
-		expect(regionForMeasureBoundary(layout, 0, 1.5)).toBeNull();
-	});
-
-	it('returns null for a staff index with no measures', () => {
-		const layout = layoutScore(createDemoScore());
-		expect(regionForMeasureBoundary(layout, 1, 0)).toBeNull();
-		expect(regionForMeasureBoundary(layout, -1, 0)).toBeNull();
+		for (const [staff, boundary] of [[0, 5], [0, -1], [0, 1.5], [1, 0], [-1, 0]]) {
+			expect(regionForMeasureBoundary(layout, staff!, boundary!)).toBeNull();
+		}
 	});
 });

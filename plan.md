@@ -7,6 +7,29 @@ Roadmap and full decision record: `OMR_EDITOR_PLAN.md` milestone E13 in the
 build-out; that one is Divisi's plan and stays the source of truth for why
 this project exists.
 
+## Testing policy
+
+Adopted 2026-10-14 after the suite outgrew its value (about 12k test lines
+for 18k source lines). Applies to every slice, including older
+"Acceptance: unit tests for..." wording below.
+
+- Test behavior through public entry points (import, layout output,
+  render calls, playback events), not internal helpers or exact
+  intermediate values.
+- A slice adds a handful of tests (roughly 3 to 8): the main behavior,
+  the one or two edge cases that actually broke or are likely to, and a
+  round trip where IO is involved. Not every combination.
+- Prefer `it.each` tables over copy-pasted cases. Reuse shared fixtures
+  and builders instead of re-declaring scores inline.
+- Don't pin pixel coordinates or layout constants unless the slice is
+  about that exact geometry; assert relations (above/below, ordered,
+  non-overlapping) instead.
+- Don't re-test what an earlier test already covers just because a new
+  feature passes through it.
+- Per slice: `npm run check` and `npm test`. `npm run build` and the
+  demo check run once at milestone end, or per slice only when the slice
+  is visual and the risk is visible only in the demo.
+
 ## Milestones
 
 ### M0 — Phase 0: Spike [x]
@@ -1079,6 +1102,8 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   Slice 2), since first paint on open is the user-visible cost.
 -  (compressed MusicXML) import: Divisi's Mozart Lacrymosa fixture
   is `.mxl`; the importer only takes an XML string today.
+- `assertScoresEquivalent` ignores cross-staff beams: a clone with a beam
+  removed still compares equal (found during the 2026-10-14 test trim).
 
 ## Log
 

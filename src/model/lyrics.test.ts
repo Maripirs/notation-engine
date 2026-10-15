@@ -1,8 +1,8 @@
 // Lyrics in the model (M6 Slice 9): the `Lyric` shape and its helpers, and
-// how clone/undo, equivalence and the Slice 7 correction ops carry them.
+// how the Slice 7 correction ops carry them. Clone and equivalence are in
+// edit-history.test.ts.
 
 import { describe, expect, it } from 'vitest';
-import { EditHistory } from './edit-history.js';
 import {
 	compareVerses,
 	eventLyrics,
@@ -13,7 +13,6 @@ import {
 	mergeLyrics,
 	NO_LYRICS
 } from './lyrics.js';
-import { assertScoresEquivalent } from './score-equivalence.js';
 import { buildScore, noteEvents } from './score.js';
 
 describe('Lyric', () => {
@@ -74,22 +73,11 @@ describe('lyrics on a Score', () => {
 		expect(member!.lyrics).toBe(NO_LYRICS);
 	});
 
-	it('survives clone (sharing the immutable list) and is compared by equivalence', () => {
+	it('noteToRest drops the note\'s lyrics', () => {
 		const score = build();
-		const copy = score.clone();
-		expect(copy.measures[0]!.notes[0]!.lyrics).toBe(score.measures[0]!.notes[0]!.lyrics);
-		assertScoresEquivalent(copy, score);
-		copy.measures[0]!.notes[2]!.lyrics = [makeLyric({ text: 'ri', syllabic: 'end' })];
-		expect(() => assertScoresEquivalent(copy, score)).toThrow(/lyrics/);
-	});
-
-	it('noteToRest drops the note\'s lyrics, and undo brings them back', () => {
-		const history = new EditHistory(build());
-		const d = history.current.measures[0]!.notes[2]!;
-		history.record((s) => s.noteToRest(d.id));
-		expect(history.current.findNote(d.id)!.lyrics).toEqual([]);
-		history.undo();
-		expect(history.current.findNote(d.id)!.lyrics.map((l) => l.text)).toEqual(['ry']);
+		const d = score.measures[0]!.notes[2]!;
+		score.noteToRest(d.id);
+		expect(score.findNote(d.id)!.lyrics).toEqual([]);
 	});
 
 	it('removeChordMember on the anchor hands its lyrics to the promoted head', () => {

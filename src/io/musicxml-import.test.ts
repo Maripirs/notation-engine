@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { layoutScore } from '../layout/index.js';
 import {
 	createAccidentalShowcaseScore,
-	createBarlineShowcaseScore,
 	createArticulationShowcaseScore,
+	createBarlineShowcaseScore,
 	createChordShowcaseScore,
 	createClefShowcaseScore,
 	createCrossStaffBeamShowcaseScore,
@@ -18,91 +18,59 @@ import {
 	createTwoVoiceShowcaseScore,
 	createVoiceClashShowcaseScore
 } from '../demo-score.js';
+import { assertScoresEquivalent, buildScore, validateMeasure, type Score } from '../model/index.js';
 import { exportMusicXml } from './musicxml-export.js';
 import { createImportDiagnostics, importMusicXml } from './musicxml-import.js';
-import { assertScoresEquivalent, buildScore, validateMeasure } from '../model/index.js';
+import { doc, n, onePart } from './test-helpers.js';
 
-// A `score-partwise` shell so the fixtures below only have to spell out the
-// part they care about. `parts` is the raw inner XML for `<part-list>` +
-// `<part>`s.
-function doc(parts: string): string {
-	return (
-		`<?xml version="1.0" encoding="UTF-8"?>\n` +
-		`<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">\n` +
-		`<score-partwise version="4.0">\n${parts}\n</score-partwise>\n`
-	);
+const rest = (duration: number, type: string) =>
+	`<note><rest/><duration>${duration}</duration><voice>1</voice><type>${type}</type></note>`;
+
+/** One part with `<attributes>` written out in full (for staves, clefs or
+ *  meters `onePart` does not cover). */
+function part(attributes: string, measures: readonly string[], name = 'Music'): string {
+	const body = measures
+		.map((inner, i) => `<measure number="${i + 1}">${i === 0 ? `<attributes>${attributes}</attributes>` : ''}${inner}</measure>`)
+		.join('\n');
+	return doc(`<part-list><score-part id="P1"><part-name>${name}</part-name></score-part></part-list>\n<part id="P1">${body}</part>`);
 }
 
-describe('importMusicXml — hand-written fixtures', () => {
+describe('importMusicXml: hand-written fixtures', () => {
 	it('reads a one-part, single-staff score', () => {
-		const xml = doc(`
-      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes>
-            <divisions>4</divisions>
-            <key><fifths>2</fifths></key>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            <clef number="1"><sign>G</sign><line>2</line></clef>
-          </attributes>
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>
-          <note><pitch><step>D</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>
-          <note><rest/><duration>4</duration><voice>1</voice><type>quarter</type></note>
-          <note><pitch><step>F</step><alter>1</alter><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>quarter</type></note>
-        </measure>
-      </part>`);
-
-		const score = importMusicXml(xml);
+		const xml = onePart([n('C', 4, 'quarter') + n('D', 4, 'quarter') + rest(4, 'quarter') + n('F', 4, 'quarter')], 4).replace(
+			'<fifths>0</fifths>',
+			'<fifths>2</fifths>'
+		);
+		const score = importMusicXml(xml.replace('<step>F</step>', '<step>F</step><alter>1</alter>'));
 		expect(score.staves).toHaveLength(1);
 		expect(score.keyFifths).toBe(2);
 		expect(score.time).toEqual({ beats: 4, beatType: 4 });
 		expect(score.staves[0]!.clef).toBe('treble');
-
 		const notes = score.staves[0]!.measures[0]!.notes;
-		expect(notes).toHaveLength(4);
-		expect(notes.map((n) => n.value)).toEqual(['quarter', 'quarter', 'quarter', 'quarter']);
-		expect(notes[2]!.isRest).toBe(true);
+		expect(notes.map((note) => [note.value, note.durationWholes, note.isRest])).toEqual([
+			['quarter', 0.25, false],
+			['quarter', 0.25, false],
+			['quarter', 0.25, true],
+			['quarter', 0.25, false]
+		]);
 		expect(notes[0]!.pitch).toEqual({ step: 'C', alter: 0, octave: 5 });
 		expect(notes[3]!.pitch).toEqual({ step: 'F', alter: 1, octave: 5 });
-		// Cross-check reconstructed duration against the raw <duration> (divisions 4).
-		for (const note of notes) {
-			expect(Math.abs(note.durationWholes * 4 * 4 - 4)).toBeLessThan(1e-6);
-		}
 	});
 
 	it('reads an SATB score: four staves, four clefs, named parts, a bracket group', () => {
-		const voice = (id: string, sign: string, line: string, octave = '') => `
-      <part id="${id}">
-        <measure number="1">
-          <attributes>
-            <divisions>1</divisions>
-            <key><fifths>0</fifths></key>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            <clef number="1"><sign>${sign}</sign><line>${line}</line>${octave}</clef>
-          </attributes>
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>
-        </measure>
-      </part>`;
-		const xml = doc(`
-      <part-list>
-        <part-group type="start" number="1"><group-symbol>bracket</group-symbol></part-group>
-        <score-part id="P1"><part-name>Soprano</part-name></score-part>
-        <score-part id="P2"><part-name>Alto</part-name></score-part>
-        <score-part id="P3"><part-name>Tenor</part-name></score-part>
-        <score-part id="P4"><part-name>Bass</part-name></score-part>
-        <part-group type="stop" number="1"/>
-      </part-list>
-      ${voice('P1', 'G', '2')}
-      ${voice('P2', 'G', '2')}
-      ${voice('P3', 'G', '2', '<clef-octave-change>-1</clef-octave-change>')}
-      ${voice('P4', 'F', '4')}`);
-
-		const score = importMusicXml(xml);
-		expect(score.staves).toHaveLength(4);
+		const voice = (id: string, clef: string) =>
+			`<part id="${id}"><measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time>` +
+			`<clef>${clef}</clef></attributes>${n('C', 4, 'whole')}</measure></part>`;
+		const g2 = '<sign>G</sign><line>2</line>';
+		const score = importMusicXml(
+			doc(`<part-list>
+				<part-group type="start" number="1"><group-symbol>bracket</group-symbol></part-group>
+				${['Soprano', 'Alto', 'Tenor', 'Bass'].map((name, i) => `<score-part id="P${i + 1}"><part-name>${name}</part-name></score-part>`).join('')}
+				<part-group type="stop" number="1"/>
+			</part-list>
+			${voice('P1', g2)}${voice('P2', g2)}${voice('P3', `${g2}<clef-octave-change>-1</clef-octave-change>`)}${voice('P4', '<sign>F</sign><line>4</line>')}`)
+		);
 		expect(score.staves.map((s) => s.clef)).toEqual(['treble', 'treble', 'treble8', 'bass']);
-
-		// 4 named parts + 1 group, in that order (no stray constructor seed;
-		// see the part-count test below).
 		expect(score.parts).toEqual([
 			{ name: 'Soprano', staffIndices: [0] },
 			{ name: 'Alto', staffIndices: [1] },
@@ -113,105 +81,42 @@ describe('importMusicXml — hand-written fixtures', () => {
 	});
 
 	it('lands a mid-score key change on the right measure', () => {
-		const xml = doc(`
-      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes>
-            <divisions>1</divisions>
-            <key><fifths>0</fifths></key>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            <clef number="1"><sign>G</sign><line>2</line></clef>
-          </attributes>
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>
-        </measure>
-        <measure number="2">
-          <attributes><key><fifths>3</fifths></key></attributes>
-          <note><pitch><step>E</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>
-        </measure>
-        <measure number="3">
-          <note><pitch><step>G</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>
-        </measure>
-      </part>`);
-
-		const score = importMusicXml(xml);
-		// Measure 0's <fifths>0</fifths> equals the score-global key, so no change
-		// is recorded there; measure 1 carries the change; measure 2 inherits it.
-		expect(score.staves[0]!.measures[0]!.keyFifths).toBeUndefined();
-		expect(score.staves[0]!.measures[1]!.keyFifths).toBe(3);
-		expect(score.staves[0]!.measures[2]!.keyFifths).toBeUndefined();
-		expect(score.keyFifthsAt(0)).toBe(0);
-		expect(score.keyFifthsAt(1)).toBe(3);
-		expect(score.keyFifthsAt(2)).toBe(3);
+		const score = importMusicXml(
+			onePart([n('C', 4, 'whole'), `<attributes><key><fifths>3</fifths></key></attributes>${n('E', 4, 'whole')}`, n('G', 4, 'whole')], 1)
+		);
+		// Measure 0 matches the score-global key, so only measure 1 records a change.
+		expect(score.staves[0]!.measures.map((m) => m.keyFifths)).toEqual([undefined, 3, undefined]);
+		expect([0, 1, 2].map((m) => score.keyFifthsAt(m))).toEqual([0, 3, 3]);
 	});
 
 	it('links a tie that crosses a barline to the right pair', () => {
-		const xml = doc(`
-      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes>
-            <divisions>2</divisions>
-            <key><fifths>0</fifths></key>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            <clef number="1"><sign>G</sign><line>2</line></clef>
-          </attributes>
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>half</type></note>
-          <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><tie type="start"/><voice>1</voice><type>half</type><notations><tied type="start"/></notations></note>
-        </measure>
-        <measure number="2">
-          <note><pitch><step>G</step><octave>4</octave></pitch><duration>4</duration><tie type="stop"/><voice>1</voice><type>half</type><notations><tied type="stop"/></notations></note>
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>half</type></note>
-        </measure>
-      </part>`);
-
-		const score = importMusicXml(xml);
-		const source = score.staves[0]!.measures[0]!.notes[1]!;
-		const target = score.staves[0]!.measures[1]!.notes[0]!;
-		expect(source.tiedToId).toBe(target.id);
-		expect(score.tiedFromNote(target.id)).toBe(source);
-		// The unrelated C5s are not tied.
-		expect(score.staves[0]!.measures[0]!.notes[0]!.tiedToId).toBeNull();
+		const score = importMusicXml(
+			onePart([
+				n('C', 2, 'half') + n('G', 2, 'half', '<notations><tied type="start"/></notations>').replace('<voice>', '<tie type="start"/><voice>'),
+				n('G', 2, 'half', '<notations><tied type="stop"/></notations>').replace('<voice>', '<tie type="stop"/><voice>') + n('C', 2, 'half')
+			], 1)
+		);
+		const [m0, m1] = score.staves[0]!.measures;
+		expect(m0!.notes[1]!.tiedToId).toBe(m1!.notes[0]!.id);
+		expect(m0!.notes[0]!.tiedToId).toBeNull();
 	});
 
 	it('reads a triplet measure: ratio and reconstructed durations', () => {
-		const trip = (step: string, stop = false) => `
-      <note>
-        <pitch><step>${step}</step><octave>5</octave></pitch>
-        <duration>1</duration><voice>1</voice><type>eighth</type>
-        <time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>
-        <notations>${stop ? '<tuplet type="stop" number="1"/>' : '<tuplet type="start" number="1"/>'}</notations>
-      </note>`;
-		const xml = doc(`
-      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes>
-            <divisions>3</divisions>
-            <key><fifths>0</fifths></key>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            <clef number="1"><sign>G</sign><line>2</line></clef>
-          </attributes>
-          ${trip('C')}${trip('D')}${trip('E')}${trip('F')}${trip('G')}${trip('A', true)}
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>6</duration><voice>1</voice><type>half</type></note>
-        </measure>
-      </part>`);
-
-		const score = importMusicXml(xml);
+		const tm = '<time-modification><actual-notes>3</actual-notes><normal-notes>2</normal-notes></time-modification>';
+		const trip = (step: string, tuplet: string) => n(step, 1, 'eighth', `${tm}<notations><tuplet type="${tuplet}" number="1"/></notations>`);
+		const score = importMusicXml(
+			onePart([trip('C', 'start') + ['D', 'E', 'F', 'G'].map((s) => n(s, 1, 'eighth', tm)).join('') + trip('A', 'stop') + n('C', 6, 'half')], 3)
+		);
 		const notes = score.staves[0]!.measures[0]!.notes;
-		expect(notes).toHaveLength(7);
-		for (let i = 0; i < 6; i++) {
-			expect(notes[i]!.tuplet).toEqual({ actualNotes: 3, normalNotes: 2 });
-			// A tripleted eighth is 1/12 of a whole; divisions is 3, so duration is 1.
-			expect(Math.abs(notes[i]!.durationWholes * 4 * 3 - 1)).toBeLessThan(1e-6);
-		}
+		expect(notes.slice(0, 6).every((note) => note.tuplet?.actualNotes === 3 && note.tuplet.normalNotes === 2)).toBe(true);
+		expect(notes[0]!.durationWholes).toBeCloseTo(1 / 12, 9);
 		expect(notes[6]!.tuplet).toBeNull();
-		expect(Math.abs(notes[6]!.durationWholes * 4 * 3 - 6)).toBeLessThan(1e-6);
+		expect(notes[6]!.durationWholes).toBeCloseTo(1 / 2, 9);
 	});
 });
 
-describe('importMusicXml — round-trips every showcase score', () => {
-	const showcases: Record<string, () => import('../model/index.js').Score> = {
+describe('importMusicXml: round-trips every showcase score', () => {
+	const showcases: Record<string, () => Score> = {
 		createDemoScore,
 		createDurationShowcaseScore,
 		createAccidentalShowcaseScore,
@@ -225,29 +130,17 @@ describe('importMusicXml — round-trips every showcase score', () => {
 		createGrandStaffShowcaseScore,
 		createSatbBracketShowcaseScore,
 		createCrossStaffBeamShowcaseScore,
+		createChordShowcaseScore,
+		createArticulationShowcaseScore,
 		createFullDemoScore
 	};
 
-	for (const [name, make] of Object.entries(showcases)) {
-		it(`${name} survives export -> import`, () => {
-			const original = make();
-			const reimported = importMusicXml(exportMusicXml(original));
-			assertScoresEquivalent(reimported, original);
-		});
-	}
-});
-
-describe('importMusicXml: mid-score clef changes (M5 Slice 5)', () => {
-	it('round-trips a clef change on each staff of a grand staff, including the restore after it', () => {
-		const original = createGrandStaffShowcaseScore();
-		original.setClefRange(0, 1, 1, 'treble8');
-		original.setClefRange(1, 1, 2, 'treble');
-		const reimported = importMusicXml(exportMusicXml(original));
+	it.each(Object.entries(showcases))('%s survives export -> import', (_name, make) => {
+		const original = make();
+		const xml = exportMusicXml(original);
+		const reimported = importMusicXml(xml);
 		assertScoresEquivalent(reimported, original);
-		const clefsOf = (staffIndex: number) =>
-			reimported.staves[staffIndex]!.measures.map((_m, i) => reimported.clefAt(i, staffIndex));
-		expect(clefsOf(0).slice(0, 3)).toEqual(['treble', 'treble8', 'treble']);
-		expect(clefsOf(1).slice(0, 3)).toEqual(['bass', 'treble', 'treble']);
+		expect(exportMusicXml(reimported)).toBe(xml);
 	});
 
 	it('reads a measure-0 clef override back as the staff\'s own initial clef', () => {
@@ -261,48 +154,25 @@ describe('importMusicXml: mid-score clef changes (M5 Slice 5)', () => {
 });
 
 describe('importMusicXml: C clefs and clef changes inside a measure (M6 Slice 4)', () => {
-	const note = (step: string, octave: number, staff = 1) =>
-		`<note><pitch><step>${step}</step><octave>${octave}</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type>${staff > 1 ? `<staff>${staff}</staff>` : ''}</note>`;
+	const q = (staff?: number) => n('C', 1, 'quarter', '', { octave: 4, staff });
 	const clef = (sign: string, line: number, number = 1) =>
 		`<attributes><clef number="${number}"><sign>${sign}</sign><line>${line}</line></clef></attributes>`;
-	const part = (measures: string, staves = 1) =>
-		doc(`
-      <part-list><score-part id="P1"><part-name>Tenor</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes>
-            <divisions>1</divisions>
-            <key><fifths>0</fifths></key>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            ${staves > 1 ? `<staves>${staves}</staves>` : ''}
-            <clef number="1"><sign>F</sign><line>4</line></clef>
-            ${staves > 1 ? '<clef number="2"><sign>F</sign><line>4</line></clef>' : ''}
-          </attributes>
-          ${measures}`);
+	const base = '<divisions>1</divisions><key><fifths>0</fifths></key><time><beats>4</beats><beat-type>4</beat-type></time>';
+	const bass = (number = 1) => `<clef number="${number}"><sign>F</sign><line>4</line></clef>`;
 
 	it('maps <sign>C</sign> line 3 to alto and line 4 to tenor, and still falls back for C1/C2/C5', () => {
 		const diagnostics = createImportDiagnostics();
-		const xml = part(`
-          ${note('C', 4).repeat(4)}
-        </measure>
-        <measure number="2">${clef('C', 4)}${note('C', 4).repeat(4)}</measure>
-        <measure number="3">${clef('C', 3)}${note('C', 4).repeat(4)}</measure>
-        <measure number="4">${clef('C', 1)}${note('C', 4).repeat(4)}</measure>
-      </part>`);
-		const score = importMusicXml(xml, { diagnostics });
+		const bar = q().repeat(4);
+		const score = importMusicXml(part(base + bass(), [bar, clef('C', 4) + bar, clef('C', 3) + bar, clef('C', 1) + bar]), {
+			diagnostics
+		});
 		expect([0, 1, 2, 3].map((m) => score.clefAt(m))).toEqual(['bass', 'tenor', 'alto', 'treble']);
-		expect(diagnostics.fallbacks.map((f) => `${f.kind} m${f.measureNumber}: ${f.detail}`)).toEqual([
-			'clef m4: sign C line 1'
-		]);
+		expect(diagnostics.fallbacks.map((f) => `${f.kind} m${f.measureNumber}: ${f.detail}`)).toEqual(['clef m4: sign C line 1']);
 	});
 
-	it('reads a clef between a measure\'s notes as a change at that onset, and one at the end as a change before the barline', () => {
+	it('reads a clef between notes as a change at that onset, and one at the end as a change before the barline', () => {
 		const diagnostics = createImportDiagnostics();
-		const xml = part(`
-          ${note('C', 4).repeat(2)}${clef('C', 4)}${note('C', 4).repeat(2)}${clef('F', 4)}
-        </measure>
-        <measure number="2">${note('C', 4).repeat(4)}</measure>
-      </part>`);
+		const xml = part(base + bass(), [q().repeat(2) + clef('C', 4) + q().repeat(2) + clef('F', 4), q().repeat(4)]);
 		const score = importMusicXml(xml, { diagnostics });
 		expect(score.measures[0]!.clef).toBeUndefined();
 		expect(score.measures[0]!.clefChanges).toEqual([
@@ -315,120 +185,52 @@ describe('importMusicXml: C clefs and clef changes inside a measure (M6 Slice 4)
 	});
 
 	it('places a second staff\'s clef by the cursor after a <backup>, and round-trips it', () => {
-		const xml = part(
-			`
-          ${note('C', 4).repeat(4)}
-          <backup><duration>4</duration></backup>
-          ${note('C', 3, 2).repeat(3)}${clef('C', 4, 2)}${note('C', 4, 2)}
-        </measure>
-        <measure number="2">${note('C', 4).repeat(4)}<backup><duration>4</duration></backup>${note('C', 4, 2).repeat(4)}</measure>
-      </part>`,
-			2
-		);
+		const backup = '<backup><duration>4</duration></backup>';
+		const xml = part(`${base}<staves>2</staves>${bass(1)}${bass(2)}`, [
+			q().repeat(4) + backup + q(2).repeat(3) + clef('C', 4, 2) + q(2),
+			q().repeat(4) + backup + q(2).repeat(4)
+		]);
 		const score = importMusicXml(xml);
 		expect(score.staves[0]!.measures[0]!.clefChanges).toEqual([]);
 		expect(score.staves[1]!.measures[0]!.clefChanges).toEqual([{ onset: 0.75, clef: 'tenor' }]);
-		expect(score.clefAt(1, 1)).toBe('tenor');
-		expect(score.clefAt(1, 0)).toBe('bass');
+		expect([score.clefAt(1, 0), score.clefAt(1, 1)]).toEqual(['bass', 'tenor']);
 		assertScoresEquivalent(importMusicXml(exportMusicXml(score)), score);
 	});
 
 	it('keeps only the later of two clefs at one onset, tallying the earlier as dropped', () => {
 		const diagnostics = createImportDiagnostics();
-		const xml = part(`
-          ${note('C', 4).repeat(2)}${clef('C', 4)}${clef('C', 3)}${note('C', 4).repeat(2)}
-        </measure>
-      </part>`);
-		const score = importMusicXml(xml, { diagnostics });
+		const score = importMusicXml(part(base + bass(), [q().repeat(2) + clef('C', 4) + clef('C', 3) + q().repeat(2)]), { diagnostics });
 		expect(score.measures[0]!.clefChanges).toEqual([{ onset: 0.5, clef: 'alto' }]);
 		expect(diagnostics.dropped.get('clef')).toBe(1);
 	});
 });
 
-describe('importMusicXml — tolerance for unsupported content', () => {
-	afterEach(() => vi.restoreAllMocks());
-
-	it('reads lyrics, grace notes, articulations and dynamics quietly, warns once on a truly unknown element', () => {
-		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		const xml = doc(`
-      <part-list><score-part id="P1"><part-name>Test</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes>
-            <divisions>1</divisions>
-            <key><fifths>0</fifths></key>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            <clef number="1"><sign>G</sign><line>2</line></clef>
-          </attributes>
-          <direction placement="below"><direction-type><dynamics><p/></dynamics></direction-type><sound dynamics="54"/></direction>
-          <note><grace/><pitch><step>D</step><octave>5</octave></pitch><voice>1</voice><type>eighth</type></note>
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type><lyric number="1"><syllabic>single</syllabic><text>la</text></lyric><notations><articulations><staccato/></articulations></notations></note>
-          <note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
-          <florble reason="testing">ignored</florble>
-          <note><pitch><step>E</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
-          <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>quarter</type></note>
-        </measure>
-      </part>`);
-
-		const score = importMusicXml(xml);
-
-		// The grace note is a model grace note since M6 Slice 8 (passthrough
-		// in Slices 3-7); the four real quarter notes survive intact.
-		const notes = score.staves[0]!.measures[0]!.notes.filter((n) => !n.isGrace);
-		expect(notes.map((n) => n.pitch?.step)).toEqual(['C', 'D', 'E', 'F']);
-		expect(notes.every((n) => n.value === 'quarter')).toBe(true);
-		expect(score.staves[0]!.measures[0]!.notes.filter((n) => n.isGrace).map((n) => n.pitch?.step)).toEqual(['D']);
-
-		const messages = warn.mock.calls.map((call) => String(call[0]));
-		expect(messages.some((m) => m.includes('florble'))).toBe(true);
-		// The known unmodelled elements are passed through silently.
-		for (const quiet of ['lyric', 'grace', 'articulations', 'direction', 'dynamics', 'staccato']) {
-			expect(messages.some((m) => m.includes(quiet))).toBe(false);
-		}
-		// Warned exactly once for florble even though it could be seen repeatedly.
-		expect(messages.filter((m) => m.includes('florble'))).toHaveLength(1);
-	});
-});
-
-describe('importMusicXml — malformed input', () => {
-	it('throws on XML that is not well-formed', () => {
-		expect(() => importMusicXml('<score-partwise><part-list>')).toThrow();
-	});
-
-	it('throws a clear error when the root is not <score-partwise>', () => {
-		expect(() => importMusicXml('<not-a-score/>')).toThrow(/score-partwise/);
-		expect(() => importMusicXml('<score-timewise version="4.0"><measure/></score-timewise>')).toThrow(
-			/score-partwise/
-		);
+describe('importMusicXml: malformed input', () => {
+	it.each([
+		['XML that is not well-formed', '<score-partwise><part-list>', undefined],
+		['a root that is not <score-partwise>', '<not-a-score/>', /score-partwise/],
+		['a timewise score', '<score-timewise version="4.0"><measure/></score-timewise>', /score-partwise/]
+	])('throws on %s', (_what, xml, message) => {
+		expect(() => importMusicXml(xml)).toThrow(message);
 	});
 });
 
 describe('importMusicXml: part count (M6 Slice 1)', () => {
-	// Reproduces Brahms "Der Abend" importing 5 <part>s as 7 `Part`s, in
-	// miniature: the `Score` constructor's seed part (`{ staffIndices: [0] }`)
-	// used to survive next to the parts the file itself states. A two-staff
+	// Brahms "Der Abend" once imported 5 <part>s as 7 `Part`s: the `Score`
+	// constructor's seed part survived next to the file's own. A two-staff
 	// <part> plus a bracket <part-group> is the Brahms shape (choir + piano).
 	it('yields one Part per <part> (plus the bracket group), never the constructor seed', () => {
-		const measure = (staves: string) => `
-        <measure number="1">
-          <attributes>
-            <divisions>1</divisions>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            ${staves}
-          </attributes>
-          <note><rest/><duration>4</duration><voice>1</voice><type>whole</type></note>
-        </measure>`;
-		const xml = doc(`
-      <part-list>
-        <part-group type="start" number="1"><group-symbol>bracket</group-symbol></part-group>
-        <score-part id="P1"><part-name>Choir</part-name></score-part>
-        <part-group type="stop" number="1"/>
-        <score-part id="P2"><part-name>Piano</part-name></score-part>
-      </part-list>
-      <part id="P1">${measure('')}</part>
-      <part id="P2">${measure('<staves>2</staves>')}</part>`);
-
-		const score = importMusicXml(xml);
+		const measure = (staves: string) =>
+			`<measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time>${staves}</attributes>${rest(4, 'whole')}</measure>`;
+		const score = importMusicXml(
+			doc(`<part-list>
+				<part-group type="start" number="1"><group-symbol>bracket</group-symbol></part-group>
+				<score-part id="P1"><part-name>Choir</part-name></score-part>
+				<part-group type="stop" number="1"/>
+				<score-part id="P2"><part-name>Piano</part-name></score-part>
+			</part-list>
+			<part id="P1">${measure('')}</part><part id="P2">${measure('<staves>2</staves>')}</part>`)
+		);
 		expect(score.staves).toHaveLength(3);
 		expect(score.parts).toEqual([
 			{ name: 'Choir', staffIndices: [0] },
@@ -438,203 +240,130 @@ describe('importMusicXml: part count (M6 Slice 1)', () => {
 	});
 
 	it('gives an unnamed <part> its own Part too', () => {
-		const xml = doc(`
-      <part-list><score-part id="P1"/><score-part id="P2"/></part-list>
-      <part id="P1"><measure number="1"><note><rest/><duration>4</duration><type>whole</type></note></measure></part>
-      <part id="P2"><measure number="1"><note><rest/><duration>4</duration><type>whole</type></note></measure></part>`);
-		const score = importMusicXml(xml);
+		const p = (id: string) => `<part id="${id}"><measure number="1"><note><rest/><duration>4</duration><type>whole</type></note></measure></part>`;
+		const score = importMusicXml(doc(`<part-list><score-part id="P1"/><score-part id="P2"/></part-list>${p('P1')}${p('P2')}`));
 		expect(score.parts).toEqual([{ staffIndices: [0] }, { staffIndices: [1] }]);
 	});
 });
 
 describe('importMusicXml: whole-measure rests (M6 Slice 1)', () => {
-	// Three measures: a filled one, a `<rest measure="yes"/>` one (with the
-	// `<type>whole</type>` OMR output carries even when the bar is shorter),
-	// and another filled one, so the rest is not a system's first measure.
-	const scoreWithMeasureRest = (beats: number, beatType: number, divisions: number, filler: string) => {
-		const duration = (beats / beatType) * 4 * divisions;
+	// A `<rest measure="yes"/>` between two filled measures (so it is not a
+	// system's first measure), with the `<type>whole</type>` OMR output
+	// carries even when the bar is shorter.
+	const cases = [
+		{ time: '3/4', beats: 3, beatType: 4, divisions: 1, filler: n('C', 3, 'half', '<dot/>') },
+		{ time: '2/2', beats: 2, beatType: 2, divisions: 1, filler: n('C', 4, 'whole') },
+		{ time: '6/8', beats: 6, beatType: 8, divisions: 2, filler: n('C', 6, 'half', '<dot/>') }
+	];
+	const scoreWithMeasureRest = (c: (typeof cases)[number]) => {
+		const duration = (c.beats / c.beatType) * 4 * c.divisions;
 		return importMusicXml(
-			doc(`
-      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes>
-            <divisions>${divisions}</divisions>
-            <time><beats>${beats}</beats><beat-type>${beatType}</beat-type></time>
-            <clef><sign>G</sign><line>2</line></clef>
-          </attributes>
-          ${filler}
-        </measure>
-        <measure number="2">
-          <note><rest measure="yes"/><duration>${duration}</duration><voice>1</voice><type>whole</type></note>
-        </measure>
-        <measure number="3">${filler}</measure>
-      </part>`)
+			part(
+				`<divisions>${c.divisions}</divisions><time><beats>${c.beats}</beats><beat-type>${c.beatType}</beat-type></time><clef><sign>G</sign><line>2</line></clef>`,
+				[c.filler, `<note><rest measure="yes"/><duration>${duration}</duration><voice>1</voice><type>whole</type></note>`, c.filler]
+			)
 		);
 	};
-	const cases = [
-		{
-			time: '3/4',
-			beats: 3,
-			beatType: 4,
-			divisions: 1,
-			filler: '<note><pitch><step>C</step><octave>5</octave></pitch><duration>3</duration><voice>1</voice><type>half</type><dot/></note>'
-		},
-		{
-			time: '2/2',
-			beats: 2,
-			beatType: 2,
-			divisions: 1,
-			filler: '<note><pitch><step>C</step><octave>5</octave></pitch><duration>4</duration><voice>1</voice><type>whole</type></note>'
-		},
-		{
-			time: '6/8',
-			beats: 6,
-			beatType: 8,
-			divisions: 2,
-			filler: '<note><pitch><step>C</step><octave>5</octave></pitch><duration>6</duration><voice>1</voice><type>half</type><dot/></note>'
-		}
-	];
 
-	for (const c of cases) {
-		it(`fills a ${c.time} measure, validates, plays for the bar and round-trips`, () => {
-			const score = scoreWithMeasureRest(c.beats, c.beatType, c.divisions, c.filler);
-			const measure = score.staves[0]!.measures[1]!;
-			expect(measure.notes).toHaveLength(1);
-			const rest = measure.notes[0]!;
-			expect(rest.isRest).toBe(true);
-			expect(rest.isMeasureRest).toBe(true);
-			expect(rest.value).toBe('whole');
-			expect(rest.durationWholes).toBeCloseTo(c.beats / c.beatType, 12);
-			expect(validateMeasure(measure, score.timeAt(1)).valid).toBe(true);
+	it.each(cases)('fills a $time measure, validates, plays for the bar and round-trips', (c) => {
+		const score = scoreWithMeasureRest(c);
+		const measure = score.staves[0]!.measures[1]!;
+		expect(measure.notes).toHaveLength(1);
+		const restNote = measure.notes[0]!;
+		expect([restNote.isRest, restNote.isMeasureRest, restNote.value]).toEqual([true, true, 'whole']);
+		expect(restNote.durationWholes).toBeCloseTo(c.beats / c.beatType, 12);
+		expect(validateMeasure(measure, score.timeAt(1)).valid).toBe(true);
 
-			const xml = exportMusicXml(score);
-			const restNote = xml.split('<note>')[2]!.split('</note>')[0]!;
-			expect(restNote).toContain('<rest measure="yes"/>');
-			expect(restNote).not.toContain('<type>');
-			const divisions = Number(/<divisions>(\d+)<\/divisions>/.exec(xml)![1]);
-			const duration = Number(/<duration>(\d+)<\/duration>/.exec(restNote)![1]);
-			expect(duration / (divisions * 4)).toBeCloseTo(c.beats / c.beatType, 12);
+		const xml = exportMusicXml(score);
+		const written = xml.split('<note>')[2]!.split('</note>')[0]!;
+		expect(written).toContain('<rest measure="yes"/>');
+		expect(written).not.toContain('<type>');
+		const reimported = importMusicXml(xml);
+		assertScoresEquivalent(reimported, score);
+		expect(reimported.staves[0]!.measures[1]!.notes[0]!.isMeasureRest).toBe(true);
+	});
 
-			const reimported = importMusicXml(xml);
-			assertScoresEquivalent(reimported, score);
-			expect(reimported.staves[0]!.measures[1]!.notes[0]!.isMeasureRest).toBe(true);
-		});
-	}
-
-	it('lays the rest out as a whole-rest glyph centred in its measure', () => {
-		for (const c of cases) {
-			const score = scoreWithMeasureRest(c.beats, c.beatType, c.divisions, c.filler);
-			const layout = layoutScore(score);
-			const laid = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
-			const restId = score.staves[0]!.measures[1]!.notes[0]!.id;
-			const glyph = laid.ops.find((op) => op.kind === 'glyph' && op.noteId === restId);
-			expect(glyph?.kind === 'glyph' && glyph.glyph).toBe('restWhole');
-			const box = laid.notes.find((n) => n.id === restId)!.bounds;
-			const centre = box.x + box.width / 2;
-			// The measure has no header (not a system start, no changes), so
-			// its own region's centre is the centre of the space between its
-			// left edge and its barline, give or take the barline's width.
-			const regionCentre = laid.region.x + laid.region.width / 2;
-			expect(Math.abs(centre - regionCentre)).toBeLessThan(layout.staffSpacePx * 0.5);
-		}
+	it.each(cases)('lays a $time rest out as a whole-rest glyph centred in its measure', (c) => {
+		const score = scoreWithMeasureRest(c);
+		const layout = layoutScore(score);
+		const laid = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
+		const restId = score.staves[0]!.measures[1]!.notes[0]!.id;
+		const glyph = laid.ops.find((op) => op.kind === 'glyph' && op.noteId === restId);
+		expect(glyph?.kind === 'glyph' && glyph.glyph).toBe('restWhole');
+		// No header (not a system start, no changes), so the region's centre
+		// is the bar's centre, give or take the barline's width.
+		const box = laid.notes.find((note) => note.id === restId)!.bounds;
+		const regionCentre = laid.region.x + laid.region.width / 2;
+		expect(Math.abs(box.x + box.width / 2 - regionCentre)).toBeLessThan(layout.staffSpacePx * 0.5);
 	});
 });
 
 describe('importMusicXml: no-<type> fallback (M6 Slice 1)', () => {
+	const untyped = (step: string, duration: number) => `<note><pitch><step>${step}</step><octave>5</octave></pitch><duration>${duration}</duration></note>`;
 	const oneMeasure = (notes: string) =>
-		doc(`
-      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="7">
-          <attributes><divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
-          ${notes}
-        </measure>
-      </part>`);
+		part('<divisions>4</divisions><time><beats>4</beats><beat-type>4</beat-type></time>', [notes]).replace('number="1"', 'number="7"');
 
 	it('derives value and dots from <duration> when they map exactly', () => {
 		const diagnostics = createImportDiagnostics();
-		const score = importMusicXml(
-			oneMeasure(`
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>6</duration></note>
-          <note><pitch><step>D</step><octave>5</octave></pitch><duration>2</duration></note>
-          <note><pitch><step>E</step><octave>5</octave></pitch><duration>7</duration></note>
-          <note><pitch><step>F</step><octave>5</octave></pitch><duration>1</duration></note>`),
-			{ diagnostics }
-		);
-		const notes = score.staves[0]!.measures[0]!.notes;
-		expect(notes.map((n) => [n.value, n.dots])).toEqual([
+		const score = importMusicXml(oneMeasure(untyped('C', 6) + untyped('D', 2) + untyped('E', 7) + untyped('F', 1)), { diagnostics });
+		const measure = score.staves[0]!.measures[0]!;
+		expect(measure.notes.map((note) => [note.value, note.dots])).toEqual([
 			['quarter', 1],
 			['eighth', 0],
 			['quarter', 2],
 			['16th', 0]
 		]);
-		expect(validateMeasure(score.staves[0]!.measures[0]!, score.time).valid).toBe(true);
+		expect(validateMeasure(measure, score.time).valid).toBe(true);
 		expect(diagnostics.fallbacks).toEqual([]);
 	});
 
-	it('falls back to quarter only when unmappable, recording where', () => {
+	it('falls back to quarter only when unmappable, recording where, with no console noise', () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const diagnostics = createImportDiagnostics();
-		const score = importMusicXml(
-			oneMeasure(`<note><pitch><step>C</step><octave>5</octave></pitch><duration>5</duration></note>`),
-			{ diagnostics }
-		);
+		const score = importMusicXml(oneMeasure(untyped('C', 5)), { diagnostics });
 		expect(score.staves[0]!.measures[0]!.notes[0]!.value).toBe('quarter');
 		expect(diagnostics.fallbacks).toEqual([
 			{ kind: 'note-value', partId: 'P1', measureNumber: '7', detail: 'duration 5 at divisions 4' }
 		]);
-		// A caller collecting diagnostics gets no console noise.
 		expect(warn).not.toHaveBeenCalled();
 		warn.mockRestore();
 	});
 });
 
 describe('importMusicXml: drop and passthrough diagnostics (M6 Slices 1, 3)', () => {
+	afterEach(() => vi.restoreAllMocks());
+
+	const xml = onePart(
+		[
+			'<attributes><key><fifths>0</fifths><mode>major</mode></key><staff-details/></attributes>' +
+				'<direction><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>90</per-minute></metronome></direction-type><sound tempo="90"/></direction>' +
+				'<direction><direction-type><dynamics><p/></dynamics></direction-type><sound dynamics="54"/></direction>' +
+				'<direction><direction-type><wedge type="crescendo"/></direction-type></direction>' +
+				'<note><grace/><pitch><step>D</step><octave>5</octave></pitch><type>eighth</type></note>' +
+				n('C', 2, 'half', '<stem>up</stem><notations><articulations><staccato/></articulations><fermata/><slur type="start"/></notations><lyric><text>la</text></lyric>') +
+				n('E', 2, 'half', '', { chord: true }) +
+				n('D', 2, 'half', '<notations><slur type="stop"/></notations>') +
+				'<florble/><print new-system="yes"/><florble reason="again"/>' +
+				'<barline location="right"><bar-style>light-heavy</bar-style><ending number="1" type="stop"/></barline>'
+		],
+		1,
+		'<score-instrument id="I1"/>'
+	).replace('<part-list>', '<work><work-title>T</work-title></work><part-list>');
+
 	it('tallies passthrough and genuine drops per element name and keeps the console quiet', () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const diagnostics = createImportDiagnostics();
-		importMusicXml(
-			doc(`
-      <work><work-title>T</work-title></work>
-      <part-list><score-part id="P1"><part-name>Test</part-name><score-instrument id="I1"/></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes>
-            <divisions>1</divisions>
-            <key><fifths>0</fifths><mode>major</mode></key>
-            <time><beats>4</beats><beat-type>4</beat-type></time>
-            <staff-details/>
-          </attributes>
-          <direction><direction-type><metronome><beat-unit>quarter</beat-unit><per-minute>90</per-minute></metronome></direction-type><sound tempo="90"/></direction>
-          <direction><direction-type><dynamics><p/></dynamics></direction-type><sound dynamics="54"/></direction>
-          <direction><direction-type><wedge type="crescendo"/></direction-type></direction>
-          <note><grace/><pitch><step>D</step><octave>5</octave></pitch><type>eighth</type></note>
-          <note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><type>half</type><stem>up</stem><lyric><text>la</text></lyric><notations><articulations><staccato/></articulations><fermata/><slur type="start"/></notations></note>
-          <note><chord/><pitch><step>E</step><octave>5</octave></pitch><duration>2</duration><type>half</type></note>
-          <note><pitch><step>D</step><octave>5</octave></pitch><duration>2</duration><type>half</type><notations><slur type="stop"/></notations></note>
-          <florble/>
-          <print new-system="yes"/>
-          <barline location="right"><bar-style>light-heavy</bar-style><ending number="1" type="stop"/></barline>
-        </measure>
-      </part>`),
-			{ diagnostics }
-		);
+		importMusicXml(xml, { diagnostics });
 		const sorted = (map: Map<string, number>): Record<string, number> =>
 			Object.fromEntries([...map].sort(([x], [y]) => x.localeCompare(y)));
-		// Since M6 Slice 3 the only genuine loss here is `<mode>`: a child of
-		// the modelled `<key>` the model has no field for.
+		// The only genuine loss is `<mode>`, a child of the modelled `<key>`.
 		expect(sorted(diagnostics.dropped)).toEqual({ mode: 1 });
+		// The tempo direction is export's own shape, so it is `Score.tempoBpm`;
+		// the dynamic's `<sound>` stays payload, and the hairpin start has no
+		// stop to pair with.
 		expect(sorted(diagnostics.passthrough)).toEqual({
-			// The tempo direction is exactly export's own shape in the first
-			// measure, so it is `Score.tempoBpm`, not passthrough.
-			// (Its staccato and fermata are modelled since M6 Slice 5, the
-			// `<p/>` since Slice 6, the grace note since Slice 8, the lyric
-			// since Slice 9; its
-			// direction's `<sound>` stays payload. The hairpin start has no stop
-			// to pair with, so it stays too.)
 			ending: 1,
-			florble: 1,
+			florble: 2,
 			print: 1,
 			'score-instrument': 1,
 			sound: 1,
@@ -643,28 +372,24 @@ describe('importMusicXml: drop and passthrough diagnostics (M6 Slices 1, 3)', ()
 			work: 1
 		});
 		expect(warn).not.toHaveBeenCalled();
-		warn.mockRestore();
+	});
+
+	it('without diagnostics, warns once on a truly unknown element and stays quiet on known ones', () => {
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const score = importMusicXml(xml);
+		expect(score.staves[0]!.measures[0]!.notes.filter((note) => !note.isGrace).map((note) => note.pitch?.step)).toEqual(['C', 'E', 'D']);
+		const messages = warn.mock.calls.map((call) => String(call[0]));
+		expect(messages.filter((m) => m.includes('florble'))).toHaveLength(1);
+		for (const quiet of ['lyric', 'grace', 'articulations', 'direction', 'dynamics', 'staccato', 'wedge', 'print']) {
+			expect(messages.some((m) => m.includes(quiet))).toBe(false);
+		}
 	});
 });
 
 describe('importMusicXml: chords (M6 Slice 2)', () => {
-	const oneMeasure = (notes: string) =>
-		doc(`
-      <part-list><score-part id="P1"><part-name>Music</part-name></score-part></part-list>
-      <part id="P1">
-        <measure number="1">
-          <attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time></attributes>
-          ${notes}
-        </measure>
-      </part>`);
-
 	it('reads <chord/> notes as chord members of the previous note', () => {
 		const score = importMusicXml(
-			oneMeasure(`
-          <note><pitch><step>C</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
-          <note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
-          <note><chord/><pitch><step>G</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>
-          <note><pitch><step>A</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>half</type></note>`)
+			onePart([n('C', 2, 'half') + n('E', 2, 'half', '', { chord: true }) + n('G', 2, 'half', '', { chord: true }) + n('A', 2, 'half')], 1)
 		);
 		const measure = score.staves[0]!.measures[0]!;
 		expect(measure.notes.map((note) => note.chordWithPrevious)).toEqual([false, true, true, false]);
@@ -673,12 +398,7 @@ describe('importMusicXml: chords (M6 Slice 2)', () => {
 
 	it('drops and tallies a <chord/> note with no pitched note to join', () => {
 		const diagnostics = createImportDiagnostics();
-		const score = importMusicXml(
-			oneMeasure(`
-          <note><rest/><duration>4</duration><type>whole</type></note>
-          <note><chord/><pitch><step>E</step><octave>4</octave></pitch><duration>4</duration><type>whole</type></note>`),
-			{ diagnostics }
-		);
+		const score = importMusicXml(onePart([rest(4, 'whole') + n('E', 4, 'whole', '', { chord: true })], 1), { diagnostics });
 		expect(score.staves[0]!.measures[0]!.notes).toHaveLength(1);
 		expect(diagnostics.dropped.get('chord')).toBe(1);
 	});
@@ -701,30 +421,14 @@ describe('importMusicXml: chords (M6 Slice 2)', () => {
 			{ keyFifths: 0 }
 		);
 		const xml = exportMusicXml(original);
-		// Exactly one <chord/> per member, and a single full-measure <backup>
-		// per measure: the members never moved the cursor.
+		// One <chord/> per member, one full-measure <backup> per measure: the
+		// members never moved the cursor.
 		expect(xml.match(/<chord\/>/g)).toHaveLength(4 + 2 + 1 + 2);
-		expect(xml.match(/<backup>\s*<duration>(\d+)<\/duration>/g)).toHaveLength(2);
+		expect(xml.match(/<backup>/g)).toHaveLength(2);
 		const reimported = importMusicXml(xml);
 		assertScoresEquivalent(reimported, original);
 		for (const measure of reimported.staves[0]!.measures) {
 			expect(validateMeasure(measure, reimported.timeAt(measure.index)).valid).toBe(true);
 		}
-	});
-
-	it('round-trips the chord showcase', () => {
-		const original = createChordShowcaseScore();
-		assertScoresEquivalent(importMusicXml(exportMusicXml(original)), original);
-	});
-
-	it('round-trips the articulation showcase, marks and fermatas included (M6 Slice 5)', () => {
-		const original = createArticulationShowcaseScore();
-		const xml = exportMusicXml(original);
-		const reimported = importMusicXml(xml);
-		assertScoresEquivalent(reimported, original);
-		expect(exportMusicXml(reimported)).toBe(xml);
-		// Equivalence compares marks; check it would notice a lost one.
-		reimported.staves[0]!.measures[0]!.notes[0]!.articulations = [];
-		expect(() => assertScoresEquivalent(reimported, original)).toThrow(/articulations/);
 	});
 });

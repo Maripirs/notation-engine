@@ -1,9 +1,6 @@
-// Correction ops (M6 Slice 7): noteToRest, restToNote, setDuration,
-// addChordMember/removeChordMember and editTie, each run through
-// `EditHistory.record` the way the demo runs them, so every test also checks
-// that undo restores the exact prior model. The MusicXML side (passthrough
-// tie markup, export -> re-import after each op) is in
-// `src/io/correction-ops.test.ts`.
+// Correction ops (M6 Slice 7), each run through `EditHistory.record` the way
+// the demo runs them, so a success also checks that undo restores the exact
+// prior model. The MusicXML side is in `src/io/correction-ops.test.ts`.
 
 import { describe, expect, it } from 'vitest';
 import { EditHistory } from './edit-history.js';
@@ -19,11 +16,12 @@ import {
 	validateMeasure,
 	type MeasureRef,
 	type MeasureSpec,
-	type NoteId
+	type NoteId,
+	type NoteValue
 } from './score.js';
 
-/** Run `edit` through a fresh history; return the history (its `current` is
- *  the edited score) and what the op returned. */
+/** Run `op` through a fresh history; return the history (its `current` is
+ *  the edited score), what the op returned, and a copy of the score before. */
 function edit<T>(score: Score, op: (s: Score) => T): { history: EditHistory; result: T; before: Score } {
 	const history = new EditHistory(score);
 	const before = history.current.clone();
@@ -54,11 +52,22 @@ function noteAt(score: Score, measureIndex: number, noteIndex: number, staffInde
 }
 
 function expectFull(score: Score, measureIndex = 0): void {
-	const measure = score.measures[measureIndex]!;
-	expect(validateMeasure(measure, score.timeAt(measureIndex)).valid).toBe(true);
+	expect(validateMeasure(score.measures[measureIndex]!, score.timeAt(measureIndex)).valid).toBe(true);
 }
 
 const at = (measureIndex: number, staffIndex = 0): MeasureRef => ({ staffIndex, measureIndex });
+
+/** `spec` followed by a full second measure. */
+const one = (spec: MeasureSpec): Score => buildScore([spec, [['C5', 'whole']]]);
+
+/** A single whole-measure rest in `beats`/`beatType`. */
+function measureRest(beats: number, beatType: number): Score {
+	const s = new Score({ time: { beats, beatType } });
+	s.appendNote(s.appendMeasure(), { pitch: null, value: 'whole', measureRestWholes: beats / beatType });
+	return s;
+}
+
+const first = (s: Score) => noteAt(s, 0, 0).id;
 
 describe('duration helpers', () => {
 	it('noteValueForWholes finds a single value, plain before dotted, or null', () => {
@@ -80,35 +89,72 @@ describe('duration helpers', () => {
 	});
 });
 
-describe('noteToRest', () => {
-	const score = () =>
-		buildScore([
-			[
-				['C4', 'quarter', { articulations: ['staccato'], fermata: 'upright' }],
-				['D4', 'quarter', { dots: 1 }],
-				['E4', 'eighth'],
-				['F4', 'quarter']
-			]
-		]);
+describe('refused correction ops', () => {
+	const restThenNote = () => buildScore([[[null, 'half'], ['C4', 'half']]]);
+	const chordThenRest = () => buildScore([[[['C4', 'E4'], 'half'], [null, 'half']]]);
+	const quarterQuarterRest = () => one([['C4', 'quarter'], ['D4', 'quarter'], [null, 'half']]);
+	const tieFixture = () => buildScore([[['G4', 'half'], ['C5', 'quarter'], ['D5', 'quarter']], [['D5', 'half'], ['D5', 'half']]]);
+	const tupletRests = { tuplet: TRIPLET };
 
-	it('keeps the duration (nothing shifts), drops articulations, keeps a fermata, and undoes exactly', () => {
-		const { history, result, before } = edit(score(), (s) => s.noteToRest(noteAt(s, 0, 0).id));
+	it.each([
+		{ label: 'noteToRest on a rest', build: restThenNote, op: (s: Score) => s.noteToRest(first(s)) },
+		{ label: 'noteToRest on an unknown id', build: restThenNote, op: (s: Score) => s.noteToRest('nope') },
+		{ label: 'removeChordMember on a lone note', build: () => one([['C4', 'whole']]), op: (s: Score) => s.removeChordMember(first(s)) },
+		{ label: 'removeChordMember on a rest', build: restThenNote, op: (s: Score) => s.removeChordMember(first(s)) },
+		{ label: 'restToNote on a pitched note', build: () => one([['C4', 'whole']]), op: (s: Score) => s.restToNote(first(s), parsePitch('D4')) },
+		{ label: 'restToNote on a measure rest no single value fills', build: () => measureRest(5, 4), op: (s: Score) => s.restToNote(first(s), parsePitch('B4')) },
+		{ label: 'setDuration into a following note', build: quarterQuarterRest, op: (s: Score) => s.setDuration(first(s), 'half') },
+		{ label: 'setDuration past the barline', build: quarterQuarterRest, op: (s: Score) => s.setDuration(noteAt(s, 0, 1).id, 'whole') },
+		{ label: 'setDuration to the unchanged value', build: chordThenRest, op: (s: Score) => s.setDuration(noteAt(s, 0, 1).id, 'half') },
+		{
+			label: 'setDuration on a tupleted note',
+			build: () => one([['C4', 'eighth', tupletRests], ['D4', 'eighth', tupletRests], ['E4', 'eighth', tupletRests], [null, 'quarter', { dots: 1 }], [null, 'half']]),
+			op: (s: Score) => s.setDuration(first(s), 'quarter')
+		},
+		{
+			label: 'setDuration into tupleted rests',
+			build: () => one([['C4', 'quarter'], [null, 'eighth', tupletRests], [null, 'eighth', tupletRests], [null, 'eighth', tupletRests], [null, 'half']]),
+			op: (s: Score) => s.setDuration(first(s), 'half')
+		},
+		{
+			label: 'setDuration past an under-full voice\'s capacity',
+			build: () => buildScore([[['C4', 'quarter'], [null, 'quarter']]]),
+			op: (s: Score) => s.setDuration(first(s), 'whole', 1)
+		},
+		{ label: 'addChordMember on a rest', build: chordThenRest, op: (s: Score) => s.addChordMember(noteAt(s, 0, 2).id, parsePitch('E4')) },
+		{ label: 'addChordMember with a pitch the chord has', build: chordThenRest, op: (s: Score) => s.addChordMember(first(s), parsePitch('E4')) },
+		{ label: 'editTie to a different pitch', build: tieFixture, op: (s: Score) => s.editTie(noteAt(s, 0, 1).id, noteAt(s, 0, 2).id) },
+		{ label: 'editTie to a non-adjacent event', build: tieFixture, op: (s: Score) => s.editTie(noteAt(s, 0, 2).id, noteAt(s, 1, 1).id) },
+		{ label: 'editTie from a rest', build: restThenNote, op: (s: Score) => s.editTie(first(s), noteAt(s, 0, 1).id) },
+		{ label: 'editTie(null) on an untied note', build: tieFixture, op: (s: Score) => s.editTie(noteAt(s, 0, 2).id, null) },
+		{
+			label: 'editTie from a chord head to a different-pitch head',
+			build: () => buildScore([[[['C4', 'E4'], 'half'], [['C4', 'E4'], 'half']]]),
+			op: (s: Score) => s.editTie(noteAt(s, 0, 1).id, noteAt(s, 0, 2).id)
+		}
+	])('$label returns null and records nothing', ({ build, op }) => {
+		const history = new EditHistory(build());
+		expect(history.record(op)).toBeNull();
+		expect(history.canUndo).toBe(false);
+		assertScoresEquivalent(history.current, build());
+	});
+});
+
+describe('noteToRest', () => {
+	it('keeps the duration (nothing shifts), drops articulations, keeps a fermata, and keeps the id', () => {
+		const s = buildScore([
+			[['C4', 'quarter', { articulations: ['staccato'], fermata: 'upright' }], ['D4', 'quarter', { dots: 1 }], ['E4', 'eighth'], ['F4', 'quarter']]
+		]);
+		const id = first(s);
+		const { history, result, before } = edit(s, (x) => x.noteToRest(id));
 		expect(result).toEqual([at(0)]);
 		const rest = noteAt(history.current, 0, 0);
-		expect(rest.id).toBe(noteAt(before, 0, 0).id);
+		expect(rest.id).toBe(id);
 		expect(spell(history.current)).toEqual(['r/quarter', 'D4/quarter.', 'E4/eighth', 'F4/quarter']);
 		expect(rest.articulations).toEqual([]);
 		expect(rest.fermata).toBe('upright');
 		expectFull(history.current);
 		expectUndoRestores(history, before);
-	});
-
-	it('refuses a rest or an unknown id without recording', () => {
-		const s = buildScore([[[null, 'half'], ['C4', 'half']]]);
-		const history = new EditHistory(s);
-		expect(history.record((x) => x.noteToRest(noteAt(x, 0, 0).id))).toBeNull();
-		expect(history.record((x) => x.noteToRest('nope'))).toBeNull();
-		expect(history.canUndo).toBe(false);
 	});
 
 	it('clears ties into and out of the note, touching the partner measures across barlines', () => {
@@ -123,58 +169,42 @@ describe('noteToRest', () => {
 		const after = history.current;
 		expect(noteAt(after, 0, 1).tiedToId).toBeNull();
 		expect(noteAt(after, 1, 0).tiedToId).toBeNull();
-		expect(after.tiedFromNote(middle.id)).toBeUndefined();
 		expect(after.tiedFromNote(noteAt(after, 1, 1).id)).toBeUndefined();
 		expectUndoRestores(history, before);
-		expect(history.current.tiedFromNote(middle.id)?.id).toBe(noteAt(before, 0, 1).id);
 	});
 
 	it('moves a slur end to the nearest note inside the slur, or drops a slur with nothing inside', () => {
-		const s = buildScore(
-			[[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter'], ['F4', 'quarter']]],
-			{},
-			[
-				{ start: [0, 0], end: [0, 3] },
-				{ start: [0, 2], end: [0, 3] }
-			]
-		);
+		const s = buildScore([[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter'], ['F4', 'quarter']]], {}, [
+			{ start: [0, 0], end: [0, 3] },
+			{ start: [0, 2], end: [0, 3] }
+		]);
 		const [c, , e] = s.measures[0]!.notes;
 		// Deleting F: C..F ends on E instead; E..F has nothing inside, so it goes.
 		const { history, before } = edit(s, (x) => x.noteToRest(noteAt(x, 0, 3).id));
 		expect(history.current.slurs).toEqual([{ startNoteId: c!.id, endNoteId: e!.id }]);
 		expectUndoRestores(history, before);
-		expect(history.current.slurs).toHaveLength(2);
 	});
 
-	it('on a chord anchor removes that head and promotes the next head to anchor', () => {
-		const s = buildScore([
-			[
-				[['C4', 'E4', 'G4'], 'half', { articulations: ['accent'], fermata: 'upright' }],
-				['A4', 'half']
-			]
-		]);
+	it('on a chord anchor removes that head and promotes the next head to anchor, marks included', () => {
+		const s = buildScore([[[['C4', 'E4', 'G4'], 'half', { articulations: ['accent'], fermata: 'upright' }], ['A4', 'half']]]);
 		const [anchor, e4, g4] = s.measures[0]!.notes;
 		const { history, result, before } = edit(s, (x) => x.noteToRest(anchor!.id));
 		expect(result).toEqual([at(0)]);
 		const after = history.current;
 		expect(spell(after)).toEqual(['E4/half', '+G4/half', 'A4/half']);
 		const promoted = after.findNote(e4!.id)!;
-		expect(promoted.chordWithPrevious).toBe(false);
 		expect(promoted.articulations).toEqual(['accent']);
 		expect(promoted.fermata).toBe('upright');
 		expect(after.findNote(anchor!.id)).toBeUndefined();
 		expect(after.measureOfNote(anchor!.id)).toBeUndefined();
-		expect(noteEvents(after.measures[0]!.notes).map((e) => e.map((n) => n.id))).toEqual([[e4!.id, g4!.id], [noteAt(after, 0, 2).id]]);
-		expectFull(after);
+		expect(noteEvents(after.measures[0]!.notes).map((ev) => ev.map((n) => n.id))).toEqual([[e4!.id, g4!.id], [noteAt(after, 0, 2).id]]);
 		expectUndoRestores(history, before);
 	});
 });
 
 describe('removeChordMember', () => {
 	it('moves a removed member\'s marks to the anchor and clears its tie', () => {
-		const s = buildScore([
-			[[['C4', 'E4'], 'half'], [['C4', 'E4'], 'half']]
-		]);
+		const s = buildScore([[[['C4', 'E4'], 'half'], [['C4', 'E4'], 'half']]]);
 		const notes = s.measures[0]!.notes;
 		const member = notes[1]!;
 		member.articulations = ['tenuto'];
@@ -190,21 +220,10 @@ describe('removeChordMember', () => {
 		expectUndoRestores(history, before);
 	});
 
-	it('refuses a lone note (that is noteToRest) and a rest', () => {
-		const s = buildScore([[['C4', 'half'], [null, 'half']]]);
-		expect(s.removeChordMember(noteAt(s, 0, 0).id)).toBeNull();
-		expect(s.removeChordMember(noteAt(s, 0, 1).id)).toBeNull();
-	});
-
 	it('removing the anchor moves its slur and keeps the promoted head\'s own tie', () => {
-		const s = buildScore(
-			[
-				[['G4', 'half'], [['C4', 'E4'], 'half', { tiedToNext: true }]],
-				[[['C4', 'E4'], 'whole']]
-			],
-			{},
-			[{ start: [0, 0], end: [0, 1] }]
-		);
+		const s = buildScore([[['G4', 'half'], [['C4', 'E4'], 'half', { tiedToNext: true }]], [[['C4', 'E4'], 'whole']]], {}, [
+			{ start: [0, 0], end: [0, 1] }
+		]);
 		const [g4, anchor, member] = s.measures[0]!.notes;
 		const { history, result, before } = edit(s, (x) => x.removeChordMember(anchor!.id));
 		// The anchor's tie went to measure 2, so both measures are touched.
@@ -227,146 +246,63 @@ describe('restToNote', () => {
 		expect(spell(history.current)).toEqual(['C4/quarter', 'B4/quarter.', 'E4/eighth', 'F4/quarter']);
 		history.record((x) => x.noteToRest(rest.id));
 		assertScoresEquivalent(history.current, before);
-		history.undo();
+	});
+
+	it.each([
+		[4, 4, 'B4/whole'],
+		[2, 2, 'B4/whole'],
+		[3, 4, 'B4/half.'],
+		[6, 8, 'B4/half.'],
+		[7, 8, 'B4/half..']
+	] as const)('turns a %i/%i whole-measure rest into %s', (beats, beatType, expected) => {
+		const { history, before } = edit(measureRest(beats, beatType), (x) => x.restToNote(first(x), parsePitch('B4')));
+		expect(spell(history.current)).toEqual([expected]);
+		expectFull(history.current);
 		expectUndoRestores(history, before);
-	});
-
-	it('refuses a pitched note', () => {
-		const s = buildScore([[['C4', 'whole']]]);
-		expect(s.restToNote(noteAt(s, 0, 0).id, parsePitch('D4'))).toBeNull();
-	});
-
-	const measureRest = (beats: number, beatType: number): Score => {
-		const s = new Score({ time: { beats, beatType } });
-		const m = s.appendMeasure();
-		s.appendNote(m, { pitch: null, value: 'whole', measureRestWholes: beats / beatType });
-		return s;
-	};
-
-	it('turns a whole-measure rest into a note of the measure\'s length when one value spells it', () => {
-		for (const [beats, beatType, expected] of [
-			[4, 4, 'B4/whole'],
-			[2, 2, 'B4/whole'],
-			[3, 4, 'B4/half.'],
-			[6, 8, 'B4/half.'],
-			[7, 8, 'B4/half..']
-		] as const) {
-			const { history, before } = edit(measureRest(beats, beatType), (x) =>
-				x.restToNote(noteAt(x, 0, 0).id, parsePitch('B4'))
-			);
-			expect(spell(history.current)).toEqual([expected]);
-			expectFull(history.current);
-			expectUndoRestores(history, before);
-		}
-	});
-
-	it('refuses a whole-measure rest no single note value fills', () => {
-		const s = measureRest(5, 4);
-		expect(s.restToNote(noteAt(s, 0, 0).id, parsePitch('B4'))).toBeNull();
-		expect(noteAt(s, 0, 0).isMeasureRest).toBe(true);
 	});
 });
 
 describe('setDuration', () => {
-	const one = (spec: MeasureSpec): Score => buildScore([spec, [['C5', 'whole']]]);
-
-	it('shortening pads with aligned rests so the measure stays full', () => {
-		const s = one([['C4', 'half'], ['D4', 'half']]);
-		const { history, result, before } = edit(s, (x) => x.setDuration(noteAt(x, 0, 0).id, 'eighth'));
+	// [label, score, index of the note to change, new value, dots, resulting measure]
+	it.each<[string, () => Score, number, NoteValue, 0 | 1, string[]]>([
+		['shortening pads with aligned rests', () => one([['C4', 'half'], ['D4', 'half']]), 0, 'eighth', 0, ['C4/eighth', 'r/eighth', 'r/quarter', 'D4/half']],
+		['lengthening consumes a following rest exactly', () => one([['C4', 'quarter'], [null, 'quarter'], ['D4', 'half']]), 0, 'half', 0, ['C4/half', 'D4/half']],
+		[
+			'lengthening consumes several rests and re-spells the leftover',
+			() => one([['C4', 'quarter'], [null, 'eighth'], [null, 'eighth'], [null, 'half']]),
+			0,
+			'quarter',
+			1,
+			['C4/quarter.', 'r/eighth', 'r/half']
+		],
+		['lengthening into part of a dotted rest', () => one([['C4', 'quarter'], [null, 'half', { dots: 1 }]]), 0, 'half', 0, ['C4/half', 'r/half']],
+		['lengthening the last note into the trailing rest', () => one([['C4', 'quarter'], ['D4', 'quarter'], [null, 'half']]), 1, 'half', 1, ['C4/quarter', 'D4/half.']],
+		['lengthening into an under-full voice\'s slack', () => buildScore([[['C4', 'quarter'], [null, 'quarter']]]), 0, 'whole', 0, ['C4/whole']],
+		['cutting a whole-measure rest to rests plus padding', () => measureRest(3, 4), 0, 'quarter', 0, ['r/quarter', 'r/quarter', 'r/quarter']]
+	])('%s', (_label, build, note, value, dots, expected) => {
+		const { history, result, before } = edit(build(), (x) => x.setDuration(noteAt(x, 0, note).id, value, dots));
 		expect(result).toEqual([at(0)]);
-		expect(spell(history.current)).toEqual(['C4/eighth', 'r/eighth', 'r/quarter', 'D4/half']);
+		expect(spell(history.current)).toEqual(expected);
 		expectFull(history.current);
 		expectUndoRestores(history, before);
 	});
 
-	it('lengthening consumes a following rest exactly', () => {
-		const s = one([['C4', 'quarter'], [null, 'quarter'], ['D4', 'half']]);
-		const { history, before } = edit(s, (x) => x.setDuration(noteAt(x, 0, 0).id, 'half'));
-		expect(spell(history.current)).toEqual(['C4/half', 'D4/half']);
-		expectFull(history.current);
-		expectUndoRestores(history, before);
-	});
-
-	it('lengthening consumes several rests and re-spells the leftover', () => {
-		const s = one([['C4', 'quarter'], [null, 'eighth'], [null, 'eighth'], [null, 'half']]);
-		const { history } = edit(s, (x) => x.setDuration(noteAt(x, 0, 0).id, 'quarter', 1));
-		expect(spell(history.current)).toEqual(['C4/quarter.', 'r/eighth', 'r/half']);
-		expectFull(history.current);
-		const s2 = one([['C4', 'quarter'], [null, 'half', { dots: 1 }]]);
-		const { history: h2 } = edit(s2, (x) => x.setDuration(noteAt(x, 0, 0).id, 'half'));
-		expect(spell(h2.current)).toEqual(['C4/half', 'r/half']);
-		expectFull(h2.current);
-	});
-
-	it('refuses to lengthen into a following note, or past the barline, and records nothing', () => {
-		const s = one([['C4', 'quarter'], ['D4', 'quarter'], [null, 'half']]);
-		const history = new EditHistory(s);
-		expect(history.record((x) => x.setDuration(noteAt(x, 0, 0).id, 'half'))).toBeNull();
-		expect(history.record((x) => x.setDuration(noteAt(x, 0, 1).id, 'whole'))).toBeNull();
-		expect(history.canUndo).toBe(false);
-		expect(spell(history.current)).toEqual(['C4/quarter', 'D4/quarter', 'r/half']);
-		// Into the following rest is fine.
-		expect(history.record((x) => x.setDuration(noteAt(x, 0, 1).id, 'half', 1))).toEqual([at(0)]);
-		expect(spell(history.current)).toEqual(['C4/quarter', 'D4/half.']);
-	});
-
-	it('may lengthen into an under-full voice\'s slack, but not past capacity', () => {
-		const s = new Score();
-		const m = s.appendMeasure();
-		const c = s.appendNote(m, { pitch: parsePitch('C4'), value: 'quarter' });
-		s.appendNote(m, { pitch: null, value: 'quarter' });
-		// Quarter + quarter rest fill half the bar: a dotted whole would need
-		// 1.5 wholes, a whole fits (the rest, then the slack).
-		expect(s.setDuration(c.id, 'whole', 1)).toBeNull();
-		expect(s.setDuration(c.id, 'whole')).toEqual([at(0)]);
-		expect(spell(s)).toEqual(['C4/whole']);
-	});
-
-	it('changes every head of a chord, keeps its ties, and refuses an unchanged value or a tuplet', () => {
-		const t = buildScore([
-			[[['C5', 'E5'], 'quarter'], [null, 'quarter'], [null, 'half']],
-			[[['C5', 'E5'], 'whole']]
-		]);
+	it('changes every head of a chord and keeps its ties', () => {
+		const t = buildScore([[[['C5', 'E5'], 'quarter'], [null, 'quarter'], [null, 'half']], [[['C5', 'E5'], 'whole']]]);
 		const [c5, e5] = t.measures[0]!.notes;
 		t.setTie(c5!.id, noteAt(t, 1, 0).id);
 		const { history, before } = edit(t, (x) => x.setDuration(e5!.id, 'half'));
 		expect(spell(history.current)).toEqual(['C5/half', '+E5/half', 'r/half']);
 		expect(history.current.findNote(c5!.id)!.tiedToId).toBe(noteAt(t, 1, 0).id);
-		expect(history.record((x) => x.setDuration(c5!.id, 'half'))).toBeNull();
-		expectUndoRestores(history, before);
-
-		const triplets = buildScore([
-			[['C4', 'eighth', { tuplet: TRIPLET }], ['D4', 'eighth', { tuplet: TRIPLET }], ['E4', 'eighth', { tuplet: TRIPLET }], [null, 'quarter', { dots: 1 }], [null, 'half']]
-		]);
-		expect(triplets.setDuration(noteAt(triplets, 0, 0).id, 'quarter')).toBeNull();
-		// Lengthening into a run of tupleted rests is refused too.
-		const intoTuplet = buildScore([[['C4', 'quarter'], [null, 'eighth', { tuplet: TRIPLET }], [null, 'eighth', { tuplet: TRIPLET }], [null, 'eighth', { tuplet: TRIPLET }], [null, 'half']]]);
-		expect(intoTuplet.setDuration(noteAt(intoTuplet, 0, 0).id, 'half')).toBeNull();
-	});
-
-	it('cuts a whole-measure rest down to an ordinary rest plus padding', () => {
-		const s = new Score({ time: { beats: 3, beatType: 4 } });
-		const m = s.appendMeasure();
-		const rest = s.appendNote(m, { pitch: null, value: 'whole', measureRestWholes: 3 / 4 });
-		const { history, before } = edit(s, (x) => x.setDuration(rest.id, 'quarter'));
-		expect(spell(history.current)).toEqual(['r/quarter', 'r/quarter', 'r/quarter']);
-		expect(history.current.findNote(rest.id)!.isMeasureRest).toBe(false);
-		expectFull(history.current);
 		expectUndoRestores(history, before);
 	});
 
 	it('only touches its own voice in a two-voice measure', () => {
 		const s = buildScore([
-			[
-				['E5', 'half', { voice: 1 }],
-				['F5', 'half', { voice: 1 }],
-				['C4', 'quarter', { voice: 2 }],
-				[null, 'quarter', { voice: 2 }],
-				['D4', 'half', { voice: 2 }]
-			]
+			[['E5', 'half', { voice: 1 }], ['F5', 'half', { voice: 1 }], ['C4', 'quarter', { voice: 2 }], [null, 'quarter', { voice: 2 }], ['D4', 'half', { voice: 2 }]]
 		]);
 		const { history } = edit(s, (x) => x.setDuration(noteAt(x, 0, 2).id, 'half'));
-		const voices = noteEvents(history.current.measures[0]!.notes).map((e) => `${e[0]!.voice}:${e[0]!.value}`);
+		const voices = noteEvents(history.current.measures[0]!.notes).map((ev) => `${ev[0]!.voice}:${ev[0]!.value}`);
 		expect(voices).toEqual(['1:half', '1:half', '2:half', '2:half']);
 		expectFull(history.current);
 	});
@@ -383,8 +319,7 @@ describe('setDuration', () => {
 		s.appendNote(top, { pitch: null, value: 'half', dots: 1 });
 		s.appendNote(bottom, { pitch: null, value: 'half', dots: 1 });
 		s.addCrossStaffBeam(ids);
-		// D5 (followed by the rest) becomes a quarter, leaving the top staff
-		// one beamable note: the beam is dropped.
+		// D5 becomes a quarter, leaving the top staff one beamable note.
 		const { history, result } = edit(s, (x) => x.setDuration(ids[1]!, 'quarter'));
 		expect(result).toEqual([at(0, 0), at(0, 1)]);
 		expect(history.current.crossStaffBeams).toEqual([]);
@@ -393,72 +328,40 @@ describe('setDuration', () => {
 });
 
 describe('addChordMember', () => {
-	it('adds a head to the note\'s event with the anchor\'s duration', () => {
+	it('adds a head to the note\'s event with the anchor\'s duration, also from a member', () => {
 		const s = buildScore([[['C4', 'half', { dots: 1 }], ['D4', 'quarter']]]);
-		const c = noteAt(s, 0, 0);
-		const { history, result, before } = edit(s, (x) => x.addChordMember(c.id, parsePitch('E4')));
+		const { history, result, before } = edit(s, (x) => x.addChordMember(first(x), parsePitch('E4')));
 		expect(result).toEqual([at(0)]);
 		expect(spell(history.current)).toEqual(['C4/half.', '+E4/half.', 'D4/quarter']);
-		expect(noteEvents(history.current.measures[0]!.notes)).toHaveLength(2);
 		expectFull(history.current);
-		// Adding a third to the new member lands in the same event.
-		const member = noteAt(history.current, 0, 1);
-		history.record((x) => x.addChordMember(member.id, parsePitch('G4')));
+		history.record((x) => x.addChordMember(noteAt(x, 0, 1).id, parsePitch('G4')));
 		expect(spell(history.current)).toEqual(['C4/half.', '+E4/half.', '+G4/half.', 'D4/quarter']);
 		history.undo();
 		expectUndoRestores(history, before);
 	});
-
-	it('refuses a rest or a pitch the chord already has', () => {
-		const s = buildScore([[[['C4', 'E4'], 'half'], [null, 'half']]]);
-		expect(s.addChordMember(noteAt(s, 0, 0).id, parsePitch('E4'))).toBeNull();
-		expect(s.addChordMember(noteAt(s, 0, 2).id, parsePitch('E4'))).toBeNull();
-	});
 });
 
 describe('editTie', () => {
-	const s = () =>
-		buildScore([
-			[['G4', 'half'], ['C5', 'quarter'], ['D5', 'quarter']],
-			[['D5', 'half'], ['D5', 'half']]
-		]);
-
-	it('ties to the same-pitch head of the next event, across a barline, and undoes', () => {
-		const score = s();
+	it('ties to the same-pitch head of the next event, across a barline, then unties, and undoes', () => {
+		const score = buildScore([[['G4', 'half'], ['C5', 'quarter'], ['D5', 'quarter']], [['D5', 'half'], ['D5', 'half']]]);
 		const d5 = noteAt(score, 0, 2);
 		const target = noteAt(score, 1, 0);
 		expect(score.tieTargetFor(d5.id)).toBe(target.id);
+		expect(score.tieTargetFor(noteAt(score, 0, 1).id)).toBeNull();
 		const { history, result, before } = edit(score, (x) => x.editTie(d5.id, target.id));
 		expect(result).toEqual([at(0), at(1)]);
-		expect(history.current.findNote(d5.id)!.tiedToId).toBe(target.id);
 		expect(history.current.tiedFromNote(target.id)?.id).toBe(d5.id);
 		expect(history.record((x) => x.editTie(d5.id, target.id))).toBeNull();
-		// Untie.
 		expect(history.record((x) => x.editTie(d5.id, null))).toEqual([at(0), at(1)]);
 		expect(history.current.tiedFromNote(target.id)).toBeUndefined();
-		expect(history.record((x) => x.editTie(d5.id, null))).toBeNull();
 		history.undo();
-		history.undo();
-		assertScoresEquivalent(history.current, before);
-		expect(history.current.findNote(d5.id)!.tiedToId).toBeNull();
-	});
-
-	it('refuses a different pitch, a non-adjacent target and a rest', () => {
-		const score = s();
-		const c5 = noteAt(score, 0, 1);
-		expect(score.editTie(c5.id, noteAt(score, 0, 2).id)).toBeNull();
-		expect(score.tieTargetFor(c5.id)).toBeNull();
-		// D5 in measure 2's second half is not the next event after measure 1's D5.
-		expect(score.editTie(noteAt(score, 0, 2).id, noteAt(score, 1, 1).id)).toBeNull();
-		const r = buildScore([[[null, 'half'], ['C4', 'half']]]);
-		expect(r.editTie(noteAt(r, 0, 0).id, noteAt(r, 0, 1).id)).toBeNull();
+		expectUndoRestores(history, before);
 	});
 
 	it('ties chord heads to their own same-pitch heads', () => {
 		const score = buildScore([[[['C4', 'E4'], 'half'], [['C4', 'E4'], 'half']]]);
-		const [, e4, c4b, e4b] = score.measures[0]!.notes;
+		const [, e4, , e4b] = score.measures[0]!.notes;
 		expect(score.tieTargetFor(e4!.id)).toBe(e4b!.id);
-		expect(score.editTie(e4!.id, c4b!.id)).toBeNull();
 		expect(score.editTie(e4!.id, e4b!.id)).toEqual([at(0)]);
 	});
 });

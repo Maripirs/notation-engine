@@ -1,9 +1,8 @@
-// Dynamics and hairpins in the model (M6 Slice 6): building, validation,
-// clone (undo) and equivalence.
+// Dynamics and hairpins in the model (M6 Slice 6): building and validation.
+// Clone (undo) and equivalence are in edit-history.test.ts.
 
 import { describe, expect, it } from 'vitest';
-import { assertScoresEquivalent } from './score-equivalence.js';
-import { buildScore, EditHistory } from './index.js';
+import { buildScore } from './index.js';
 
 const twoMeasures = () =>
 	buildScore(
@@ -41,31 +40,5 @@ describe('model: dynamics and hairpins (M6 Slice 6)', () => {
 		);
 		expect(() => score.addWedge({ kind: 'diminuendo', start: { measureIndex: 0 }, stop: { measureIndex: 5 } })).toThrow(/measure 5/);
 		expect(() => score.addDynamic(0, 9, { kind: 'p' })).toThrow(/no measure 9/);
-	});
-
-	it('clones independently, and equivalence sees a changed dynamic or hairpin', () => {
-		const score = twoMeasures();
-		const copy = score.clone();
-		assertScoresEquivalent(copy, score);
-		copy.measures[0]!.dynamics = [{ ...copy.measures[0]!.dynamics[0]!, kind: 'pp' }];
-		expect(score.measures[0]!.dynamics[0]!.kind).toBe('p');
-		expect(() => assertScoresEquivalent(copy, score)).toThrow(/dynamics/);
-
-		const other = score.clone();
-		other.wedges[0] = { ...other.wedges[0]!, kind: 'diminuendo' };
-		expect(score.wedges[0]!.kind).toBe('crescendo');
-		expect(() => assertScoresEquivalent(other, score)).toThrow(/wedges/);
-	});
-
-	it('restores dynamics and hairpins on undo', () => {
-		const history = new EditHistory(twoMeasures());
-		history.record((s) => {
-			s.addDynamic(0, 1, { kind: 'mf' });
-			s.wedges.length = 0;
-			return 1;
-		});
-		expect(history.current.wedges).toHaveLength(0);
-		history.undo();
-		assertScoresEquivalent(history.current, twoMeasures());
 	});
 });

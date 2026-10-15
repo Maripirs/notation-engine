@@ -28,16 +28,15 @@ describe('pitch', () => {
 		}
 	});
 
-	it('spells upward transposition with sharps and downward with flats', () => {
-		expect(formatPitch(transpose(parsePitch('C4'), 1))).toBe('C#4');
-		expect(formatPitch(transpose(parsePitch('C#4'), 1))).toBe('D4');
-		expect(formatPitch(transpose(parsePitch('C4'), -1))).toBe('B3');
-		expect(formatPitch(transpose(parsePitch('D4'), -1))).toBe('Db4');
-	});
-
-	it('crosses octave boundaries', () => {
-		expect(formatPitch(transpose(parsePitch('B4'), 1))).toBe('C5');
-		expect(formatPitch(transpose(parsePitch('C5'), -1))).toBe('B4');
+	it.each([
+		['C4', 1, 'C#4'],
+		['C#4', 1, 'D4'],
+		['C4', -1, 'B3'],
+		['D4', -1, 'Db4'],
+		['B4', 1, 'C5'],
+		['C5', -1, 'B4']
+	] as const)('transposes %s by %i to %s (sharps up, flats down, across octaves)', (from, by, to) => {
+		expect(formatPitch(transpose(parsePitch(from), by))).toBe(to);
 	});
 
 	it('reads key signatures off the circle of fifths', () => {

@@ -6,27 +6,14 @@
 
 import { describe, expect, it } from 'vitest';
 import { createGraceShowcaseScore } from '../demo-score.js';
-import { ACCIACCATURA, APPOGGIATURA, buildScore, validateMeasure, type MeasureSpec, type Score } from '../model/index.js';
+import { ACCIACCATURA, APPOGGIATURA, buildScore, validateMeasure } from '../model/index.js';
 import { GLYPH_METRICS, STAFF_SPACES_PER_EM, type GlyphName } from '../render/glyph-metrics.js';
 import { hitTest } from './hit-test.js';
 import { GRACE_SCALE, layoutScore, relayoutMeasure } from './layout.js';
+import { headOf, ids, layoutOne, SS, type CurveOp, type GlyphOp, type RectOp } from './test-helpers.js';
 import type { DrawOp, LaidOutMeasure } from './types.js';
 
-const SS = 10;
-type GlyphOp = Extract<DrawOp, { kind: 'glyph' }>;
-type RectOp = Extract<DrawOp, { kind: 'rect' }>;
-type CurveOp = Extract<DrawOp, { kind: 'curve' }>;
-
-function layoutOne(measures: readonly MeasureSpec[]) {
-	const score = buildScore(measures, { keyFifths: 0 });
-	const layout = layoutScore(score, { staffSpacePx: SS });
-	return { score, layout, measure: layout.measures[0]!, ops: layout.measures[0]!.ops };
-}
-
-const ids = (score: Score, m = 0) => score.measures[m]!.notes.map((note) => note.id);
 const opsOf = (ops: readonly DrawOp[], id: string) => ops.filter((op) => 'noteId' in op && op.noteId === id);
-const headOf = (ops: readonly DrawOp[], id: string) =>
-	ops.find((op): op is GlyphOp => op.kind === 'glyph' && op.noteId === id && op.glyph.startsWith('notehead'))!;
 const stemsOf = (ops: readonly DrawOp[], id: string) =>
 	ops.filter((op): op is RectOp => op.kind === 'rect' && op.noteId === id && op.height > op.width * 4);
 const curvesOf = (ops: readonly DrawOp[], id: string) => ops.filter((op): op is CurveOp => op.kind === 'curve' && op.noteId === id);

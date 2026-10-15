@@ -7,41 +7,19 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { assertScoresEquivalent, buildScore, EditHistory, opaqueElementKey, type Note } from '../model/index.js';
+import { assertScoresEquivalent, buildScore, opaqueElementKey, type Note } from '../model/index.js';
 import { exportMusicXml } from './musicxml-export.js';
 import { createImportDiagnostics, importMusicXml } from './musicxml-import.js';
+import { n, onePart, roundTrip } from './test-helpers.js';
 import { child, children, descendants, parseXml, type XmlElement } from './xml.js';
 
 const FIXTURE = readFileSync(join(import.meta.dirname, '../test/fixtures/satb-lyrics.musicxml'), 'utf8');
 
-function doc(body: string): string {
-	return `<?xml version="1.0" encoding="UTF-8"?>\n<score-partwise version="4.0">\n${body}\n</score-partwise>\n`;
-}
-
-const ATTRS =
-	'<attributes><divisions>2</divisions><key><fifths>0</fifths></key>' +
-	'<time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>';
-
-function onePart(measures: readonly string[]): string {
-	const body = measures.map((inner, i) => `<measure number="${i + 1}">${i === 0 ? ATTRS : ''}${inner}</measure>`).join('\n');
-	return doc(`<part-list><score-part id="P1"><part-name>S</part-name></score-part></part-list>\n<part id="P1">\n${body}\n</part>`);
-}
-
-const note = (step: string, lyrics: string, extra = '') =>
-	`<note>${extra}<pitch><step>${step}</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type>${lyrics}</note>`;
+const note = (step: string, lyrics: string, chord = false) => n(step, 2, 'quarter', lyrics, { octave: 4, chord });
 
 /** Every `<lyric>` in document order, canonically keyed. */
 function lyricKeys(root: XmlElement): string[] {
 	return descendants(root, 'lyric').map((el) => opaqueElementKey(el));
-}
-
-function roundTrip(xml: string) {
-	const score = importMusicXml(xml);
-	const exported = exportMusicXml(score);
-	const again = importMusicXml(exported);
-	assertScoresEquivalent(again, score);
-	expect(exportMusicXml(again)).toBe(exported);
-	return { score, exported, root: parseXml(exported) };
 }
 
 /** The lyric-bearing notes of a staff, as `text(verse,syllabic[,extend])`. */
@@ -102,15 +80,6 @@ describe('MusicXML lyrics: the SATB fixture (M6 Slice 9)', () => {
 		}
 	});
 
-	it('survives a transpose and its undo', () => {
-		const history = new EditHistory(importMusicXml(FIXTURE));
-		const before = exportMusicXml(history.current);
-		const target = history.current.staves[0]!.measures[2]!.notes[0]!;
-		history.record((s) => s.transposeNote(target.id, 1));
-		expect(history.current.findNote(target.id)!.lyrics.map((l) => l.text)).toEqual(['morn', 'ev']);
-		history.undo();
-		expect(exportMusicXml(history.current)).toBe(before);
-	});
 });
 
 describe('MusicXML lyrics: formatting the model does not read (M6 Slice 9)', () => {
@@ -124,7 +93,7 @@ describe('MusicXML lyrics: formatting the model does not read (M6 Slice 9)', () 
 			note('E', '<lyric number="1"><extend type="continue"/></lyric><lyric number="2"><humming/></lyric>') +
 			note('F', '<lyric number="1"><laughing/></lyric><lyric number="3"><text>x</text></lyric><lyric number="3"><text>dup</text></lyric>'),
 		note('G', '') +
-			note('E', '<lyric number="1"><text>member</text></lyric>', '<chord/>') +
+			note('E', '<lyric number="1"><text>member</text></lyric>', true) +
 			note('A', '<lyric number="1"><syllabic>single</syllabic><text>sing</text><elision>_</elision><syllabic>single</syllabic><text>a</text></lyric>') +
 			note('B', '<lyric number="1"><syllabic>single</syllabic><text>end</text></lyric>') +
 			note('C', '')

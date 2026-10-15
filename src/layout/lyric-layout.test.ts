@@ -11,13 +11,10 @@ import type { LyricSpec } from '../model/lyrics.js';
 import { buildScore, Score, type MeasureBuildSpec, type MeasureSpec, type NoteValue } from '../model/score.js';
 import { GLYPH_METRICS } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
-import type { DrawOp, LaidOutMeasure, LaidOutScore } from './types.js';
+import { glyphOps, measureAt, SS, type RectOp, type TextOp } from './test-helpers.js';
+import type { LaidOutMeasure, LaidOutScore } from './types.js';
 
-const SS = 10;
 const FIXTURE = readFileSync(join(import.meta.dirname, '../test/fixtures/satb-lyrics.musicxml'), 'utf8');
-
-type TextOp = Extract<DrawOp, { kind: 'text' }>;
-type RectOp = Extract<DrawOp, { kind: 'rect' }>;
 
 const textsIn = (measure: LaidOutMeasure): TextOp[] => measure.ops.filter((op): op is TextOp => op.kind === 'text');
 /** Hyphens and extender lines: the only rects drawn below a staff's bottom
@@ -186,7 +183,7 @@ describe('layout: hyphens and extenders (M6 Slice 9)', () => {
 		const broken = layoutScore(score, { staffSpacePx: SS, systemWidthPx: 1200 });
 		const sopranoSystems = broken.systems.filter((s) => s.staffIndex === 0);
 		expect(sopranoSystems.map((s) => s.measureIndices)).toEqual([[0, 1, 2, 3], [4, 5, 6, 7]]);
-		const m = (index: number) => broken.measures.find((x) => x.staffIndex === 0 && x.index === index)!;
+		const m = (index: number) => measureAt(broken, 0, index);
 		const [top1, top2] = sopranoSystems.map((s) => s.topY);
 		// Verse 1 and 2 each end the system with "ev -"/"glad -", and start the
 		// next with "- 'ry"/"- ness": one hyphen before each continuing syllable.
@@ -203,7 +200,7 @@ describe('layout: hyphens and extenders (M6 Slice 9)', () => {
 		// At 900px the break falls after measure 3, inside "light,"'s melisma:
 		// its extender runs to the end of the system and resumes under the G4.
 		const melisma = layoutScore(score, { staffSpacePx: SS, systemWidthPx: 900 });
-		const sm = (index: number) => melisma.measures.find((x) => x.staffIndex === 0 && x.index === index)!;
+		const sm = (index: number) => measureAt(melisma, 0, index);
 		const [s1, s2] = melisma.systems.filter((s) => s.staffIndex === 0);
 		expect(s1!.measureIndices).toEqual([0, 1, 2]);
 		const end = extendersIn(sm(2), s1!.topY);
@@ -257,7 +254,7 @@ describe('layout: lyric spacing (M6 Slice 9)', () => {
 			[rhythm.map(([p, v]) => [p, v] as const)]
 		]);
 		const layout = layoutScore(score, { staffSpacePx: SS });
-		const [upper, lower] = [0, 1].map((s) => layout.measures.find((m) => m.staffIndex === s)!);
+		const [upper, lower] = [0, 1].map((s) => measureAt(layout, s, 0));
 		for (let i = 0; i < 4; i++) expect(centreOf(lower!, i)).toBeCloseTo(centreOf(upper!, i), 6);
 		const plain = layoutScore(staves([[rhythm.map(([p, v]) => [p, v] as const)]]), { staffSpacePx: SS }).measures[0]!;
 		expect(centreOf(lower!, 3) - centreOf(lower!, 0)).toBeGreaterThan(centreOf(plain, 3) - centreOf(plain, 0) + 5 * SS);
@@ -282,7 +279,7 @@ describe('layout: lyrics and the staves around them (M6 Slice 9)', () => {
 		expect(b1! - b0! - (a1! - a0!)).toBeCloseTo(2.6 * SS, 0);
 
 		const layout = layoutScore(staves([tune(true), tune(false)]), { staffSpacePx: SS });
-		const [upper, lower] = [0, 1].map((s) => layout.measures.find((m) => m.staffIndex === s)!);
+		const [upper, lower] = [0, 1].map((s) => measureAt(layout, s, 0));
 		const [t0, t1] = layout.systems.map((s) => s.topY);
 		// The lyrics clear the next staff's region with room to spare.
 		expect(upper!.region.y + upper!.region.height).toBeLessThan(lower!.region.y);
@@ -294,14 +291,12 @@ describe('layout: lyrics and the staves around them (M6 Slice 9)', () => {
 		expect(barline(lower!).y).toBeCloseTo(t1!, 6);
 		// Without lyrics the barline still joins the two staves.
 		const joined = layoutScore(staves([tune(false), tune(false)]), { staffSpacePx: SS });
-		const j0 = joined.measures.find((m) => m.staffIndex === 0)!;
+		const j0 = measureAt(joined, 0, 0);
 		expect(barline(j0).y + barline(j0).height).toBeGreaterThan(joined.systems[0]!.topY + 6 * SS);
 	});
 
 	it('moves unplaced dynamics and hairpins above a staff with lyrics; an explicit below goes under the text', () => {
-		const glyphs = (layout: LaidOutScore, prefix: string) =>
-			layout.measures.flatMap((m) => m.ops).filter((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph.startsWith(prefix));
-		const staffTop = (layout: LaidOutScore) => layout.staffTopY;
+		const glyphs = (layout: LaidOutScore, name: 'dynamicPiano' | 'dynamicForte') => layout.measures.flatMap((m) => glyphOps(m.ops, name));
 		const withLyrics = buildScore(
 			[
 				{ notes: [['C5', 'half', sing('la')], ['D5', 'half', sing('la')]], dynamics: [{ kind: 'p' }, { kind: 'f', onset: 0.5, placement: 'below' }] },
@@ -314,17 +309,12 @@ describe('layout: lyrics and the staves around them (M6 Slice 9)', () => {
 		const layout = layoutScore(withLyrics, { staffSpacePx: SS });
 		const [p] = glyphs(layout, 'dynamicPiano');
 		const [f] = glyphs(layout, 'dynamicForte');
-		expect(p!.y).toBeLessThan(staffTop(layout));
+		expect(p!.y).toBeLessThan(layout.staffTopY);
 		const text = textsIn(layout.measures[0]!)[0]!;
 		expect(f!.y - GLYPH_METRICS.dynamicForte.bBoxNE[1] * SS).toBeGreaterThan(text.y);
 		const hairpin = layout.measures[0]!.ops.filter((op) => op.kind === 'curve');
 		expect(hairpin.length).toBeGreaterThan(0);
-		for (const line of hairpin) if (line.kind === 'curve') expect(line.y0).toBeLessThan(staffTop(layout));
-
-		// The same marks without lyrics stay below, as in Slice 6.
-		const plain = buildScore([{ notes: [['C5', 'half'], ['D5', 'half']], dynamics: [{ kind: 'p' }] }], { keyFifths: 0 });
-		const [plainP] = glyphs(layoutScore(plain, { staffSpacePx: SS }), 'dynamicPiano');
-		expect(plainP!.y).toBeGreaterThan(layoutScore(plain, { staffSpacePx: SS }).staffTopY + 4 * SS);
+		for (const line of hairpin) if (line.kind === 'curve') expect(line.y0).toBeLessThan(layout.staffTopY);
 	});
 });
 

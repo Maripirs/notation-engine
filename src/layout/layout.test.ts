@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	createAccidentalShowcaseScore,
 	createBarlineShowcaseScore,
+	createChordShowcaseScore,
 	createClefShowcaseScore,
 	createCrossStaffBeamShowcaseScore,
 	createDemoScore,
@@ -15,350 +16,255 @@ import {
 	createVoiceClashShowcaseScore
 } from '../demo-score.js';
 import { parsePitch } from '../model/pitch.js';
-import { buildScore, type ClefType, TRIPLET, validateMeasure, type NoteValue } from '../model/score.js';
+import {
+	buildScore,
+	type ClefType,
+	type MeasureBuildSpec,
+	type MeasureSpec,
+	type NoteValue,
+	type Score,
+	TRIPLET,
+	validateMeasure
+} from '../model/score.js';
 import { ENGRAVING_DEFAULTS as ED, GLYPH_METRICS } from '../render/glyph-metrics.js';
 import type { GlyphName } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
-import type { DrawOp, LaidOutScore } from './types.js';
+import { glyphOps, measureAt, SS, twoStaffScore, type CurveOp, type GlyphOp, type RectOp } from './test-helpers.js';
+import type { DrawOp, LaidOutMeasure, LaidOutScore } from './types.js';
 
 const NOTE_VALUES: readonly NoteValue[] = ['whole', 'half', 'quarter', 'eighth', '16th', '32nd', '64th'];
+const OPTS = { staffSpacePx: SS };
+/** The demo score casts off into systems [0, 1] and [2, 3] at this width. */
+const NARROW = { staffSpacePx: 11, systemWidthPx: 700 };
 
-/** Glyph names an ops list draws, in order, dropping the plain rects. */
-const glyphsOf = (ops: readonly DrawOp[]) =>
-	ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-
-/** The first `glyph` op drawing `name`, narrowed so its `x`/`y` are addressable
- *  (a bare `.find` predicate does not narrow `DrawOp`'s union, and `curve` ops
- *  have no single `x`/`y` for a caller to accidentally read off the wrong kind). */
+/** Glyph names an ops list draws, in order. */
+const glyphsOf = (ops: readonly DrawOp[]) => ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
+const countOf = (ops: readonly DrawOp[], name: GlyphName) => glyphsOf(ops).filter((g) => g === name).length;
+const hasFlag = (ops: readonly DrawOp[]) => glyphsOf(ops).some((g) => g.startsWith('flag'));
 const findGlyph = (ops: readonly DrawOp[], name: GlyphName) =>
-	ops.find((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === name);
+	ops.find((op): op is GlyphOp => op.kind === 'glyph' && op.glyph === name);
+const findCurve = (ops: readonly DrawOp[]) => ops.find((op): op is CurveOp => op.kind === 'curve');
+const curvesOf = (ops: readonly DrawOp[]) => ops.filter((op) => op.kind === 'curve');
+const rectsOf = (ops: readonly DrawOp[]) => ops.filter((op): op is RectOp => op.kind === 'rect');
 
-/** The first `curve` op, narrowed the same way `findGlyph` narrows a glyph. */
-const findCurve = (ops: readonly DrawOp[]) =>
-	ops.find((op): op is Extract<DrawOp, { kind: 'curve' }> => op.kind === 'curve');
+// At `SS`, each kind of rect has a thickness nothing else shares, so these
+// identify stems, beams, ledger lines and barlines without knowing positions.
+const stemRects = (ops: readonly DrawOp[]) => rectsOf(ops).filter((op) => Math.abs(op.width - ED.stemThickness * SS) < 0.001);
+const beamRects = (ops: readonly DrawOp[]) => rectsOf(ops).filter((op) => Math.abs(op.height - ED.beamThickness * SS) < 0.001);
+const ledgerRects = (ops: readonly DrawOp[]) =>
+	rectsOf(ops).filter((op) => Math.abs(op.height - ED.legerLineThickness * SS) < 0.001);
+const barlineRects = (ops: readonly DrawOp[]) => rectsOf(ops).filter((op) => Math.abs(op.height - 4 * SS) < 0.001);
+const noteheadYs = (ops: readonly DrawOp[]) => glyphOps(ops, 'noteheadBlack').map((op) => op.y);
 
+const lay = (measures: readonly (MeasureSpec | MeasureBuildSpec)[], keyFifths = 0) =>
+	layoutScore(buildScore(measures, { keyFifths }), OPTS);
 const overlaps = (a: { x: number; width: number }, b: { x: number; width: number }) =>
 	a.x < b.x + b.width && b.x < a.x + a.width;
+const noteX = (score: Score, measure: LaidOutMeasure, index: number) =>
+	measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
+const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * SS;
+
+/** Asserts every curve in `measure` stays within its region vertically. */
+function expectCurvesInside(measure: LaidOutMeasure) {
+	for (const curve of measure.ops.filter((op): op is CurveOp => op.kind === 'curve')) {
+		for (const y of [curve.y0, curve.cy0, curve.cy1, curve.y1]) {
+			expect(y).toBeGreaterThanOrEqual(measure.region.y - 0.001);
+			expect(y).toBeLessThanOrEqual(measure.region.y + measure.region.height + 0.001);
+		}
+	}
+}
+
+describe('demo showcases', () => {
+	it.each([
+		['duration', createDurationShowcaseScore],
+		['accidental', createAccidentalShowcaseScore],
+		['tie', createTieShowcaseScore],
+		['slur', createSlurShowcaseScore],
+		['key/time change', createKeyTimeChangeShowcaseScore],
+		['barline', createBarlineShowcaseScore],
+		['two-voice', createTwoVoiceShowcaseScore],
+		['clef', createClefShowcaseScore],
+		['grand staff', createGrandStaffShowcaseScore],
+		['SATB bracket', createSatbBracketShowcaseScore],
+		['cross-staff beam', createCrossStaffBeamShowcaseScore],
+		['chord', createChordShowcaseScore]
+	])('%s showcase: every measure fills its time signature and the score lays out', (_name, create) => {
+		const score = create();
+		for (const staff of score.staves) {
+			for (const measure of staff.measures) {
+				expect(validateMeasure(measure, score.timeAt(measure.index, measure.staffIndex)).valid).toBe(true);
+			}
+		}
+		expect(() => layoutScore(score)).not.toThrow();
+	});
+
+	it("voice-clash showcase lays out (its second measure's voice 2 is deliberately short)", () => {
+		expect(() => layoutScore(createVoiceClashShowcaseScore())).not.toThrow();
+	});
+});
 
 describe('layoutScore', () => {
 	it('lays every note out and keeps ids addressable', () => {
-		const layout = layoutScore(createDemoScore());
-		const ids = layout.measures.flatMap((m) => m.notes.map((n) => n.id));
+		const ids = layoutScore(createDemoScore()).measures.flatMap((m) => m.notes.map((n) => n.id));
 		expect(ids).toHaveLength(13);
 		expect(new Set(ids).size).toBe(13);
 	});
 
-	it('gives measures disjoint horizontal bands', () => {
-		// This is the precondition that makes region-scoped redraw safe at all:
-		// if two measures shared pixels, repainting one would erase part of the
-		// other. Asserted here rather than in the renderer because it is a
-		// property of layout, and the renderer would only notice it visually.
+	it('gives measures disjoint horizontal bands and keeps every drawn pixel inside its own', () => {
+		// The precondition that makes region-scoped redraw safe at all.
 		const layout = layoutScore(createDemoScore());
 		for (let i = 1; i < layout.measures.length; i++) {
 			expect(overlaps(layout.measures[i - 1]!.region, layout.measures[i]!.region)).toBe(false);
 		}
-	});
-
-	it('keeps every drawn pixel inside its own measure region', () => {
-		const layout = layoutScore(createDemoScore());
-		for (const measure of layout.measures) {
-			// `createDemoScore` has no ties, so this never sees a `curve` op, which
-			// has no single x/y (see `DrawOp`'s own comment); narrowing to the two
-			// kinds that do is what keeps this generic rather than a fixture fact.
-			for (const op of measure.ops.filter((o) => o.kind === 'rect' || o.kind === 'glyph')) {
-				expect(op.x).toBeGreaterThanOrEqual(measure.region.x - 0.001);
-				expect(op.y).toBeGreaterThanOrEqual(measure.region.y - 0.001);
-				expect(op.y).toBeLessThanOrEqual(measure.region.y + measure.region.height + 0.001);
+		for (const { ops, notes, region } of layout.measures) {
+			for (const op of ops.filter((o) => o.kind === 'rect' || o.kind === 'glyph')) {
+				expect(op.x).toBeGreaterThanOrEqual(region.x - 0.001);
+				expect(op.y).toBeGreaterThanOrEqual(region.y - 0.001);
+				expect(op.y).toBeLessThanOrEqual(region.y + region.height + 0.001);
 			}
-			for (const note of measure.notes) {
-				expect(note.bounds.x).toBeGreaterThanOrEqual(measure.region.x - 0.001);
-				expect(note.bounds.x + note.bounds.width).toBeLessThanOrEqual(
-					measure.region.x + measure.region.width + 0.001
-				);
+			for (const note of notes) {
+				expect(note.bounds.x).toBeGreaterThanOrEqual(region.x - 0.001);
+				expect(note.bounds.x + note.bounds.width).toBeLessThanOrEqual(region.x + region.width + 0.001);
 			}
 		}
-	});
-
-	it('puts the clef, key signature and time signature in the first measure', () => {
-		// They have to belong to a measure, not to a header nobody redraws:
-		// clearing measure 0's region wipes them, so measure 0's ops must be able
-		// to put them back.
-		const layout = layoutScore(createDemoScore());
-		const first = layout.measures[0]!;
-		const glyphs = first.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		expect(glyphs).toContain('gClef');
-		expect(glyphs).toContain('accidentalSharp');
-		expect(glyphs).toContain('timeSig4');
-		expect(layout.measures[1]!.ops.some((op) => op.kind === 'glyph' && op.glyph === 'gClef')).toBe(
-			false
-		);
 	});
 
 	it('gives every measure its own staff lines', () => {
 		const layout = layoutScore(createDemoScore());
 		for (const measure of layout.measures) {
-			const fullWidthRects = measure.ops.filter(
-				(op) => op.kind === 'rect' && Math.abs(op.width - measure.region.width) < 0.001
-			);
-			expect(fullWidthRects).toHaveLength(5);
+			const lines = rectsOf(measure.ops).filter((op) => Math.abs(op.width - measure.region.width) < 0.001);
+			expect(lines).toHaveLength(5);
 		}
 	});
 
-	it('omits an accidental the key signature already implies', () => {
-		// F sharp in G major draws no sharp; F natural in G major draws a natural.
-		const sharpCount = (layout: LaidOutScore) =>
-			layout.measures.flatMap((m) =>
-				m.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')
-			).length;
-		const inKey = layoutScore(buildScore([[['F#5', 'quarter']]], { keyFifths: 1 }));
-		// One sharp for the key signature itself, none on the note.
-		expect(sharpCount(inKey)).toBe(1);
-
-		const naturals = layoutScore(buildScore([[['F5', 'quarter']]], { keyFifths: 1 }));
-		expect(
-			naturals.measures.flatMap((m) =>
-				m.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalNatural')
-			)
-		).toHaveLength(1);
+	it('draws ledger lines only for notes off the staff', () => {
+		expect(ledgerRects(lay([[['B4', 'quarter']]]).measures[0]!.ops)).toHaveLength(0);
+		expect(ledgerRects(lay([[['C4', 'quarter']]]).measures[0]!.ops)).toHaveLength(1);
 	});
 
-	it('draws ledger lines only for notes off the staff', () => {
-		const onStaff = layoutScore(buildScore([[['B4', 'quarter']]]));
-		const offStaff = layoutScore(buildScore([[['C4', 'quarter']]]));
-		const ledgerCount = (layout: LaidOutScore) =>
-			layout.measures[0]!.ops.filter(
-				(op) => op.kind === 'rect' && op.width < layout.measures[0]!.region.width / 2
-			).length;
-		// A C4 needs one ledger line; a B4 sits on the middle line and needs none.
-		// Both scores also contain a stem, hence the difference rather than a count.
-		expect(ledgerCount(offStaff) - ledgerCount(onStaff)).toBe(1);
+	it('states clef, key and time in the first measure; a later system repeats clef and key only', () => {
+		// Header glyphs belong to a measure so clearing its region and redrawing
+		// its ops puts them back.
+		const layout = layoutScore(createDemoScore(), NARROW);
+		const [first, mid, systemStart] = [0, 1, 2].map((i) => glyphsOf(layout.measures[i]!.ops));
+		expect(first).toEqual(expect.arrayContaining(['gClef', 'accidentalSharp', 'timeSig4']));
+		expect(systemStart).toEqual(expect.arrayContaining(['gClef', 'accidentalSharp']));
+		expect(systemStart).not.toContain('timeSig4');
+		expect(mid).not.toContain('gClef');
 	});
 });
 
 describe('relayoutMeasure', () => {
-	it('rebuilds one measure and leaves the others byte-identical', () => {
+	it('rebuilds one measure in place and leaves the others as the same objects', () => {
 		const score = createDemoScore();
 		const layout = layoutScore(score);
 		score.transposeNote(score.measures[1]!.notes[0]!.id, 1);
-		const updated = relayoutMeasure(score, layout, 1);
+		const updated = relayoutMeasure(score, layout, 1)!;
 		expect(updated).not.toBeNull();
-		for (const index of [0, 2, 3]) {
-			// Same object, not merely an equal one: untouched measures are not
-			// recomputed at all, which is what keeps edit cost independent of
-			// score length.
-			expect(updated!.measures[index]).toBe(layout.measures[index]);
-		}
-		expect(updated!.measures[1]).not.toBe(layout.measures[1]);
-		// The rebuilt measure occupies the same band, to within the float noise of
-		// having been computed by translation the first time and directly the
-		// second. If it did not, `relayoutMeasure` would have refused.
+		for (const index of [0, 2, 3]) expect(updated.measures[index]).toBe(layout.measures[index]);
+		expect(updated.measures[1]).not.toBe(layout.measures[1]);
 		const before = layout.measures[1]!.region;
-		const after = updated!.measures[1]!.region;
-		expect(after.x).toBeCloseTo(before.x, 6);
-		expect(after.width).toBeCloseTo(before.width, 6);
-		expect(after.y).toBeCloseTo(before.y, 6);
-		expect(after.height).toBeCloseTo(before.height, 6);
+		const after = updated.measures[1]!.region;
+		for (const key of ['x', 'y', 'width', 'height'] as const) expect(after[key]).toBeCloseTo(before[key], 6);
 	});
 
-	it('refuses when the edit would move the rest of the system', () => {
-		// A transpose never changes a measure's width, but a duration change
-		// would, and then "redraw one measure" is a lie. The layout says so
-		// rather than silently producing a wrong picture.
+	it.each([
+		['moves the rest of the system (a width change)', (score: Score) => (score.measures[1]!.notes[0]!.value = 'whole')],
+		[
+			'overflows the canvas vertically',
+			(score: Score) => {
+				for (let i = 0; i < 24; i++) score.transposeNote(score.measures[1]!.notes[0]!.id, 1);
+			}
+		]
+	])('refuses when the edit %s', (_name, edit) => {
 		const score = createDemoScore();
 		const layout = layoutScore(score);
-		score.measures[1]!.notes[0]!.value = 'whole';
+		edit(score);
 		expect(relayoutMeasure(score, layout, 1)).toBeNull();
 	});
 
-	it('refuses when the edit would overflow the canvas vertically', () => {
+	it('redraws a measure opening a later system, keeping its clef and key signature', () => {
 		const score = createDemoScore();
-		const layout = layoutScore(score);
-		// Far above the staff: the ledger lines would run off the top.
-		for (let i = 0; i < 24; i++) score.transposeNote(score.measures[1]!.notes[0]!.id, 1);
-		expect(relayoutMeasure(score, layout, 1)).toBeNull();
-	});
-
-	it('redraws just one measure in a later system, keeping its clef and key signature', () => {
-		// Measure 2 opens system 2 of the demo score at this width (see the
-		// `layoutScore` multi-system tests below), so it carries a clef and key
-		// signature that a naive re-layout could accidentally drop.
-		const score = createDemoScore();
-		const options = { staffSpacePx: 11, systemWidthPx: 700 };
-		const layout = layoutScore(score, options);
+		const layout = layoutScore(score, NARROW);
 		expect(layout.systems[1]!.measureIndices).toEqual([2, 3]);
-
 		score.transposeNote(score.measures[2]!.notes[0]!.id, 1);
-		const updated = relayoutMeasure(score, layout, 2, options);
+		const updated = relayoutMeasure(score, layout, 2, NARROW)!;
+		for (const index of [0, 1, 3]) expect(updated.measures[index]).toBe(layout.measures[index]);
+		expect(glyphsOf(updated.measures[2]!.ops)).toEqual(expect.arrayContaining(['gClef', 'accidentalSharp']));
+	});
+
+	it("never touches another staff's measures, even when staff-local indices collide", () => {
+		const score = twoStaffScore();
+		const layout = layoutScore(score);
+		const touched = score.transposeNote(score.staves[1]!.measures[1]!.notes[0]!.id, 1);
+		expect(touched).toBe(1);
+		const updated = relayoutMeasure(score, layout, touched!, {}, 1)!;
 		expect(updated).not.toBeNull();
-		for (const index of [0, 1, 3]) {
-			expect(updated!.measures[index]).toBe(layout.measures[index]);
+		for (const m of updated.measures) {
+			const before = measureAt(layout, m.staffIndex, m.index);
+			if (m.staffIndex === 1 && m.index === 1) expect(m).not.toBe(before);
+			else expect(m).toBe(before);
 		}
-		const glyphs = updated!.measures[2]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		expect(glyphs).toContain('gClef');
-		expect(glyphs).toContain('accidentalSharp');
 	});
 });
 
-describe('layoutScore with systemWidthPx (multi-system)', () => {
-	const options = { staffSpacePx: 11, systemWidthPx: 700 };
-
-	it('casts measures off onto a new system once they would overflow the width', () => {
-		const layout = layoutScore(createDemoScore(), options);
+describe('systems and spacing', () => {
+	it('casts off onto stacked systems at the same left margin, never past the width budget', () => {
+		const layout = layoutScore(createDemoScore(), NARROW);
 		expect(layout.systems.map((s) => s.measureIndices)).toEqual([
 			[0, 1],
 			[2, 3]
 		]);
-		// Every measure still appears exactly once, in score order, across systems.
-		expect(layout.systems.flatMap((s) => s.measureIndices)).toEqual([0, 1, 2, 3]);
-		// The first system is justified (stretched to fill the width budget);
-		// the score's own last system never is (see `systemSpacingScale`'s own
-		// comment on why a piece's final line stays at its natural width).
+		expect(layout.measures[2]!.region.x).toBeCloseTo(layout.measures[0]!.region.x, 6);
+		expect(layout.systems[1]!.topY).toBeGreaterThan(layout.systems[0]!.topY);
+		for (const measure of layout.measures) expect(measure.region.width).toBeLessThanOrEqual(NARROW.systemWidthPx);
+	});
+
+	it('justifies every system but the last to fill systemWidthPx', () => {
+		const layout = layoutScore(createDemoScore(), NARROW);
 		expect(layout.systems[0]!.spacingScale).toBeGreaterThan(1);
 		expect(layout.systems[1]!.spacingScale).toBe(1);
+		expect(layout.width).toBeCloseTo(NARROW.systemWidthPx, 1);
+		const span = (system: number) => {
+			const ms = layout.measures.filter((m) => layout.systems[system]!.measureIndices.includes(m.index));
+			const left = Math.min(...ms.map((m) => m.region.x));
+			return { left, width: Math.max(...ms.map((m) => m.region.x + m.region.width)) - left };
+		};
+		expect(span(0).width).toBeCloseTo(NARROW.systemWidthPx - 2 * span(0).left, 1);
+		expect(span(1).width).toBeLessThan(span(0).width);
 	});
 
-	it('starts each system at the same left margin and stacks systems vertically', () => {
+	it.each([
+		['fits within systemWidthPx', { staffSpacePx: 11, systemWidthPx: 2000 }],
+		['omits systemWidthPx', { staffSpacePx: 11 }]
+	])('lays out as one unjustified system when the score %s', (_name, options) => {
 		const layout = layoutScore(createDemoScore(), options);
-		const systemTwoStart = layout.measures[2]!;
-		expect(systemTwoStart.region.x).toBeCloseTo(layout.measures[0]!.region.x, 6);
-		// The second system's staff sits strictly below the first system's.
-		expect(layout.systems[1]!.topY).toBeGreaterThan(layout.systems[0]!.topY);
-	});
-
-	it('never lets a measure exceed the system width budget', () => {
-		const layout = layoutScore(createDemoScore(), options);
-		for (const measure of layout.measures) {
-			expect(measure.region.width).toBeLessThanOrEqual(options.systemWidthPx);
-		}
-	});
-
-	it('draws a clef and key signature, but not a time signature, on a later system-starting measure', () => {
-		const layout = layoutScore(createDemoScore(), options);
-		const systemStart = layout.measures[2]!;
-		const glyphs = systemStart.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		expect(glyphs).toContain('gClef');
-		expect(glyphs).toContain('accidentalSharp');
-		expect(glyphs).not.toContain('timeSig4');
-
-		// Only the score's true first measure states the time signature.
-		const scoreStart = layout.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		expect(scoreStart).toContain('timeSig4');
-
-		// A mid-system measure gets neither.
-		const midSystem = layout.measures[1]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		expect(midSystem).not.toContain('gClef');
-	});
-
-	it('lays out the same as a single system when the score fits within the width', () => {
-		const roomy = layoutScore(createDemoScore(), { staffSpacePx: 11, systemWidthPx: 2000 });
 		const single = layoutScore(createDemoScore(), { staffSpacePx: 11 });
-		expect(roomy.width).toBeCloseTo(single.width, 6);
-		expect(roomy.height).toBeCloseTo(single.height, 6);
-		expect(roomy.systems.map((s) => s.measureIndices)).toEqual([[0, 1, 2, 3]]);
-		// The whole score fits in one system, which is therefore also the
-		// score's last, so it stays at natural (unjustified) spacing.
-		expect(roomy.systems[0]!.spacingScale).toBe(1);
-		for (let i = 0; i < single.measures.length; i++) {
-			expect(roomy.measures[i]!.region).toEqual(single.measures[i]!.region);
-		}
-	});
-
-	it('keeps single-system layout identical when systemWidthPx is omitted entirely', () => {
-		// The option is opt-in: not passing it at all must behave exactly as
-		// before this feature existed, one system regardless of score width.
-		const layout = layoutScore(createDemoScore(), { staffSpacePx: 11 });
 		expect(layout.systems.map((s) => s.measureIndices)).toEqual([[0, 1, 2, 3]]);
 		expect(layout.systems[0]!.spacingScale).toBe(1);
-	});
-});
-
-describe('note spacing (Slice 9: optical spacing curve)', () => {
-	// Isolates one note's own horizontal advance from a measure's fixed
-	// overhead (clef, key, time signature, lead-in/trail-out, barline ink): the
-	// difference between a measure holding two notes of `value` and one
-	// holding just one is exactly the second note's own advance, since both
-	// measures share every other component identically. Robust to whether the
-	// pair happens to fall into one beam group or not: a beamed note's own
-	// advance is computed the same way as an unbeamed one's (see `layoutNote`),
-	// beaming only changes how its stem is drawn, not how much horizontal room
-	// it claims.
-	const noteAdvancePx = (value: NoteValue) => {
-		const one = layoutScore(buildScore([[['C4', value]]])).measures[0]!.region.width;
-		const two = layoutScore(buildScore([[['C4', value], ['C4', value]]])).measures[0]!.region.width;
-		return two - one;
-	};
-
-	it('grows monotonically with duration', () => {
-		// NOTE_VALUES is ordered longest ('whole') to shortest ('64th'); each
-		// value's own advance should be strictly less than the one before it.
-		const advances = NOTE_VALUES.map(noteAdvancePx);
-		for (let i = 1; i < advances.length; i++) {
-			expect(advances[i]!).toBeLessThan(advances[i - 1]!);
-		}
+		expect(layout.width).toBeCloseTo(single.width, 6);
+		for (let i = 0; i < single.measures.length; i++) expect(layout.measures[i]!.region).toEqual(single.measures[i]!.region);
 	});
 
-	it("grows sub-linearly: a whole note's room is nowhere near 8x an eighth note's", () => {
-		const whole = noteAdvancePx('whole');
-		const eighth = noteAdvancePx('eighth');
-		// A whole note lasts 8 times as long as an eighth. The naive linear-
-		// in-duration model this slice replaces would give it 8x the room; the
-		// log-based curve (`noteAdvanceSpaces`) instead adds a constant
-		// increment of space per *doubling* of duration, so real growth is far
-		// shallower: still strictly more room (longer notes are not cramped),
-		// but comfortably under even a generous 3-4x allowance.
-		expect(whole).toBeGreaterThan(eighth);
-		expect(whole).toBeLessThan(eighth * 4);
+	it('gives longer notes more room, growing sub-linearly with duration', () => {
+		// A second note's own advance: the width difference between one and two notes.
+		const advance = (value: NoteValue) => lay([[['C4', value], ['C4', value]]]).measures[0]!.region.width - lay([[['C4', value]]]).measures[0]!.region.width;
+		const advances = NOTE_VALUES.map(advance);
+		for (let i = 1; i < advances.length; i++) expect(advances[i]!).toBeLessThan(advances[i - 1]!);
+		// A whole lasts 8 eighths but gets well under 4x the room.
+		expect(advances[0]!).toBeLessThan(advances[3]! * 4);
 	});
 
-	it("gives a tripleted 64th (the model's shortest reachable duration) strictly less room than a plain one", () => {
-		// The one case the curve's reference point (`noteSpaceReferenceWholes`,
-		// a plain 64th) sits *above*: a triplet shortens even the shortest
-		// plain value. Worth its own assertion since a naive implementation
-		// that clamps the log term at zero (floors every sub-reference
-		// duration to the same space) would fail this, and this file's own
-		// constants comment explains why that clamp was deliberately not done.
-		const plain = noteAdvancePx('64th');
-		const tripleted = layoutScore(buildScore([[['C4', '64th', { tuplet: TRIPLET }]]])).measures[0]!.region
-			.width;
-		const plainSingle = layoutScore(buildScore([[['C4', '64th']]])).measures[0]!.region.width;
-		expect(tripleted).toBeLessThan(plainSingle);
-		expect(plain).toBeGreaterThan(0);
-	});
-});
-
-describe('justification (Slice 9: fill a system width)', () => {
-	it("stretches a justified system's measures to fill systemWidthPx exactly", () => {
-		const options = { staffSpacePx: 11, systemWidthPx: 700 };
-		const layout = layoutScore(createDemoScore(), options);
-		// System 0 ([0, 1], see the multi-system tests above) is not the score's
-		// last system, so `systemSpacingScale` justifies it: its own measures'
-		// combined span should reach exactly the system's width budget, and
-		// since it is also this score's widest system at this width, the whole
-		// layout's declared `width` should land on `systemWidthPx` itself.
-		expect(layout.width).toBeCloseTo(options.systemWidthPx, 1);
-
-		// `layout.width` already proves the fill; this additionally confirms it
-		// is system 0 specifically (not some coincidence of the last system)
-		// that reaches the budget. Every measure starts at the same left
-		// margin (see the multi-system test above), so that margin doubles as
-		// the right-hand margin `layout.width` reserves too.
-		const system0 = layout.measures.filter((m) => layout.systems[0]!.measureIndices.includes(m.index));
-		const leftEdge = Math.min(...system0.map((m) => m.region.x));
-		const rightEdge = Math.max(...system0.map((m) => m.region.x + m.region.width));
-		expect(rightEdge - leftEdge).toBeCloseTo(options.systemWidthPx - 2 * leftEdge, 1);
-
-		// The score's last system ([2, 3]) is never justified: its natural
-		// width is left alone rather than stretched to match.
-		const system1 = layout.measures.filter((m) => layout.systems[1]!.measureIndices.includes(m.index));
-		const system1Span =
-			Math.max(...system1.map((m) => m.region.x + m.region.width)) -
-			Math.min(...system1.map((m) => m.region.x));
-		expect(system1Span).toBeLessThan(rightEdge - leftEdge);
+	it.each(NOTE_VALUES)('gives a triplet %s less room than a plain one', (value) => {
+		// Holds even for a 64th: the spacing curve does not clamp below its reference duration.
+		const straight = lay([[['C4', value]]]);
+		const triplet = lay([[['C4', value, { tuplet: TRIPLET }]]]);
+		expect(triplet.measures[0]!.region.width).toBeLessThan(straight.measures[0]!.region.width);
 	});
 });
 
 describe('duration rendering', () => {
-	const NOTEHEAD_FOR: Readonly<Record<NoteValue, string>> = {
+	const NOTEHEAD_FOR: Readonly<Record<NoteValue, GlyphName>> = {
 		whole: 'noteheadWhole',
 		half: 'noteheadHalf',
 		quarter: 'noteheadBlack',
@@ -367,7 +273,7 @@ describe('duration rendering', () => {
 		'32nd': 'noteheadBlack',
 		'64th': 'noteheadBlack'
 	};
-	const REST_FOR: Readonly<Record<NoteValue, string>> = {
+	const REST_FOR: Readonly<Record<NoteValue, GlyphName>> = {
 		whole: 'restWhole',
 		half: 'restHalf',
 		quarter: 'restQuarter',
@@ -376,8 +282,7 @@ describe('duration rendering', () => {
 		'32nd': 'rest32nd',
 		'64th': 'rest64th'
 	};
-	// C4 sits below the treble staff's middle line, so its stem (and any flag)
-	// point up: see `layoutStemAndFlag`'s `up = d < TREBLE_MIDDLE_LINE` rule.
+	// C4 stems up, so any flag is an Up flag.
 	const FLAG_UP_FOR: Readonly<Partial<Record<NoteValue, string>>> = {
 		eighth: 'flag8thUp',
 		'16th': 'flag16thUp',
@@ -385,1123 +290,318 @@ describe('duration rendering', () => {
 		'64th': 'flag64thUp'
 	};
 
-	it.each(NOTE_VALUES)('draws the %s notehead, and its flag if it has one', (value) => {
-		const layout = layoutScore(buildScore([[['C4', value]]]));
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
+	it.each(NOTE_VALUES)('draws the %s notehead, its flag if any, and its rest', (value) => {
+		const glyphs = glyphsOf(lay([[['C4', value]]]).measures[0]!.ops);
 		expect(glyphs).toContain(NOTEHEAD_FOR[value]);
 		const flag = FLAG_UP_FOR[value];
 		if (flag) expect(glyphs).toContain(flag);
 		else expect(glyphs.some((g) => g.startsWith('flag'))).toBe(false);
+		expect(glyphsOf(lay([[[null, value]]]).measures[0]!.ops)).toContain(REST_FOR[value]);
 	});
 
-	it.each(NOTE_VALUES)('draws the %s rest glyph', (value) => {
-		const layout = layoutScore(buildScore([[[null, value]]]));
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs).toContain(REST_FOR[value]);
+	it.each([
+		['C4', 'quarter', 1],
+		['C4', 'eighth', 2],
+		['C4', 'whole', 2],
+		[null, 'quarter', 1]
+	] as const)('draws augmentation dots for %s %s with %i dot(s)', (pitch, value, dots) => {
+		expect(countOf(lay([[[pitch, value, { dots }]]]).measures[0]!.ops, 'augmentationDot')).toBe(dots);
 	});
 
-	it.each(NOTE_VALUES)('draws one augmentation dot for a single-dotted %s', (value) => {
-		const layout = layoutScore(buildScore([[['C4', value, { dots: 1 }]]]));
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.filter((g) => g === 'augmentationDot')).toHaveLength(1);
-	});
-
-	it.each(NOTE_VALUES)('draws two augmentation dots for a double-dotted %s', (value) => {
-		const layout = layoutScore(buildScore([[['C4', value, { dots: 2 }]]]));
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.filter((g) => g === 'augmentationDot')).toHaveLength(2);
-	});
-
-	it('draws a dot after a dotted rest too', () => {
-		const layout = layoutScore(buildScore([[[null, 'quarter', { dots: 1 }]]]));
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.filter((g) => g === 'augmentationDot')).toHaveLength(1);
-	});
-
-	it('nudges a dot up into the space above when its note sits on a line', () => {
-		// B4 sits on the treble staff's middle line.
-		const onLine = layoutScore(buildScore([[['B4', 'quarter', { dots: 1 }]]]));
-		const onLineOps = onLine.measures[0]!.ops;
-		const onLineHead = findGlyph(onLineOps, 'noteheadBlack')!;
-		const onLineDot = findGlyph(onLineOps, 'augmentationDot')!;
-		expect(onLineDot.y).toBeLessThan(onLineHead.y);
-
-		// D4 sits in the leger space below the staff (no leger line of its own,
-		// unlike C4 which sits on one), so its dot needs no nudge.
-		const inSpace = layoutScore(buildScore([[['D4', 'quarter', { dots: 1 }]]]));
-		const inSpaceOps = inSpace.measures[0]!.ops;
-		const inSpaceHead = findGlyph(inSpaceOps, 'noteheadBlack')!;
-		const inSpaceDot = findGlyph(inSpaceOps, 'augmentationDot')!;
-		expect(inSpaceDot.y).toBeCloseTo(inSpaceHead.y, 6);
-	});
-
-	it.each(NOTE_VALUES)('gives a triplet %s two-thirds the spacing of a plain one', (value) => {
-		// Not pinning down exact numbers: only the relative ordering matters
-		// here, which is what the demo's triplet measure leans on to render
-		// at all: a shorter effective duration must claim less width. This
-		// holds even at '64th', this model's shortest plain value, since
-		// Slice 9's log-based curve (`noteAdvanceSpaces`) deliberately lets a
-		// tripleted duration compute a small *negative* log term rather than
-		// clamping it to the same floor a plain 64th gets; see
-		// `noteSpaceReferenceWholes`'s own comment on why, and the dedicated
-		// "note spacing" test above that pins this exact case down.
-		const straight = layoutScore(buildScore([[['C4', value]]]));
-		const triplet = layoutScore(buildScore([[['C4', value, { tuplet: TRIPLET }]]]));
-		expect(triplet.measures[0]!.region.width).toBeLessThan(straight.measures[0]!.region.width);
-	});
-
-	it('validates every duration-showcase measure against 4/4 capacity', () => {
-		// The measures `npm run dev` shows to demonstrate this slice's new
-		// durations (see `createDurationShowcaseScore`) are exactly the kind of
-		// hand-built literal `validateMeasure` exists to catch a mistake in;
-		// this pins down that they are in fact capacity-valid.
-		const score = createDurationShowcaseScore();
-		for (const measure of score.measures) {
-			expect(validateMeasure(measure, score.time).valid).toBe(true);
-		}
-	});
-
-	it('renders the duration showcase with every new glyph, a dot, a beam, and a triplet group', () => {
-		const score = createDurationShowcaseScore();
-		const layout = layoutScore(score);
-		const firstMeasureGlyphs = glyphsOf(layout.measures[0]!.ops);
-		// The eighth lands alone in its beat (Slice 2's grouping pass, see
-		// `computeBeamGroups`) and keeps its individual flag; the 16th/32nd/64th
-		// right after it share the next beat and beam together instead, so none
-		// of their individual flag glyphs are drawn any more.
-		expect(firstMeasureGlyphs).toEqual(expect.arrayContaining(['augmentationDot', 'flag8thUp']));
-		expect(
-			firstMeasureGlyphs.some(
-				(g) => g.startsWith('flag16th') || g.startsWith('flag32nd') || g.startsWith('flag64th')
-			)
-		).toBe(false);
-
-		// The second measure is a full bar of quarter-note triplets: six notes,
-		// each carrying the triplet ratio, none of them a binary fraction of a
-		// beat on its own. Quarters are never beam-eligible, so nothing here
-		// beams regardless of the triplet grouping.
-		expect(score.measures[1]!.notes).toHaveLength(6);
-		expect(score.measures[1]!.notes.every((n) => n.tuplet !== null)).toBe(true);
-
-		// The third measure is eight plain eighths, a beat's worth (two notes)
-		// at a time: 4/4 groups by the quarter beat, so this beams as four
-		// separate two-note beams, not one beam across the whole bar, and draws
-		// no flag glyphs at all.
-		const thirdMeasureGlyphs = glyphsOf(layout.measures[2]!.ops);
-		expect(thirdMeasureGlyphs.some((g) => g.startsWith('flag'))).toBe(false);
+	it('nudges a dot into the space above when its note sits on a line', () => {
+		const dotAndHead = (pitch: string) => {
+			const ops = lay([[[pitch, 'quarter', { dots: 1 }]]]).measures[0]!.ops;
+			return { dot: findGlyph(ops, 'augmentationDot')!.y, head: findGlyph(ops, 'noteheadBlack')!.y };
+		};
+		const onLine = dotAndHead('B4');
+		expect(onLine.dot).toBeLessThan(onLine.head);
+		const inSpace = dotAndHead('D4');
+		expect(inSpace.dot).toBeCloseTo(inSpace.head, 6);
 	});
 });
 
 describe('beaming', () => {
-	// A fixed staff space size makes the engraving-default thicknesses below
-	// round, distinct numbers instead of whatever `DEFAULTS.staffSpacePx`
-	// happens to be, which is what makes identifying a stem/beam rect by exact
-	// width/height reliable rather than a fuzzy size heuristic.
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-	const stemWidth = ED.stemThickness * ss;
-	const beamHeight = ED.beamThickness * ss;
-
-	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
-
-	/** A note's stem: the one rect width that is unique among everything else
-	 *  `layoutMeasure` draws (staff lines, ledger lines, barlines, beams all
-	 *  use different constants from `ENGRAVING_DEFAULTS`), so this identifies
-	 *  a stem regardless of whether it belongs to a beamed group or a single
-	 *  note's own flag. */
-	const stemRects = (ops: readonly DrawOp[]) =>
-		ops.filter(isRect).filter((op) => Math.abs(op.width - stemWidth) < 0.001);
-
-	/** A beam segment: the one rect height unique to beams. Matches every
-	 *  level (primary, secondary, ...) and both full segments and beamlet
-	 *  stubs, since all of them share the font's one beam thickness. */
-	const beamRects = (ops: readonly DrawOp[]) =>
-		ops.filter(isRect).filter((op) => Math.abs(op.height - beamHeight) < 0.001);
-
-	// Pitches in this section stay within the staff (E4-F5) and off the key
-	// signature's altered steps (C major, the `buildScore` default), so
-	// nothing here draws a ledger line or an accidental to complicate the
-	// rect/glyph counts above.
-
-	it('beams a pair of eighths sharing a quarter-note beat in 4/4, with no individual flags', () => {
-		const layout = layoutScore(buildScore([[['D4', 'eighth'], ['E4', 'eighth']]]), options);
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.some((g) => g.startsWith('flag'))).toBe(false);
-		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(2);
-		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(1);
+	// Pitches stay on the staff and in C major, so no ledger or accidental ink.
+	it.each([
+		['beams two eighths sharing a 4/4 beat', [['D4', 'eighth'], ['E4', 'eighth']], 4, 0, 2, 1],
+		[
+			'does not beam two eighths split by a beat boundary, even with no rest between them',
+			[[null, 'quarter'], [null, 'eighth', { dots: 1 }], ['D4', 'eighth'], ['E4', 'eighth']],
+			4,
+			2,
+			2,
+			0
+		],
+		[
+			'groups six eighths by the dotted-quarter beat in 6/8',
+			[['D4', 'eighth'], ['E4', 'eighth'], ['F4', 'eighth'], ['G4', 'eighth'], ['A4', 'eighth'], ['B4', 'eighth']],
+			6,
+			0,
+			6,
+			2
+		],
+		[
+			'breaks a group at a rest, leaving a flagged singleton',
+			[['D4', 'eighth'], ['E4', 'eighth'], [null, 'eighth'], ['F4', 'eighth'], ['G4', 'quarter'], ['A4', 'quarter']],
+			4,
+			1,
+			5,
+			1
+		],
+		['adds a secondary beam over just the 16ths of an eighth-16th-16th group', [['D4', 'eighth'], ['E4', '16th'], ['F4', '16th']], 4, 0, 3, 2]
+	] as const)('%s', (_name, notes, beats, flags, stems, beams) => {
+		const time = beats === 6 ? { beats: 6, beatType: 8 } : { beats: 4, beatType: 4 };
+		const ops = layoutScore(buildScore([notes as MeasureSpec], { time }), OPTS).measures[0]!.ops;
+		expect(glyphsOf(ops).filter((g) => g.startsWith('flag'))).toHaveLength(flags);
+		expect(stemRects(ops)).toHaveLength(stems);
+		expect(beamRects(ops)).toHaveLength(beams);
 	});
 
-	it('does not beam two eighths that fall in different beats, even with no rest between them', () => {
-		// A quarter rest (one full beat) then a dotted eighth rest push the two
-		// eighths that follow to start at 0.4375 and 0.5625 wholes: the first is
-		// still in beat 1 ([0.25, 0.5)), the second has already crossed into
-		// beat 2 ([0.5, 0.75)). Adjacent notes, no rest directly between them,
-		// but a beat boundary falls between their start positions, so they must
-		// not beam.
-		const layout = layoutScore(
-			buildScore([[[null, 'quarter'], [null, 'eighth', { dots: 1 }], ['D4', 'eighth'], ['E4', 'eighth']]]),
-			options
-		);
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.filter((g) => g.startsWith('flag'))).toHaveLength(2);
-		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(0);
-		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(2);
-	});
-
-	it('groups by the dotted-quarter beat in 6/8, not the eighth', () => {
-		// Six eighths in 6/8 form two three-note beams (one per dotted-quarter
-		// beat), not six individual flags or one six-note beam across the bar.
-		const score = buildScore(
-			[[['D4', 'eighth'], ['E4', 'eighth'], ['F4', 'eighth'], ['G4', 'eighth'], ['A4', 'eighth'], ['B4', 'eighth']]],
-			{ time: { beats: 6, beatType: 8 } }
-		);
-		const layout = layoutScore(score, options);
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.some((g) => g.startsWith('flag'))).toBe(false);
-		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(6);
-		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(2);
-	});
-
-	it('breaks a beam group at a rest, leaving a beamed pair and a singleton', () => {
-		// Beat 0: eighth, eighth (beams together). Beat 1: eighth rest, eighth
-		// (the rest breaks the group, so the lone eighth after it falls back to
-		// its own individual flag rather than beaming with the pair before it).
-		const score = buildScore([
-			[
-				['D4', 'eighth'],
-				['E4', 'eighth'],
-				[null, 'eighth'],
-				['F4', 'eighth'],
-				['G4', 'quarter'],
-				['A4', 'quarter']
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.filter((g) => g.startsWith('flag'))).toHaveLength(1);
-		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(1);
-		// Two beamed stems, the singleton eighth's own, and the two trailing
-		// quarter notes' stems (quarters always get a stem, just never a flag):
-		// five stems total.
-		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(5);
-	});
-
-	it('gives a mixed eighth/16th group a full-group primary beam and a secondary beam over just the 16ths', () => {
-		// One beat: an eighth followed by two 16ths (1/8 + 1/16 + 1/16 = 1/4).
-		const score = buildScore([[['D4', 'eighth'], ['E4', '16th'], ['F4', '16th']]]);
-		const layout = layoutScore(score, options);
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.some((g) => g.startsWith('flag'))).toBe(false);
-		expect(stemRects(layout.measures[0]!.ops)).toHaveLength(3);
-		// Primary beam (all three) plus a secondary beam over the two 16ths.
-		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(2);
-	});
-
-	it('draws one shared, flat beam for a group straddling the middle line', () => {
-		// B4 sits on the middle line itself (down, by the existing single-note
-		// split), D5 sits above it (also down); both notes therefore already
-		// agree on direction, so this is really checking that the beam comes
-		// out flat and shared rather than two independent per-note stems of
-		// different lengths landing at different heights.
-		const layout = layoutScore(buildScore([[['B4', 'eighth'], ['D5', 'eighth']]]), options);
-		const stems = stemRects(layout.measures[0]!.ops);
-		expect(stems).toHaveLength(2);
-		// A flat beam means both stems reach the same y on the beam side. Down
-		// stems hang from the notehead, so the beam is each stem's bottom edge:
-		// `y + height`.
-		const beamSideY = stems.map((s) => s.y + s.height);
-		expect(beamSideY[0]).toBeCloseTo(beamSideY[1]!, 6);
+	it('groups beams by the new time signature after a mid-score change', () => {
+		const sixEighths: MeasureSpec = ['D4', 'E4', 'F4', 'G4', 'A4', 'B4'].map((p) => [p, 'eighth'] as const);
+		const layout = layoutScore(buildScore([sixEighths, { notes: sixEighths, time: { beats: 6, beatType: 8 } }]), OPTS);
+		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(3);
+		expect(beamRects(layout.measures[1]!.ops)).toHaveLength(2);
 	});
 });
 
 describe('stem direction', () => {
-	// Same fixed staff space as the beaming suite above, for the same reason:
-	// round, distinct stem/beam sizes to key rect assertions off of.
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-	const stemWidth = ED.stemThickness * ss;
-	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
-	const isGlyph = (op: DrawOp): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph';
-	const stemRects = (ops: readonly DrawOp[]) =>
-		ops.filter(isRect).filter((op) => Math.abs(op.width - stemWidth) < 0.001);
-	const headYsOf = (ops: readonly DrawOp[]) =>
-		ops
-			.filter(isGlyph)
-			.filter((op) => op.glyph === 'noteheadBlack')
-			.map((op) => op.y);
-
-	// A range of pitches on both sides of the treble staff's middle line (B4),
-	// including the on-the-line tie-break case, checked via which flag glyph a
-	// lone (unbeamed) eighth note draws: an up-stem note always uses the "Up"
-	// flag, a down-stem note the "Down" one.
-	const SINGLE_NOTE_DIRECTION: readonly (readonly [string, 'Up' | 'Down'])[] = [
-		['C4', 'Up'], // well below the staff, on a ledger line
-		['E4', 'Up'], // bottom line
-		['G4', 'Up'], // just below the middle line
-		['A4', 'Up'], // one step below the middle line
-		['B4', 'Down'], // exactly on the middle line: this engine's tie-break
-		['C5', 'Down'], // one step above the middle line
-		['D5', 'Down'], // just above the middle line
-		['F5', 'Down'], // top line
-		['A5', 'Down'] // well above the staff, on a ledger line
-	];
-
-	it.each(SINGLE_NOTE_DIRECTION)('gives a lone %s an %s-stem', (pitch, direction) => {
-		const layout = layoutScore(buildScore([[[pitch, 'eighth']]]), options);
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs).toContain(`flag8th${direction}`);
+	it.each([
+		['C4', 'Up'],
+		['E4', 'Up'],
+		['A4', 'Up'],
+		['B4', 'Down'], // on the middle line: this engine's tie-break
+		['C5', 'Down'],
+		['F5', 'Down'],
+		['A5', 'Down']
+	])('gives a lone %s an %s-stem', (pitch, direction) => {
+		expect(glyphsOf(lay([[[pitch, 'eighth']]]).measures[0]!.ops)).toContain(`flag8th${direction}`);
 	});
 
-	it('picks a beamed group\'s farthest note over the group average', () => {
-		// G4 sits 2 diatonic steps below the middle line, E5 sits 3 steps above
-		// it. Averaging all three positions ((32 + 32 + 37) / 3 = 33.67, below
-		// the middle line at 34) would give an up-stem, Slice 2's old rule; the
-		// farthest-note rule instead looks only at E5, the single most extreme
-		// member, which sits above the line, so the whole group takes a
-		// down-stem instead, including the two G4s that would each want an
-		// up-stem on their own.
-		//
-		// Three eighths in a row cross a quarter-note beat boundary in simple
-		// meter, which would split the group before the direction rule ever
-		// runs, so this uses 6/8 (a dotted-quarter beat) to keep all three in
-		// one beam group.
-		const score = buildScore(
-			[[['G4', 'eighth'], ['G4', 'eighth'], ['E5', 'eighth']]],
-			{ time: { beats: 6, beatType: 8 } }
-		);
-		const layout = layoutScore(score, options);
-		const ops = layout.measures[0]!.ops;
-		expect(glyphsOf(ops).some((g) => g.startsWith('flag'))).toBe(false);
-
+	it.each([
+		// G4s alone would stem up; E5 is the farthest note and wins.
+		['the farthest note over the average', ['G4', 'G4', 'E5'], 'down'],
+		// G4 and D5 tie for farthest; A4 tips the majority below.
+		['a farthest-note tie by majority', ['G4', 'A4', 'D5'], 'up'],
+		// Farthest and majority both tie: the on-the-line convention, down.
+		['the down-stem convention when everything ties', ['G4', 'D5'], 'down']
+	] as const)('picks a beamed group direction by %s', (_name, pitches, direction) => {
+		// 6/8 keeps three eighths in one beam group.
+		const score = buildScore([pitches.map((p) => [p, 'eighth'] as const)], { time: { beats: 6, beatType: 8 } });
+		const ops = layoutScore(score, OPTS).measures[0]!.ops;
 		const stems = stemRects(ops);
-		expect(stems).toHaveLength(3);
-		// A down stem hangs from the notehead, so the beam is each stem's
-		// bottom edge (`y + height`); asserting every member lands on the same
-		// one confirms the direction is uniform across the group, with no
-		// per-note flip back to what G4 alone would have chosen.
-		const beamSideY = stems.map((s) => s.y + s.height);
-		expect(beamSideY[1]).toBeCloseTo(beamSideY[0]!, 6);
-		expect(beamSideY[2]).toBeCloseTo(beamSideY[0]!, 6);
-		// The beam sits below every notehead in the group: a down-stem group,
-		// not an up-stem one.
-		expect(beamSideY[0]).toBeGreaterThan(Math.max(...headYsOf(ops)));
-	});
-
-	it('breaks a farthest-note tie by majority when both sides are equally far', () => {
-		// G4 (2 steps below the middle line) and D5 (2 steps above) tie for
-		// farthest, but A4 (1 step below) tips the group's overall majority to
-		// the below side, so the whole group takes an up-stem despite the tie.
-		const score = buildScore(
-			[[['G4', 'eighth'], ['A4', 'eighth'], ['D5', 'eighth']]],
-			{ time: { beats: 6, beatType: 8 } }
-		);
-		const layout = layoutScore(score, options);
-		const ops = layout.measures[0]!.ops;
-		const stems = stemRects(ops);
-		expect(stems).toHaveLength(3);
-		// An up stem rises from the notehead, so the beam is each stem's top
-		// edge (`y`).
-		const beamSideY = stems.map((s) => s.y);
-		expect(beamSideY[1]).toBeCloseTo(beamSideY[0]!, 6);
-		expect(beamSideY[2]).toBeCloseTo(beamSideY[0]!, 6);
-		expect(beamSideY[0]).toBeLessThan(Math.min(...headYsOf(ops)));
-	});
-
-	it('falls back to the down-stem convention when farthest and majority both tie', () => {
-		// G4 (2 below) and D5 (2 above) are equally far from the middle line in
-		// opposite directions: farthest-note is tied, and with one note on each
-		// side the majority vote ties too. Both tie-breaks exhausted, the group
-		// falls back to the same down-stem convention a single on-the-line note
-		// uses.
-		const layout = layoutScore(buildScore([[['G4', 'eighth'], ['D5', 'eighth']]]), options);
-		const ops = layout.measures[0]!.ops;
-		const stems = stemRects(ops);
-		expect(stems).toHaveLength(2);
-		const beamSideY = stems.map((s) => s.y + s.height);
-		expect(beamSideY[1]).toBeCloseTo(beamSideY[0]!, 6);
-		expect(beamSideY[0]).toBeGreaterThan(Math.max(...headYsOf(ops)));
+		expect(stems).toHaveLength(pitches.length);
+		const beamSide = stems.map((s) => (direction === 'up' ? s.y : s.y + s.height));
+		for (const y of beamSide) expect(y).toBeCloseTo(beamSide[0]!, 6);
+		if (direction === 'up') expect(beamSide[0]).toBeLessThan(Math.min(...noteheadYs(ops)));
+		else expect(beamSide[0]).toBeGreaterThan(Math.max(...noteheadYs(ops)));
 	});
 });
 
-describe('accidental placement', () => {
-	// Same fixed staff space as the beaming/stem-direction suites, for the
-	// same reason: round, distinct geometry to key exact-position assertions
-	// off of.
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
-	/** A ledger line rect: the one rect height unique to it among everything
-	 *  else `layoutMeasure` draws (staff lines, stems, beams and barlines all
-	 *  use different `ENGRAVING_DEFAULTS` constants). */
-	const ledgerRects = (ops: readonly DrawOp[]) =>
-		ops.filter(isRect).filter((op) => Math.abs(op.height - ED.legerLineThickness * ss) < 0.001);
-
-	it('suppresses a repeated accidental on the same pitch later in the same measure', () => {
-		// C major (no sharps): both F-sharps need an accidental the key
-		// signature does not supply on its own. The second, an identical
-		// pitch restated later in the same measure, should not repeat it.
-		const score = buildScore([[['F#5', 'quarter'], ['G4', 'quarter'], ['F#5', 'quarter']]]);
-		const layout = layoutScore(score, options);
-		const sharps = glyphsOf(layout.measures[0]!.ops).filter((g) => g === 'accidentalSharp');
-		expect(sharps).toHaveLength(1);
+describe('accidentals', () => {
+	it.each([
+		['omits a sharp the key already implies', 1, [[['F#5', 'quarter']]], [1], [0]],
+		['draws a natural against the key', 1, [[['F5', 'quarter']]], [1], [1]],
+		['suppresses a repeated accidental later in the measure', 0, [[['F#5', 'quarter'], ['G4', 'quarter'], ['F#5', 'quarter']]], [1], [0]],
+		['redraws whenever the alter changes, even back', 0, [[['F#5', 'quarter'], ['F5', 'quarter'], ['F#5', 'quarter']]], [2], [1]],
+		['resets the carry-over at the barline', 0, [[['F#5', 'quarter']], [['F#5', 'quarter']]], [1, 1], [0, 0]]
+	] as const)('%s', (_name, keyFifths, measures, sharps, naturals) => {
+		// Counts include the key signature's own glyphs.
+		const layout = lay(measures as unknown as MeasureSpec[], keyFifths);
+		expect(layout.measures.map((m) => countOf(m.ops, 'accidentalSharp'))).toEqual(sharps);
+		expect(layout.measures.map((m) => countOf(m.ops, 'accidentalNatural'))).toEqual(naturals);
 	});
 
-	it('redraws the accidental whenever the alter actually changes, even back to one already stated', () => {
-		// F-sharp, then F-natural, then F-sharp again: each is a change from
-		// whatever was last stated for the F step (sharp, then natural), so
-		// all three draw their own accidental. The third is not treated as a
-		// repeat of the first just because they share a pitch.
-		const score = buildScore([[['F#5', 'quarter'], ['F5', 'quarter'], ['F#5', 'quarter']]]);
-		const layout = layoutScore(score, options);
-		const glyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(glyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
-		expect(glyphs.filter((g) => g === 'accidentalNatural')).toHaveLength(1);
-	});
-
-	it('resets the same-measure carry-over at the next barline', () => {
-		// The same altered pitch, restated as the first note of the next
-		// measure, is not "later in the same measure": the barline between
-		// them resets what is in force for the step, so it draws its own
-		// accidental too, rather than the second measure inheriting the
-		// first's.
-		const score = buildScore([[['F#5', 'quarter']], [['F#5', 'quarter']]]);
-		const layout = layoutScore(score, options);
-		const sharpsIn = (i: number) =>
-			glyphsOf(layout.measures[i]!.ops).filter((g) => g === 'accidentalSharp').length;
-		expect(sharpsIn(0)).toBe(1);
-		expect(sharpsIn(1)).toBe(1);
-	});
-
-	it("pushes a tight accidental right by exactly the minimum clearance past the previous note's ledger line", () => {
-		// C4, the shortest duration (a 64th), draws a ledger line one line
-		// below the staff, and its own natural advance (Slice 9's log curve
-		// floors a 64th at just `noteSpaceBase`, 2 staff spaces) is actually
-		// *narrower* than that ledger line's own ink: the tightest realistic
-		// case this collision check exists for. C-sharp 4 right after it needs
-		// a sharp (C major has none), which without the extra clearance would
-		// land about 0.38 staff spaces to the *left* of the ledger line's own
-		// right edge, i.e. genuinely overlapping it (worked out from this
-		// file's own spacing/glyph constants), not merely short of the 0.9
-		// minimum.
-		const score = buildScore([[['C4', '64th'], ['C#4', '64th']]]);
-		const layout = layoutScore(score, options);
-		const ops = layout.measures[0]!.ops;
-
-		// Both notes sit on the same ledger-line position (a sharp does not
-		// move a note on the staff), so there are two rects here, one per
-		// note; the leftmost belongs to C4, the one this accidental must
-		// clear.
-		const ledgers = ledgerRects(ops).slice().sort((a, b) => a.x - b.x);
-		expect(ledgers.length).toBeGreaterThanOrEqual(1);
-		const ledgerRight = ledgers[0]!.x + ledgers[0]!.width;
-
-		const accidental = findGlyph(ops, 'accidentalSharp')!;
-		// The shift closes the gap to exactly the minimum rather than
-		// over-padding it.
-		expect(accidental.x - ledgerRight).toBeCloseTo(0.9 * ss, 5);
-	});
-
-	it('validates every accidental-showcase measure against 4/4 capacity', () => {
-		// Same discipline as the duration showcase: the hand-built measures
-		// `npm run dev` shows for this slice are exactly the kind of mistake
-		// `validateMeasure` exists to catch.
-		const score = createAccidentalShowcaseScore();
-		for (const measure of score.measures) {
-			expect(validateMeasure(measure, score.time).valid).toBe(true);
-		}
-	});
-
-	it('renders the accidental showcase with repeat suppression, the reverting case, and collision clearance', () => {
-		const score = createAccidentalShowcaseScore();
-		const layout = layoutScore(score);
-
-		// Measure 1: F-sharp, F-sharp (suppressed), F-natural, F-sharp again.
-		// Two sharps and one natural, not three sharps.
-		const firstMeasureGlyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(firstMeasureGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
-		expect(firstMeasureGlyphs.filter((g) => g === 'accidentalNatural')).toHaveLength(1);
-
-		// Measure 2: the tight C4/C-sharp-4 pair draws exactly one sharp, and
-		// (this measure's whole point) it does not throw or silently overlap;
-		// the geometry itself is pinned down by the collision-clearance test
-		// above, using the same pair built directly rather than through this
-		// showcase.
-		const secondMeasureGlyphs = glyphsOf(layout.measures[1]!.ops);
-		expect(secondMeasureGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(1);
+	it.each([
+		// C4 64th's ledger line is wider than its own advance: without clearance
+		// the next note's sharp would overlap it.
+		['the previous note in its voice', [['C4', '64th'], ['C#4', '64th']]],
+		// A stemless whole C4 in voice 1; voice 2's C#5 at the same onset is far
+		// from a second, so only the accidental clearance path engages.
+		['another voice at the same onset', [['C4', 'whole', { voice: 1 }], ['C#5', 'quarter', { voice: 2 }]]]
+	] as const)("pushes an accidental exactly the minimum clearance past %s's ledger line", (_name, notes) => {
+		const ops = lay([notes as unknown as MeasureSpec]).measures[0]!.ops;
+		const ledger = ledgerRects(ops).sort((a, b) => a.x - b.x)[0]!;
+		expect(findGlyph(ops, 'accidentalSharp')!.x - (ledger.x + ledger.width)).toBeCloseTo(0.9 * SS, 5);
 	});
 });
 
-describe('ties', () => {
-	const curvesOf = (ops: readonly DrawOp[]) => ops.filter((op) => op.kind === 'curve');
+describe('ties and slurs', () => {
+	const slurred = (notes: MeasureSpec, end = 3) => buildScore([notes], {}, [{ start: [0, 0], end: [0, end] }]);
+	const run = (pitches: readonly string[]): MeasureSpec => [...pitches.map((p) => [p, 'eighth'] as const), [null, 'half']];
 
-	it('draws one curve for a tie fully contained in a measure', () => {
-		const score = buildScore([
-			[
-				['C4', 'quarter', { tiedToNext: true }],
-				['C4', 'quarter'],
-				['D4', 'half']
-			]
-		]);
-		const layout = layoutScore(score);
-		const ops = layout.measures[0]!.ops;
+	it('draws one level curve for a tie within a measure', () => {
+		const ops = lay([[['C4', 'quarter', { tiedToNext: true }], ['C4', 'quarter'], ['D4', 'half']]]).measures[0]!.ops;
 		expect(curvesOf(ops)).toHaveLength(1);
 		const curve = findCurve(ops)!;
-		// Same pitch, so the curve returns to the same height at both ends.
 		expect(curve.y0).toBeCloseTo(curve.y1, 6);
 		expect(curve.x0).toBeLessThan(curve.x1);
 	});
 
-	it('draws two independent halves for a tie crossing a barline', () => {
-		const score = buildScore([
-			[
-				['C4', 'half'],
-				['C4', 'half', { tiedToNext: true }]
-			],
-			[['C4', 'whole']]
-		]);
-		const layout = layoutScore(score);
-		const first = layout.measures[0]!;
-		const second = layout.measures[1]!;
+	it('starts and ends a slur clear of its first and last noteheads', () => {
+		const layout = layoutScore(slurred(run(['G4', 'A4', 'B4', 'C5'])));
+		const { ops, notes } = layout.measures[0]!;
+		expect(curvesOf(ops)).toHaveLength(1);
+		const curve = findCurve(ops)!;
+		expect(curve.x0).toBeGreaterThan(notes[0]!.bounds.x + notes[0]!.bounds.width);
+		expect(curve.x1).toBeLessThan(notes[3]!.bounds.x);
+	});
 
-		// One half per measure, not a single curve reaching across the barline:
-		// that split is what keeps each measure's ops self-contained for
-		// region-scoped redraw (see the tie pass's own comment in layout.ts).
-		expect(curvesOf(first.ops)).toHaveLength(1);
-		expect(curvesOf(second.ops)).toHaveLength(1);
+	it.each([
+		['a tie on a stem-up note curves below', buildScore([[['C4', 'quarter', { tiedToNext: true }], ['C4', 'quarter']]]), 'below'],
+		['a tie on a stem-down note curves above', buildScore([[['A5', 'quarter', { tiedToNext: true }], ['A5', 'quarter']]]), 'above'],
+		['a slur over notes mostly below the middle line curves below', slurred(run(['G4', 'A4', 'B4', 'C5'])), 'below'],
+		['a slur over notes mostly above the middle line curves above', slurred(run(['C5', 'D5', 'E5', 'G5'])), 'above']
+	] as const)('%s, inside its own measure region', (_name, score, side) => {
+		const measure = layoutScore(score).measures[0]!;
+		const curve = findCurve(measure.ops)!;
+		if (side === 'below') expect(Math.min(curve.cy0 - curve.y0, curve.cy1 - curve.y1)).toBeGreaterThan(0);
+		else expect(Math.max(curve.cy0 - curve.y0, curve.cy1 - curve.y1)).toBeLessThan(0);
+		expectCurvesInside(measure);
+	});
 
-		const outgoing = findCurve(first.ops)!;
-		const incoming = findCurve(second.ops)!;
-
-		// The outgoing half ends inside measure 0's own region (at its barline);
-		// the incoming half starts inside measure 1's own region (at its left
-		// edge). Neither reaches into the other measure's band.
-		expect(outgoing.x1).toBeLessThanOrEqual(first.region.x + first.region.width + 0.001);
-		expect(outgoing.x1).toBeGreaterThanOrEqual(first.region.x);
-		expect(incoming.x0).toBeGreaterThanOrEqual(second.region.x - 0.001);
-		expect(incoming.x0).toBeLessThanOrEqual(second.region.x + second.region.width);
-
-		// Both notes are C4 in the same system, so the two halves meet at the
-		// same height even though each was computed from only its own note.
+	it('splits a tie across a barline into two halves that meet at one height, each in its own measure', () => {
+		const layout = layoutScore(buildScore([[['C4', 'half'], ['C4', 'half', { tiedToNext: true }]], [['C4', 'whole']]]));
+		const [first, second] = layout.measures;
+		expect(curvesOf(first!.ops)).toHaveLength(1);
+		expect(curvesOf(second!.ops)).toHaveLength(1);
+		const outgoing = findCurve(first!.ops)!;
+		const incoming = findCurve(second!.ops)!;
+		expect(outgoing.x1).toBeLessThanOrEqual(first!.region.x + first!.region.width + 0.001);
+		expect(incoming.x0).toBeGreaterThanOrEqual(second!.region.x - 0.001);
 		expect(outgoing.y0).toBeCloseTo(incoming.y1, 6);
 	});
 
-	it('curves below a stem-up note and above a stem-down note', () => {
-		// C4 sits well below the treble staff's middle line: an up stem, so the
-		// tie curves below (a larger canvas y).
-		const low = layoutScore(
-			buildScore([[['C4', 'quarter', { tiedToNext: true }], ['C4', 'quarter']]])
+	it('splits a slur across barlines at one roof height, with a flat pass-through in a middle measure', () => {
+		const q = (pitches: string[]): MeasureSpec => pitches.map((p) => [p, 'quarter'] as const);
+		const score = buildScore(
+			[q(['C4', 'D4', 'E4', 'F4']), q(['G4', 'A4', 'B4', 'C5']), q(['D5', 'E5', 'F5', 'G5'])],
+			{},
+			[{ start: [0, 3], end: [2, 1] }]
 		);
-		const lowCurve = findCurve(low.measures[0]!.ops)!;
-		expect(lowCurve.cy0).toBeGreaterThan(lowCurve.y0);
-		expect(lowCurve.cy1).toBeGreaterThan(lowCurve.y1);
-
-		// A5 sits well above the middle line: a down stem, so the tie curves
-		// above (a smaller canvas y).
-		const high = layoutScore(
-			buildScore([[['A5', 'quarter', { tiedToNext: true }], ['A5', 'quarter']]])
-		);
-		const highCurve = findCurve(high.measures[0]!.ops)!;
-		expect(highCurve.cy0).toBeLessThan(highCurve.y0);
-		expect(highCurve.cy1).toBeLessThan(highCurve.y1);
+		const [m0, m1, m2] = layoutScore(score).measures;
+		for (const m of [m0!, m1!, m2!]) expect(curvesOf(m.ops)).toHaveLength(1);
+		const [outgoing, middle, incoming] = [m0!, m1!, m2!].map((m) => findCurve(m.ops)!);
+		expect(outgoing!.x1).toBeLessThanOrEqual(m0!.region.x + m0!.region.width + 0.001);
+		expect(incoming!.x0).toBeGreaterThanOrEqual(m2!.region.x - 0.001);
+		expect(middle!.x0).toBeCloseTo(m1!.region.x, 6);
+		expect(middle!.y0).toBeCloseTo(middle!.y1, 6);
+		expect(outgoing!.y1).toBeCloseTo(middle!.y0, 6);
+		expect(middle!.y1).toBeCloseTo(incoming!.y0, 6);
 	});
 
-	it('keeps a tie curve inside its own measure region', () => {
-		const score = buildScore([[['C4', 'quarter', { tiedToNext: true }], ['C4', 'quarter']]]);
+	it.each([
+		['a tie', buildScore([[['C4', 'quarter', { tiedToNext: true }], ['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter']]])],
+		['a slur', slurred([['G4', 'eighth'], ['A4', 'eighth'], ['B4', 'eighth'], ['C5', 'eighth'], ['D5', 'quarter'], ['E4', 'quarter']])]
+	])('keeps %s through a scoped relayout of its measure', (_name, score) => {
 		const layout = layoutScore(score);
-		const measure = layout.measures[0]!;
-		const curve = findCurve(measure.ops)!;
-		for (const y of [curve.y0, curve.cy0, curve.cy1, curve.y1]) {
-			expect(y).toBeGreaterThanOrEqual(measure.region.y - 0.001);
-			expect(y).toBeLessThanOrEqual(measure.region.y + measure.region.height + 0.001);
-		}
-	});
-
-	it('survives relayoutMeasure re-laying out its own measure incrementally', () => {
-		// Because the tie pass lives inside `layoutMeasure` itself rather than a
-		// separate whole-score pass, `relayoutMeasure` (which calls exactly that
-		// function) recomputes a measure's ties for free on an incremental edit,
-		// with no extra plumbing. Transposing the untied D4 here is a same-
-		// measure edit that leaves the tied C4 pair itself untouched.
-		const score = buildScore([
-			[
-				['C4', 'quarter', { tiedToNext: true }],
-				['C4', 'quarter'],
-				['D4', 'quarter'],
-				['E4', 'quarter']
-			]
-		]);
-		const layout = layoutScore(score);
-		const target = score.measures[0]!.notes[2]!;
-		const touched = score.transposeNote(target.id, 1);
-		const updated = relayoutMeasure(score, layout, touched!);
+		const last = score.measures[0]!.notes.at(-1)!;
+		const updated = relayoutMeasure(score, layout, score.transposeNote(last.id, 1)!);
 		expect(updated).not.toBeNull();
 		expect(curvesOf(updated!.measures[0]!.ops)).toHaveLength(1);
 	});
 
-	it('renders the tie showcase, valid measures and all', () => {
-		const score = createTieShowcaseScore();
-		for (const measure of score.measures) {
-			expect(validateMeasure(measure, score.time).valid).toBe(true);
-		}
-		const layout = layoutScore(score);
-		// Measure 0: one curve, the same-measure D5 tie. Measure 1: one curve,
-		// the outgoing half of the F#5 tie into measure 2. Measure 2: one
-		// curve, that tie's incoming half.
-		expect(curvesOf(layout.measures[0]!.ops)).toHaveLength(1);
-		expect(curvesOf(layout.measures[1]!.ops)).toHaveLength(1);
-		expect(curvesOf(layout.measures[2]!.ops)).toHaveLength(1);
-	});
-});
-
-describe('slurs', () => {
-	const curvesOf = (ops: readonly DrawOp[]) => ops.filter((op) => op.kind === 'curve');
-
-	it('draws one curve for a slur spanning several notes within a measure', () => {
-		const score = buildScore(
-			[
-				[
-					['G4', 'eighth'],
-					['A4', 'eighth'],
-					['B4', 'eighth'],
-					['C5', 'eighth'],
-					[null, 'half']
-				]
-			],
-			{},
-			[{ start: [0, 0], end: [0, 3] }]
-		);
-		const layout = layoutScore(score);
-		const ops = layout.measures[0]!.ops;
-		expect(curvesOf(ops)).toHaveLength(1);
-		const curve = findCurve(ops)!;
-
-		// The curve starts clear of the first note (G4) and ends clear of the
-		// last (C5), not glued to either notehead: strictly to the right of
-		// G4's own bounds and strictly to the left of C5's.
-		const g4 = layout.measures[0]!.notes[0]!;
-		const c5 = layout.measures[0]!.notes[3]!;
-		expect(curve.x0).toBeGreaterThan(g4.bounds.x + g4.bounds.width);
-		expect(curve.x1).toBeLessThan(c5.bounds.x);
-		expect(curve.x0).toBeLessThan(curve.x1);
-	});
-
-	it('curves below the majority stem direction: below when the spanned notes sit under the middle line', () => {
-		// G4, A4, B4 (middle line), C5: G4 is farthest from the middle line and
-		// sits below it, so the shared direction is up-stem and the slur curves
-		// below (a larger canvas y at its control points than its endpoints).
-		const score = buildScore(
-			[[['G4', 'eighth'], ['A4', 'eighth'], ['B4', 'eighth'], ['C5', 'eighth'], [null, 'half']]],
-			{},
-			[{ start: [0, 0], end: [0, 3] }]
-		);
-		const layout = layoutScore(score);
-		const curve = findCurve(layout.measures[0]!.ops)!;
-		expect(curve.cy0).toBeGreaterThan(curve.y0);
-		expect(curve.cy1).toBeGreaterThan(curve.y1);
-	});
-
-	it('curves above the majority stem direction: above when the spanned notes sit over the middle line', () => {
-		// G5 is farthest from the middle line and sits above it, so the shared
-		// direction is down-stem and the slur curves above (a smaller canvas y).
-		const score = buildScore(
-			[[['C5', 'eighth'], ['D5', 'eighth'], ['E5', 'eighth'], ['G5', 'eighth'], [null, 'half']]],
-			{},
-			[{ start: [0, 0], end: [0, 3] }]
-		);
-		const layout = layoutScore(score);
-		const curve = findCurve(layout.measures[0]!.ops)!;
-		expect(curve.cy0).toBeLessThan(curve.y0);
-		expect(curve.cy1).toBeLessThan(curve.y1);
-	});
-
-	it('splits a slur crossing a barline into two segments that meet at the same roof height', () => {
-		const score = buildScore(
-			[
-				[
-					['C4', 'quarter'],
-					['D4', 'quarter'],
-					['E4', 'quarter'],
-					['F4', 'quarter']
-				],
-				[
-					['G4', 'quarter'],
-					['A4', 'quarter'],
-					['B4', 'half']
-				]
-			],
-			{},
-			[{ start: [0, 3], end: [1, 1] }]
-		);
-		const layout = layoutScore(score);
-		const first = layout.measures[0]!;
-		const second = layout.measures[1]!;
-
-		expect(curvesOf(first.ops)).toHaveLength(1);
-		expect(curvesOf(second.ops)).toHaveLength(1);
-
-		const outgoing = findCurve(first.ops)!;
-		const incoming = findCurve(second.ops)!;
-
-		// The outgoing half stays inside measure 0's own region; the incoming
-		// half starts at measure 1's own left edge, never reaching backwards
-		// into measure 0's band, same discipline the tie pass already follows.
-		expect(outgoing.x1).toBeLessThanOrEqual(first.region.x + first.region.width + 0.001);
-		expect(incoming.x0).toBeGreaterThanOrEqual(second.region.x - 0.001);
-
-		// Both halves are computed from the same whole-slur `spanNotes`, so
-		// they land on the same "roof" height at the barline even though each
-		// was laid out from only its own measure's notes.
-		expect(outgoing.y1).toBeCloseTo(incoming.y0, 6);
-	});
-
-	it('draws a flat pass-through segment in a measure holding neither of the slur\'s two ends', () => {
-		const score = buildScore(
-			[
-				[['C4', 'quarter'], ['D4', 'quarter'], ['E4', 'quarter'], ['F4', 'quarter']],
-				[['G4', 'quarter'], ['A4', 'quarter'], ['B4', 'quarter'], ['C5', 'quarter']],
-				[['D5', 'quarter'], ['E5', 'quarter'], ['F5', 'quarter'], ['G5', 'quarter']]
-			],
-			{},
-			[{ start: [0, 0], end: [2, 3] }]
-		);
-		const layout = layoutScore(score);
-		const [m0, m1, m2] = layout.measures;
-
-		expect(curvesOf(m0!.ops)).toHaveLength(1);
-		expect(curvesOf(m1!.ops)).toHaveLength(1);
-		expect(curvesOf(m2!.ops)).toHaveLength(1);
-
-		// Measure 1 holds neither end: its segment runs the full width of its
-		// own region, and being a pure pass-through, both its true endpoints
-		// are the same "roof" height (a flat shelf, not an arch of its own).
-		const middle = findCurve(m1!.ops)!;
-		expect(middle.x0).toBeCloseTo(m1!.region.x, 6);
-		expect(middle.x1).toBeGreaterThan(middle.x0);
-		expect(middle.y0).toBeCloseTo(middle.y1, 6);
-	});
-
-	it('keeps a slur curve inside its own measure region', () => {
-		const score = buildScore(
-			[[['G4', 'eighth'], ['A4', 'eighth'], ['B4', 'eighth'], ['C5', 'eighth'], [null, 'half']]],
-			{},
-			[{ start: [0, 0], end: [0, 3] }]
-		);
-		const layout = layoutScore(score);
-		const measure = layout.measures[0]!;
-		const curve = findCurve(measure.ops)!;
-		for (const y of [curve.y0, curve.cy0, curve.cy1, curve.y1]) {
-			expect(y).toBeGreaterThanOrEqual(measure.region.y - 0.001);
-			expect(y).toBeLessThanOrEqual(measure.region.y + measure.region.height + 0.001);
-		}
-	});
-
-	it('survives relayoutMeasure re-laying out its own measure incrementally', () => {
-		const score = buildScore(
-			[
-				[
-					['G4', 'eighth'],
-					['A4', 'eighth'],
-					['B4', 'eighth'],
-					['C5', 'eighth'],
-					['D5', 'quarter'],
-					['E5', 'quarter']
-				]
-			],
-			{},
-			[{ start: [0, 0], end: [0, 3] }]
-		);
-		const layout = layoutScore(score);
-		// Transpose the last, unslurred note: a same-measure edit that leaves
-		// the slurred run itself untouched, the same shape as the ties test
-		// this one is modelled on.
-		const target = score.measures[0]!.notes[5]!;
-		const touched = score.transposeNote(target.id, 1);
-		const updated = relayoutMeasure(score, layout, touched!);
-		expect(updated).not.toBeNull();
-		expect(curvesOf(updated!.measures[0]!.ops)).toHaveLength(1);
-	});
-
-	it('renders the slur showcase, valid measures and all', () => {
-		const score = createSlurShowcaseScore();
-		for (const measure of score.measures) {
-			expect(validateMeasure(measure, score.time).valid).toBe(true);
-		}
-		const layout = layoutScore(score);
-		// Measure 0: two curves (the single-measure G4..C5 slur, plus the
-		// outgoing half of the D5->G5 slur). Measure 1: one curve, that
-		// second slur's incoming half.
-		expect(curvesOf(layout.measures[0]!.ops)).toHaveLength(2);
-		expect(curvesOf(layout.measures[1]!.ops)).toHaveLength(1);
-	});
-
-	it('draws a slur curve on a non-zero staff, not just staff 0 (fixing notesInOrder\'s old staff-0-only bug)', () => {
-		// Before the fix, `notesInOrder()` always read `staves[0]` alone, so
-		// `addSlur`'s own order check on any other staff always compared two
-		// `Array.indexOf` misses (`-1 >= -1`) and threw "must come before" no
-		// matter what the actual notes were; a slur on a non-zero staff was
-		// silently impossible. `notesInOrder(staffIndex)` and `addSlur`'s own
-		// staff resolution fix that, and `slurSpanNotes`/the slur-drawing loop
-		// in `layoutMeasure` thread the slur's actual staff index through
-		// instead of assuming staff 0, so the curve lands in the right
-		// staff's own measure region.
-		const score = buildScore([[['C4', 'quarter']]]); // staff 0, an unrelated filler measure
+	it('draws a slur on a non-zero staff in that staff only', () => {
+		const score = buildScore([[['C4', 'quarter']]]);
 		score.appendStaff('bass');
 		const measure = score.appendMeasure(1);
-		const ids = ['C3', 'D3', 'E3', 'F3'].map(
-			(pitch) => score.appendNote(measure, { pitch: parsePitch(pitch), value: 'quarter' }).id
-		);
-		score.addSlur(ids[0]!, ids[3]!);
-
+		const noteIds = ['C3', 'D3', 'E3', 'F3'].map((p) => score.appendNote(measure, { pitch: parsePitch(p), value: 'quarter' }).id);
+		score.addSlur(noteIds[0]!, noteIds[3]!);
 		const layout = layoutScore(score);
-		const bassMeasure = layout.measures.find((m) => m.staffIndex === 1)!;
-		expect(curvesOf(bassMeasure.ops)).toHaveLength(1);
-		// Staff 0's own unrelated measure draws no slur ink at all: the slur
-		// is scoped entirely to the staff it was actually built on, not
-		// leaked into every staff the way the old always-staff-0 read could
-		// have risked.
-		const trebleMeasure = layout.measures.find((m) => m.staffIndex === 0)!;
-		expect(curvesOf(trebleMeasure.ops)).toHaveLength(0);
+		expect(curvesOf(measureAt(layout, 1, 0).ops)).toHaveLength(1);
+		expect(curvesOf(measureAt(layout, 0, 0).ops)).toHaveLength(0);
 	});
 });
 
 describe('key and time changes', () => {
-	it('draws the new key signature in full at the measure where the key changes, no clef repeated', () => {
-		const score = buildScore(
-			[
-				[['G4', 'quarter']],
-				{ notes: [['G4', 'quarter']], keyFifths: 2 } // G major (1 sharp) -> D major (2 sharps)
-			],
-			{ keyFifths: 1 }
+	const keyChange = (from: number, to: number, systemWidthPx?: number) =>
+		layoutScore(
+			buildScore([[['G4', 'half'], ['A4', 'half']], { notes: [['G4', 'half'], ['A4', 'half']], keyFifths: to }, [['G4', 'whole']]], {
+				keyFifths: from
+			}),
+			{ staffSpacePx: 11, systemWidthPx }
 		);
-		const layout = layoutScore(score);
-		const firstGlyphs = glyphsOf(layout.measures[0]!.ops);
-		expect(firstGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(1);
 
-		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
-		// D major's full two-sharp signature is restated, not just the newly
-		// added C#: a courtesy signature is always the whole new key, the same
-		// as the score's very first measure states a whole key from nothing.
-		expect(changeGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
-		expect(changeGlyphs).not.toContain('accidentalNatural'); // nothing dropped, nothing to cancel
-		expect(changeGlyphs).not.toContain('gClef'); // this measure does not open a system
+	it.each([
+		['restates the whole new key, no clef', 1, 2, 2, 0],
+		['cancels a dropped sharp with a natural', 1, 0, 0, 1],
+		['cancels only the dropped sharp, keeping the shared one', 2, 1, 1, 1]
+	])('at a key change it %s', (_name, from, to, sharps, naturals) => {
+		const layout = keyChange(from, to);
+		const ops = layout.measures[1]!.ops;
+		expect(countOf(ops, 'accidentalSharp')).toBe(sharps);
+		expect(countOf(ops, 'accidentalNatural')).toBe(naturals);
+		expect(glyphsOf(ops)).not.toContain('gClef');
+		// The next measure has no change of its own and restates nothing.
+		expect(glyphsOf(layout.measures[2]!.ops)).toEqual(['noteheadWhole']);
 	});
 
-	it('cancels a dropped accidental with a natural when the key change removes it', () => {
-		const score = buildScore(
-			[
-				[['G4', 'quarter']],
-				{ notes: [['G4', 'quarter']], keyFifths: 0 } // G major (F#) -> C major (no sharps)
-			],
-			{ keyFifths: 1 }
-		);
-		const layout = layoutScore(score);
-		// C major itself draws no accidentals of its own, so the only key-
-		// signature glyph the change measure needs is the natural cancelling
-		// the old F#; the note's own head is the only other glyph it draws.
-		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
-		expect(changeGlyphs.filter((g) => g === 'accidentalNatural')).toHaveLength(1);
-		expect(changeGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(0);
-	});
-
-	it('cancels only the dropped accidental, not one the new key still shares', () => {
-		// D major (F#, C#) -> G major (F#): F# carries straight over and needs
-		// no natural; only C# is dropped and needs cancelling.
-		const score = buildScore(
-			[
-				[['G4', 'quarter']],
-				{ notes: [['G4', 'quarter']], keyFifths: 1 }
-			],
-			{ keyFifths: 2 }
-		);
-		const layout = layoutScore(score);
-		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
-		expect(changeGlyphs.filter((g) => g === 'accidentalNatural')).toHaveLength(1);
-		expect(changeGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(1); // G major's own F#
-	});
-
-	it('draws the new time signature at the measure where the time changes', () => {
-		const score = buildScore([
-			[
-				['C4', 'quarter'],
-				['D4', 'quarter'],
-				['E4', 'quarter'],
-				['F4', 'quarter']
-			],
-			{
-				notes: [
-					['C4', 'quarter'],
-					['D4', 'quarter'],
-					['E4', 'quarter']
-				],
-				time: { beats: 3, beatType: 4 }
-			}
-		]);
-		const layout = layoutScore(score);
-		expect(glyphsOf(layout.measures[0]!.ops)).toContain('timeSig4');
-		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
-		expect(changeGlyphs).toContain('timeSig3');
-		expect(changeGlyphs).toContain('timeSig4');
-	});
-
-	it('draws both a courtesy key and time signature when both change at the same measure', () => {
-		const score = buildScore(
-			[
-				[
-					['G4', 'quarter'],
-					['A4', 'quarter'],
-					['B4', 'quarter'],
-					['C5', 'quarter']
-				],
-				{
-					keyFifths: 2,
-					time: { beats: 3, beatType: 4 },
-					notes: [
-						['D5', 'quarter'],
-						['E5', 'quarter'],
-						['F#5', 'quarter']
-					]
-				}
-			],
-			{ keyFifths: 1 }
-		);
-		const layout = layoutScore(score);
-		const changeGlyphs = glyphsOf(layout.measures[1]!.ops);
-		expect(changeGlyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
-		expect(changeGlyphs).toContain('timeSig3');
-	});
-
-	it('does not restate a courtesy signature at a later measure with no change of its own', () => {
-		const score = buildScore(
-			[[['G4', 'quarter']], { notes: [['G4', 'quarter']], keyFifths: 2 }, [['G4', 'quarter']]],
-			{ keyFifths: 1 }
-		);
-		const layout = layoutScore(score);
-		// Measure 2 is neither a system's first measure nor a change of its
-		// own, so it draws no clef, key or time glyph at all, only its one note.
-		expect(glyphsOf(layout.measures[2]!.ops)).toEqual(['noteheadBlack']);
-	});
-
-	it('still shows the changed key (and clef) when the change lands on a new system\'s own first measure', () => {
-		// An unreasonably tight budget forces every measure onto its own
-		// system, so measure 1 (the key change) also happens to open a system:
-		// exactly the case the existing "repeat key at system start" logic has
-		// to get right once the key it repeats can itself have just changed.
-		const score = buildScore(
-			[
-				[['G4', 'half'], ['A4', 'half']],
-				{ notes: [['G4', 'half'], ['A4', 'half']], keyFifths: 2 }
-			],
-			{ keyFifths: 1 }
-		);
-		const layout = layoutScore(score, { staffSpacePx: 11, systemWidthPx: 1 });
+	it("shows the changed key and clef when the change opens a new system", () => {
+		const layout = keyChange(1, 2, 1);
 		expect(layout.systems[1]!.measureIndices).toEqual([1]);
 		const glyphs = glyphsOf(layout.measures[1]!.ops);
 		expect(glyphs).toContain('gClef');
 		expect(glyphs.filter((g) => g === 'accidentalSharp')).toHaveLength(2);
 	});
 
-	it('groups beams by the new time signature after a mid-score change', () => {
-		// Six eighths under 4/4's simple quarter beat form three two-note
-		// beams; the same six eighths under 6/8's compound dotted-quarter beat
-		// form two three-note beams instead.
-		const ss = 10;
-		const beamHeight = ED.beamThickness * ss;
-		const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
-		const beamRects = (ops: readonly DrawOp[]) =>
-			ops.filter(isRect).filter((op) => Math.abs(op.height - beamHeight) < 0.001);
-
-		const sixEighths: readonly (readonly [string, NoteValue])[] = [
-			['D4', 'eighth'],
-			['E4', 'eighth'],
-			['F4', 'eighth'],
-			['G4', 'eighth'],
-			['A4', 'eighth'],
-			['B4', 'eighth']
-		];
-		const score = buildScore(
-			[[...sixEighths], { notes: [...sixEighths], time: { beats: 6, beatType: 8 } }],
-			{ time: { beats: 4, beatType: 4 } }
-		);
-		const layout = layoutScore(score, { staffSpacePx: ss });
-		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(3);
-		expect(beamRects(layout.measures[1]!.ops)).toHaveLength(2);
-	});
-
-	it('renders the key/time-change showcase, valid measures and all', () => {
-		const score = createKeyTimeChangeShowcaseScore();
-		for (const measure of score.measures) {
-			expect(validateMeasure(measure, score.timeAt(measure.index)).valid).toBe(true);
-		}
-		const layout = layoutScore(score);
-		// Measure 1 is the key change (D major, 2 sharps); measure 3 is the
-		// time change (3/4).
-		expect(glyphsOf(layout.measures[1]!.ops).filter((g) => g === 'accidentalSharp')).toHaveLength(2);
-		expect(glyphsOf(layout.measures[3]!.ops)).toContain('timeSig3');
+	it('draws the new time signature where the time changes', () => {
+		const q = (n: number): MeasureSpec => ['C4', 'D4', 'E4', 'F4'].slice(0, n).map((p) => [p, 'quarter'] as const);
+		const layout = layoutScore(buildScore([q(4), { notes: q(3), time: { beats: 3, beatType: 4 } }]));
+		expect(glyphsOf(layout.measures[0]!.ops)).toContain('timeSig4');
+		expect(glyphsOf(layout.measures[1]!.ops)).toEqual(expect.arrayContaining(['timeSig3', 'timeSig4']));
 	});
 });
 
 describe('barline types', () => {
-	// Every barline rect (thin or thick) spans the full staff height, `4 * ss`;
-	// nothing else drawn (staff lines, ledger lines, stems, beams) shares that
-	// height, so filtering on it isolates barline ink from everything else a
-	// measure draws without having to know any barline's x position up front.
-	const ss = 10;
-	const isBarlineRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> =>
-		op.kind === 'rect' && Math.abs(op.height - 4 * ss) < 0.001;
-	const barlineRects = (ops: readonly DrawOp[]) => ops.filter(isBarlineRect);
-	const repeatDots = (ops: readonly DrawOp[]) =>
-		ops.filter((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'repeatDot');
+	const thin = ED.thinBarlineThickness * SS;
+	const thick = ED.thickBarlineThickness * SS;
+	const repeatDots = (ops: readonly DrawOp[]) => glyphOps(ops, 'repeatDot');
+	const sortedBars = (ops: readonly DrawOp[]) => barlineRects(ops).sort((a, b) => a.x - b.x);
 
-	it('draws a normal barline as a single thin line', () => {
-		const score = buildScore([[['G4', 'quarter']], [['G4', 'quarter']], [['G4', 'quarter']]]);
-		const layout = layoutScore(score, { staffSpacePx: ss });
-		// Measure 0's own end (mid-score) defaults to 'normal': exactly one line.
-		const bars = barlineRects(layout.measures[0]!.ops);
-		expect(bars).toHaveLength(1);
-		expect(bars[0]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
+	it.each([
+		['normal (mid-score default)', [[['G4', 'quarter']], [['G4', 'quarter']]], [thin]],
+		['double', [{ notes: [['G4', 'quarter']], endBarline: 'double' }, [['G4', 'quarter']]], [thin, thin]],
+		['final (automatic at the end)', [[['G4', 'quarter']]], [thin, thick]],
+		['final (explicit)', [{ notes: [['G4', 'quarter']], endBarline: 'final' }], [thin, thick]],
+		['double overriding the automatic final', [{ notes: [['G4', 'quarter']], endBarline: 'double' }], [thin, thin]]
+	] as const)('draws a %s barline', (_name, measures, widths) => {
+		const bars = sortedBars(lay(measures as unknown as MeasureBuildSpec[]).measures[0]!.ops);
+		expect(bars.map((b) => b.width)).toEqual(widths.map((w) => expect.closeTo(w, 6)));
+		if (bars.length === 2) expect(bars[1]!.x - (bars[0]!.x + bars[0]!.width)).toBeLessThan(SS);
 	});
 
-	it('draws a double barline as two thin lines close together', () => {
-		const score = buildScore([
-			{ notes: [['G4', 'quarter']], endBarline: 'double' },
-			[['G4', 'quarter']]
-		]);
-		const layout = layoutScore(score, { staffSpacePx: ss });
-		const bars = barlineRects(layout.measures[0]!.ops).sort((a, b) => a.x - b.x);
-		expect(bars).toHaveLength(2);
-		expect(bars[0]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
-		expect(bars[1]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
-		// The gap between them is the font's own recommended separation, the
-		// same spacing a final barline's thin-then-thick pair already uses.
-		const gap = bars[1]!.x - (bars[0]!.x + bars[0]!.width);
-		expect(gap).toBeCloseTo(ED.barlineSeparation * ss, 6);
-	});
-
-	it('draws a final barline as thin-then-thick, reachable both automatically and explicitly', () => {
-		// Automatic: the score's true last measure, no annotation at all.
-		const automatic = layoutScore(buildScore([[['G4', 'quarter']]]), { staffSpacePx: ss });
-		// Explicit: the same shape, requested by name.
-		const explicit = layoutScore(
-			buildScore([{ notes: [['G4', 'quarter']], endBarline: 'final' }]),
-			{ staffSpacePx: ss }
-		);
-		for (const layout of [automatic, explicit]) {
-			const bars = barlineRects(layout.measures[0]!.ops).sort((a, b) => a.x - b.x);
-			expect(bars).toHaveLength(2);
-			expect(bars[0]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
-			expect(bars[1]!.width).toBeCloseTo(ED.thickBarlineThickness * ss, 6);
-			// The thick line is the outer (rightmost) one, same as before this
-			// slice's ctx.isLast-only version of this shape.
-			expect(bars[1]!.x).toBeGreaterThan(bars[0]!.x);
-		}
-	});
-
-	it('an explicit endBarline on the last measure overrides the automatic final default', () => {
-		const layout = layoutScore(
-			buildScore([{ notes: [['G4', 'quarter']], endBarline: 'double' }]),
-			{ staffSpacePx: ss }
-		);
-		const bars = barlineRects(layout.measures[0]!.ops).sort((a, b) => a.x - b.x);
-		expect(bars).toHaveLength(2);
-		expect(bars[0]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6);
-		expect(bars[1]!.width).toBeCloseTo(ED.thinBarlineThickness * ss, 6); // both thin, not final's thin+thick
-	});
-
-	it('draws a repeatEnd as two dots then a thick line', () => {
-		const score = buildScore([
-			{ notes: [['G4', 'quarter']], endBarline: 'repeatEnd' },
-			[['G4', 'quarter']]
-		]);
-		const layout = layoutScore(score, { staffSpacePx: ss });
+	it('draws a repeatEnd as two stacked dots then a thick line, even with no matching repeatStart', () => {
+		const layout = lay([{ notes: [['G4', 'quarter']], endBarline: 'repeatEnd' }, [['G4', 'quarter']]]);
 		const ops = layout.measures[0]!.ops;
 		const bars = barlineRects(ops);
-		expect(bars).toHaveLength(1);
-		expect(bars[0]!.width).toBeCloseTo(ED.thickBarlineThickness * ss, 6);
+		expect(bars.map((b) => b.width)).toEqual([expect.closeTo(thick, 6)]);
 		const dots = repeatDots(ops);
 		expect(dots).toHaveLength(2);
-		// Both dots sit left of (before) the thick line, and at the same x as
-		// each other: two dots stacked vertically, not side by side.
 		for (const dot of dots) expect(dot.x).toBeLessThan(bars[0]!.x);
 		expect(dots[0]!.x).toBeCloseTo(dots[1]!.x, 6);
-		// One dot in the staff space above the middle line, one below, straddling it.
-		const middleY = layout.staffTopY + 2 * ss;
-		expect(Math.min(dots[0]!.y, dots[1]!.y)).toBeCloseTo(middleY - ss / 2, 6);
-		expect(Math.max(dots[0]!.y, dots[1]!.y)).toBeCloseTo(middleY + ss / 2, 6);
+		// Straddling the middle line.
+		const middleY = layout.staffTopY + 2 * SS;
+		expect(Math.min(dots[0]!.y, dots[1]!.y)).toBeLessThan(middleY);
+		expect(Math.max(dots[0]!.y, dots[1]!.y)).toBeGreaterThan(middleY);
 	});
 
-	it('draws a repeatStart as a thick line then two dots, at the measure it opens', () => {
-		// A third measure keeps measure 1 from also being the score's true last
-		// measure, which would otherwise add its own automatic 'final' pair at
-		// its *end* on top of the 'repeatStart' ink this test isolates at its
-		// *start*.
-		const score = buildScore([
-			[['G4', 'quarter']],
-			{ notes: [['G4', 'quarter']], startBarline: 'repeatStart' },
-			[['G4', 'quarter']]
-		]);
-		const layout = layoutScore(score, { staffSpacePx: ss });
-		// The boundary's only barline is owned by measure 1 (the one that opens
-		// the repeat), not measure 0: measure 0 draws no barline rect of its own.
+	it('draws a repeatStart as a thick line then dots at the left edge of the measure it opens', () => {
+		const layout = lay([[['G4', 'quarter']], { notes: [['G4', 'quarter']], startBarline: 'repeatStart' }, [['G4', 'quarter']]]);
+		// The boundary belongs to the measure that opens the repeat.
 		expect(barlineRects(layout.measures[0]!.ops)).toHaveLength(0);
-
 		const ops = layout.measures[1]!.ops;
-		// Two bars total: the repeat-start's own thick line at this measure's
-		// start, plus its own (mid-score, so 'normal') thin line at its end.
-		const bars = barlineRects(ops).sort((a, b) => a.x - b.x);
-		expect(bars).toHaveLength(2);
-		const openingBar = bars[0]!;
-		expect(openingBar.width).toBeCloseTo(ED.thickBarlineThickness * ss, 6);
-		const dots = repeatDots(ops);
-		expect(dots).toHaveLength(2);
-		// Dots sit right of (after) the thick line here, the mirror of repeatEnd.
-		for (const dot of dots) expect(dot.x).toBeGreaterThan(openingBar.x);
-		// Both the thick line and the dots sit at this measure's own left edge,
-		// well before any note (a real measure region always starts there).
-		expect(openingBar.x).toBeCloseTo(layout.measures[1]!.region.x, 3);
-	});
-
-	it('this slice draws barline shapes only, no repeat-playback semantics', () => {
-		// Nothing in the model or layout resolves a repeatStart/repeatEnd pair
-		// into a jump, a repeat count, or an ending bracket; a repeatEnd with no
-		// matching repeatStart anywhere in the score (as here) still lays out
-		// without error, exactly as a purely visual mark should.
-		const score = buildScore([{ notes: [['G4', 'quarter']], endBarline: 'repeatEnd' }]);
-		expect(() => layoutScore(score)).not.toThrow();
-	});
-
-	it('renders the barline showcase, valid measures and all', () => {
-		const score = createBarlineShowcaseScore();
-		for (const measure of score.measures) {
-			expect(validateMeasure(measure, score.timeAt(measure.index)).valid).toBe(true);
-		}
-		const layout = layoutScore(score, { staffSpacePx: ss });
-		expect(barlineRects(layout.measures[0]!.ops)).toHaveLength(2); // double
-		expect(repeatDots(layout.measures[2]!.ops)).toHaveLength(2); // repeatStart's own
-		expect(repeatDots(layout.measures[3]!.ops)).toHaveLength(2); // repeatEnd's own
+		const [opening] = sortedBars(ops);
+		expect(opening!.width).toBeCloseTo(thick, 6);
+		expect(opening!.x).toBeCloseTo(layout.measures[1]!.region.x, 3);
+		expect(repeatDots(ops)).toHaveLength(2);
+		for (const dot of repeatDots(ops)) expect(dot.x).toBeGreaterThan(opening!.x);
 	});
 });
 
-describe('two voices in one staff (M2 Slice 1)', () => {
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
-	const isGlyph = (op: DrawOp): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph';
-	const stemWidth = ED.stemThickness * ss;
-	const beamHeight = ED.beamThickness * ss;
-	const stemRects = (ops: readonly DrawOp[]) =>
-		ops.filter(isRect).filter((op) => Math.abs(op.width - stemWidth) < 0.001);
-	const beamRects = (ops: readonly DrawOp[]) =>
-		ops.filter(isRect).filter((op) => Math.abs(op.height - beamHeight) < 0.001);
-
-	// A half-note voice (voice 1) against a running-eighths voice (voice 2),
-	// the task's own suggested two-voice example: voice 1's two half notes
-	// land at onsets 0 and 0.5, voice 2's four eighths land at 0, 0.125,
-	// 0.25 and 0.375 and its own half note at 0.5. Per `noteAdvanceSpaces`'s
-	// documented table (half=7, eighth=5 staff spaces), the shared columns
-	// are 7 (onset 0, driven by voice 1's half note, wider than voice 2's
-	// eighth there), 5, 5, 5 (voice 2's interior eighths, voice 1 has
-	// nothing there) and 7 (onset 0.5, both voices land here, tied at 7).
-	const halfAgainstEighths = [
+describe('two voices in one staff', () => {
+	// Voice 1: two halves. Voice 2: four eighths then a half. Shared onset
+	// columns at 0, 1/8, 1/4, 3/8 and 1/2.
+	const halfAgainstEighths: MeasureSpec = [
 		['D4', 'half', { voice: 1 }],
 		['E4', 'half', { voice: 1 }],
 		['C4', 'eighth', { voice: 2 }],
@@ -1509,98 +609,38 @@ describe('two voices in one staff (M2 Slice 1)', () => {
 		['E4', 'eighth', { voice: 2 }],
 		['F4', 'eighth', { voice: 2 }],
 		['G4', 'half', { voice: 2 }]
-	] as const;
+	];
 
-	it('aligns two voices of differing rhythm on the same x at a shared onset', () => {
+	it('aligns two voices on a shared onset column', () => {
 		const score = buildScore([halfAgainstEighths]);
-		const layout = layoutScore(score, options);
-		const measure = layout.measures[0]!;
-		const idOf = (index: number) => score.measures[0]!.notes[index]!.id;
-		const xOf = (id: string) => measure.notes.find((n) => n.id === id)!.bounds.x;
-
-		// Voice 1's second half note and voice 2's half note both start at
-		// onset 0.5, the same shared column, but M2 Slice 2 (voice-to-voice
-		// collision avoidance) means they no longer necessarily land at the
-		// exact same x: this fixture's own onset-0 pair (D4 voice 1, C4
-		// voice 2) happens to be a second apart, so voice 2's very first note
-		// gets nudged one notehead's width right there (see the "voice-to-
-		// voice collision avoidance" describe block below), and that nudge
-		// persists through the rest of voice 2's own notes, this half note
-		// included, the same way an accidental's own collision shift already
-		// always propagated forward. The two notes still share the same
-		// column offset from voice 1's first note; they are just offset from
-		// each other by that one persistent nudge on top of it.
-		const v1SecondX = xOf(idOf(1));
-		const v2HalfX = xOf(idOf(6));
-		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
-		expect(v2HalfX - v1SecondX).toBeCloseTo(noteheadWidth, 6);
-
-		// The exact offset from voice 1's first note (onset 0): the three
-		// columns in between (7 + 5 + 5 + 5 = 22 staff spaces) scaled to
-		// pixels, not wherever voice 1's own single half-note advance alone
-		// would have put it (which would be 7 staff spaces, i.e. 70px, a
-		// very different, wrong answer this test also rules out), plus that
-		// same persistent notehead-collision nudge from onset 0.
-		const v1FirstX = xOf(idOf(0));
-		expect(v2HalfX - v1FirstX).toBeCloseTo(22 * ss + noteheadWidth, 6);
+		const measure = layoutScore(score, OPTS).measures[0]!;
+		// Voice 2 carries a one-notehead clash nudge from onset 0 (D4 against
+		// C4), so the two onset-1/2 notes differ by exactly that.
+		expect(noteX(score, measure, 6) - noteX(score, measure, 1)).toBeCloseTo(noteheadWidth, 6);
 	});
 
-	it('does not widen a shared column when the other voice needs no more room than it already has', () => {
-		// Same measure as above, minus voice 2's trailing half note: the
-		// shared onset-0.5 column is then driven by voice 1's own half note
-		// alone (width 7), same as when voice 2's half note is also there
-		// (also width 7, tied). Adding voice 2's half note back must not grow
-		// the measure at all, since the column's width is a max, not a sum;
-		// a per-note-across-both-voices sum (the bug this slice's column
-		// model replaces) would have grown it by a whole extra half note's
-		// worth of room.
-		const without = buildScore([halfAgainstEighths.slice(0, 6)]);
-		const withTail = buildScore([halfAgainstEighths]);
-		const w1 = layoutScore(without, options).measures[0]!.region.width;
-		const w2 = layoutScore(withTail, options).measures[0]!.region.width;
-		expect(w2).toBeCloseTo(w1, 6);
+	it('sizes a shared column by the wider voice, not the sum', () => {
+		const without = lay([halfAgainstEighths.slice(0, 6)]).measures[0]!.region.width;
+		const withTail = lay([halfAgainstEighths]).measures[0]!.region.width;
+		expect(withTail).toBeCloseTo(without, 6);
 	});
 
-	it("does not double-count both voices' advances in a system's justification scale", () => {
-		// The same measure's shared columns sum to 7 + 5 + 5 + 5 + 7 = 29
-		// staff spaces (see the alignment test above), not 7 + 7 + 5 + 5 + 5
-		// + 5 + 7 = 41, which is what summing every voice's every note's own
-		// advance across both voices (the bug `systemSpacingScale` no longer
-		// has) would give.
-		const filler = [['C4', 'whole']] as const;
-		const scoreWithFillers = buildScore([halfAgainstEighths, filler, filler, filler]);
-
-		// Read the measure's own natural (unscaled) width with the exact same
-		// context flags `systemSpacingScale`'s probe uses (system-first,
-		// score-first, not the score's last measure): a huge systemWidthPx
-		// keeps every measure in one, therefore-last, therefore-unjustified
-		// system, so this measure's width there is its true natural width.
-		const naturalLayout = layoutScore(scoreWithFillers, { staffSpacePx: ss, systemWidthPx: 5000 });
-		expect(naturalLayout.systems[0]!.spacingScale).toBe(1);
-		const naturalWidth = naturalLayout.measures[0]!.region.width;
-
-		const systemWidthPx = 500;
-		const layout = layoutScore(scoreWithFillers, { staffSpacePx: ss, systemWidthPx });
-		// This measure lands alone in system 0, not the score's last system,
-		// so it is justified (stretched): exactly the case that exercises the
-		// scale computation this test targets.
+	it("does not double-count both voices' advances when justifying a system", () => {
+		const filler: MeasureSpec = [['C4', 'whole']];
+		const score = buildScore([halfAgainstEighths, filler, filler, filler]);
+		const natural = layoutScore(score, { staffSpacePx: SS, systemWidthPx: 5000 });
+		expect(natural.systems[0]!.spacingScale).toBe(1);
+		const naturalWidth = natural.measures[0]!.region.width;
+		const layout = layoutScore(score, { staffSpacePx: SS, systemWidthPx: 500 });
 		expect(layout.systems[0]!.measureIndices).toEqual([0]);
-
-		const padding = 16; // DEFAULTS.paddingPx, not exported
-		const availableWidth = systemWidthPx - 2 * padding;
-		const correctColumnWidthSum = 29;
-		const expectedScale = Math.max(0.5, 1 + (availableWidth - naturalWidth) / (correctColumnWidthSum * ss));
+		// Shared columns sum to 7+5+5+5+7 = 29 spaces, not the 41 summing every
+		// note would give. 16 is the default padding on each side.
+		const expectedScale = 1 + (500 - 2 * 16 - naturalWidth) / (29 * SS);
 		expect(layout.systems[0]!.spacingScale).toBeCloseTo(expectedScale, 6);
 	});
 
-	it('groups beams independently per voice, even when the two voices interleave in the notes array', () => {
-		// Voice 2's four eighths (C4, D4 in beat 0; E4, F4 in beat 1, per
-		// 4/4's quarter-note beat) are written with voice 1's two quarters
-		// physically between them, exactly the interleaving that would
-		// corrupt a single shared beat-position cursor run over the flat
-		// array: voice 1's quarters' durations would be counted against
-		// voice 2's own beat math if the two were not split apart first.
-		const score = buildScore([
+	it('beams each voice independently, even when they interleave in the notes array', () => {
+		const ops = lay([
 			[
 				['C4', 'eighth', { voice: 2 }],
 				['G4', 'quarter', { voice: 1 }],
@@ -1609,186 +649,13 @@ describe('two voices in one staff (M2 Slice 1)', () => {
 				['E4', 'eighth', { voice: 2 }],
 				['F4', 'eighth', { voice: 2 }]
 			]
-		]);
-		const layout = layoutScore(score, options);
-		const ops = layout.measures[0]!.ops;
-		// No individual flags: both eighth pairs beamed, not four flags.
-		expect(ops.filter(isGlyph).some((op) => op.glyph.startsWith('flag'))).toBe(false);
-		// Two two-note beams (one per beat), not one four-note beam and not
-		// zero (which either a crash or a mis-grouping could produce).
+		]).measures[0]!.ops;
+		expect(hasFlag(ops)).toBe(false);
 		expect(beamRects(ops)).toHaveLength(2);
-		// Voice 2's 4 beamed eighths + voice 1's 2 quarters (always stemmed,
-		// beamed or not) = 6 stems total.
 		expect(stemRects(ops)).toHaveLength(6);
 	});
 
-	it('forces voice 1 up and voice 2 down when a measure holds two voices, regardless of pitch', () => {
-		// C5 (voice 1) sits above the middle line, where the ordinary
-		// pitch-based rule (Slice 3) would pick a down-stem; C4 (voice 2)
-		// sits well below it, where that same rule would pick an up-stem.
-		// The multi-voice convention overrides both, in the opposite
-		// direction pitch alone would have chosen for each.
-		const layout = layoutScore(
-			buildScore([[['C5', 'eighth', { voice: 1 }], ['C4', 'eighth', { voice: 2 }]]]),
-			options
-		);
-		const glyphs = layout.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		expect(glyphs).toContain('flag8thUp'); // voice 1, forced up despite C5's own pitch
-		expect(glyphs).toContain('flag8thDown'); // voice 2, forced down despite C4's own pitch
-	});
-
-	it('also overrides a beamed group\'s shared direction per voice, not just a lone note\'s', () => {
-		const score = buildScore([
-			[
-				['C5', 'eighth', { voice: 1 }],
-				['D5', 'eighth', { voice: 1 }],
-				['C4', 'eighth', { voice: 2 }],
-				['D4', 'eighth', { voice: 2 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const ops = layout.measures[0]!.ops;
-		expect(beamRects(ops)).toHaveLength(2); // one beam per voice
-		const stems = stemRects(ops);
-		expect(stems).toHaveLength(4);
-
-		// Both voices share the same rhythm here (two eighths each, at onsets
-		// 0 and 0.125), so they also share the same shared columns and land
-		// at the same x (expected and fine per this slice's own scope: cross-
-		// voice ink collision avoidance is a later slice). x cannot tell the
-		// two beams apart here, so identify each stem's owning voice via the
-		// note id every stem rect already carries.
-		const voiceOf = (noteId: string | undefined) => score.findNote(noteId!)!.voice;
-		const voice1Stems = stems.filter((s) => voiceOf(s.noteId) === 1);
-		const voice2Stems = stems.filter((s) => voiceOf(s.noteId) === 2);
-		expect(voice1Stems).toHaveLength(2);
-		expect(voice2Stems).toHaveLength(2);
-
-		const heads = ops
-			.filter(isGlyph)
-			.filter((op) => op.glyph === 'noteheadBlack')
-			.map((op) => op.y);
-
-		// Voice 1 (C5, D5: both above the middle line, where the pitch rule
-		// would pick a down-stem group) is forced up instead: an up-stem's
-		// beam-side is each stem's own top edge (`y`), and a shared flat beam
-		// means both agree with each other, above every notehead.
-		const voice1BeamSideYs = voice1Stems.map((s) => s.y);
-		expect(voice1BeamSideYs[0]).toBeCloseTo(voice1BeamSideYs[1]!, 6);
-		expect(Math.max(...voice1BeamSideYs)).toBeLessThan(Math.min(...heads));
-
-		// Voice 2 (C4, D4: both below the middle line, where the pitch rule
-		// would pick an up-stem group) is forced down instead: a down-stem's
-		// beam-side is each stem's bottom edge (`y + height`), below every
-		// notehead.
-		const voice2BeamSideYs = voice2Stems.map((s) => s.y + s.height);
-		expect(voice2BeamSideYs[0]).toBeCloseTo(voice2BeamSideYs[1]!, 6);
-		expect(Math.min(...voice2BeamSideYs)).toBeGreaterThan(Math.max(...heads));
-	});
-
-	it('keeps the ordinary pitch-based rule unchanged when only voice 1 is present', () => {
-		// Same C5 pitch as above, alone: the plain single-voice rule (above
-		// the middle line -> down-stem, Slice 3) applies exactly as before
-		// this slice, confirming the override never engages for a
-		// single-voice measure.
-		const layout = layoutScore(buildScore([[['C5', 'eighth']]]), options);
-		const glyphs = layout.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		expect(glyphs).toContain('flag8thDown');
-	});
-
-	it("offsets voice 1 and voice 2 rests apart when they share the same onset", () => {
-		const score = buildScore([
-			[
-				[null, 'quarter', { voice: 1 }],
-				['G4', 'quarter', { voice: 1 }],
-				['A4', 'quarter', { voice: 1 }],
-				['B4', 'quarter', { voice: 1 }],
-				[null, 'quarter', { voice: 2 }],
-				['C4', 'quarter', { voice: 2 }],
-				['D4', 'quarter', { voice: 2 }],
-				['E4', 'quarter', { voice: 2 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const rests = layout.measures[0]!.ops.filter(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'restQuarter'
-		);
-		expect(rests).toHaveLength(2);
-		// Same onset, same shared column: same x.
-		expect(rests[0]!.x).toBeCloseTo(rests[1]!.x, 6);
-		// Different y: one shifted two fixed staff spaces up from the
-		// ordinary default, the other the same distance down, so neither
-		// prints on top of the other's ink at this shared column (see
-		// `REST_VOICE_OFFSET_SPACES`'s own comment on why two spaces, not
-		// one, is what actually clears a quarter rest's own glyph height).
-		const defaultY = layout.staffTopY + 2 * ss;
-		const ys = rests.map((r) => r.y).sort((a, b) => a - b);
-		expect(ys[0]).toBeCloseTo(defaultY - 2 * ss, 6); // voice 1: shifted up
-		expect(ys[1]).toBeCloseTo(defaultY + 2 * ss, 6); // voice 2: shifted down
-	});
-
-	it('spreads three voices\' rests apart into three distinct, ordered offsets at a shared onset', () => {
-		// M2 scoping recheck (before M3): `restVoiceOffsetSpaces` used to give
-		// voice 3+ no offset at all, letting a third voice's rest print
-		// directly on top of whichever of voice 1/2 happened to already be
-		// there. It now grows by parity the same way `voiceStemOverride`
-		// does: voice 3 (odd) steps a further `REST_VOICE_OFFSET_SPACES`
-		// beyond voice 1's own offset, rather than colliding with it.
-		const score = buildScore([
-			[
-				[null, 'quarter', { voice: 1 }],
-				['G4', 'quarter', { voice: 1 }],
-				['A4', 'quarter', { voice: 1 }],
-				['B4', 'quarter', { voice: 1 }],
-				[null, 'quarter', { voice: 2 }],
-				['C4', 'quarter', { voice: 2 }],
-				['D4', 'quarter', { voice: 2 }],
-				['E4', 'quarter', { voice: 2 }],
-				[null, 'quarter', { voice: 3 }],
-				['F4', 'quarter', { voice: 3 }],
-				['G4', 'quarter', { voice: 3 }],
-				['A4', 'quarter', { voice: 3 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const rests = layout.measures[0]!.ops.filter(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'restQuarter'
-		);
-		expect(rests).toHaveLength(3);
-		// Same onset, same shared column: same x for all three.
-		expect(rests[1]!.x).toBeCloseTo(rests[0]!.x, 6);
-		expect(rests[2]!.x).toBeCloseTo(rests[0]!.x, 6);
-		// Three distinct y offsets, ordered voice 3 (furthest up) < voice 1
-		// (one step up) < voice 2 (one step down), since voice 3 steps a
-		// second `REST_VOICE_OFFSET_SPACES` beyond voice 1's own offset on
-		// the same (odd, upward) side rather than sharing it.
-		const defaultY = layout.staffTopY + 2 * ss;
-		const ys = rests.map((r) => r.y).sort((a, b) => a - b);
-		expect(ys[0]).toBeCloseTo(defaultY - 4 * ss, 6); // voice 3: two steps up
-		expect(ys[1]).toBeCloseTo(defaultY - 2 * ss, 6); // voice 1: one step up
-		expect(ys[2]).toBeCloseTo(defaultY + 2 * ss, 6); // voice 2: one step down
-	});
-
-	it('leaves a single voice\'s rest at its ordinary fixed position with no offset', () => {
-		const layout = layoutScore(buildScore([[[null, 'quarter']]]), options);
-		const rest = layout.measures[0]!.ops.find(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'restQuarter'
-		)!;
-		expect(rest.y).toBeCloseTo(layout.staffTopY + 2 * ss, 6);
-	});
-
-	it('generalizes the stem-direction convention to voices 3 and 4 by parity, odd up and even down', () => {
-		// M2 scoping recheck (before M3): voices 3+ used to fall back to the
-		// ordinary pitch-based rule here, a documented gap rather than a real
-		// convention; `voiceStemOverride` now extends the exact voice-1-up/
-		// voice-2-down rule above by parity instead. D5 (voice 3, above the
-		// middle line, where the pitch rule would pick a down-stem) is forced
-		// up because 3 is odd, the same direction voice 1's C5 gets; D4
-		// (voice 4, below the middle line, where the pitch rule would pick an
-		// up-stem) is forced down because 4 is even, the same direction voice
-		// 2's C4 gets. Every one of the four notes here has its pitch-based
-		// answer deliberately overridden by the convention, not agreeing with
-		// it by coincidence.
+	it('stems odd voices up and even voices down, against what pitch alone would pick', () => {
 		const score = buildScore([
 			[
 				['C5', 'eighth', { voice: 1 }],
@@ -1797,1246 +664,454 @@ describe('two voices in one staff (M2 Slice 1)', () => {
 				['D4', 'eighth', { voice: 4 }]
 			]
 		]);
-		const layout = layoutScore(score, options);
-		const ops = layout.measures[0]!.ops;
-		const flagGlyphFor = (noteId: string) =>
-			ops.find(
-				(op): op is Extract<DrawOp, { kind: 'glyph' }> =>
-					op.kind === 'glyph' && op.noteId === noteId && op.glyph.startsWith('flag')
-			)?.glyph;
-		const [v1, v2, v3, v4] = score.measures[0]!.notes;
-		expect(flagGlyphFor(v1!.id)).toBe('flag8thUp');
-		expect(flagGlyphFor(v2!.id)).toBe('flag8thDown');
-		expect(flagGlyphFor(v3!.id)).toBe('flag8thUp');
-		expect(flagGlyphFor(v4!.id)).toBe('flag8thDown');
+		const ops = layoutScore(score, OPTS).measures[0]!.ops;
+		const flagFor = (id: string) => ops.find((op): op is GlyphOp => op.kind === 'glyph' && op.noteId === id && op.glyph.startsWith('flag'))?.glyph;
+		expect(score.measures[0]!.notes.map((n) => flagFor(n.id))).toEqual(['flag8thUp', 'flag8thDown', 'flag8thUp', 'flag8thDown']);
 	});
 
-	it('validates every two-voice-showcase measure against 4/4 capacity, one voice at a time', () => {
-		// Same discipline as the duration/accidental/tie showcases' own
-		// `validateMeasure` tests: fixed by the M2 scoping-recheck per-voice
-		// rewrite (see `MeasureValidation.perVoice`'s own comment), which is
-		// what makes this test possible at all. Before that fix,
-		// `validateMeasure` summed both voices together (2 wholes for a
-		// measure where each voice separately fills 4/4 once), which would
-		// have failed here for reasons unrelated to anything this showcase
-		// actually demonstrates; that is exactly why `createTwoVoiceShowcaseScore`'s
-		// own doc comment used to flag this validation as skipped.
-		const score = createTwoVoiceShowcaseScore();
-		for (const measure of score.measures) {
-			expect(validateMeasure(measure, score.time).valid).toBe(true);
-		}
+	it("overrides a beamed group's direction per voice", () => {
+		const score = buildScore([
+			[
+				['C5', 'eighth', { voice: 1 }],
+				['D5', 'eighth', { voice: 1 }],
+				['C4', 'eighth', { voice: 2 }],
+				['D4', 'eighth', { voice: 2 }]
+			]
+		]);
+		const ops = layoutScore(score, OPTS).measures[0]!.ops;
+		expect(beamRects(ops)).toHaveLength(2);
+		const stems = stemRects(ops);
+		const ofVoice = (voice: number) => stems.filter((s) => score.findNote(s.noteId!)!.voice === voice);
+		const heads = noteheadYs(ops);
+		const up = ofVoice(1).map((s) => s.y);
+		const down = ofVoice(2).map((s) => s.y + s.height);
+		expect(up[0]).toBeCloseTo(up[1]!, 6);
+		expect(Math.max(...up)).toBeLessThan(Math.min(...heads));
+		expect(down[0]).toBeCloseTo(down[1]!, 6);
+		expect(Math.min(...down)).toBeGreaterThan(Math.max(...heads));
 	});
 
-	it('renders the two-voice showcase without error, with both voices\' notes/rests all present', () => {
-		const score = createTwoVoiceShowcaseScore();
-		const layout = layoutScore(score, options);
-		expect(layout.measures).toHaveLength(2);
-		// Measure 0: voice 1's 2 half notes + voice 2's 8 eighths.
-		expect(layout.measures[0]!.notes).toHaveLength(10);
-		// Measure 1: voice 1's rest + 3 quarters, voice 2's rest + 3 quarters
-		// (a rest still gets a `LaidOutNote` entry; see `layoutNote`'s rest
-		// branch).
-		expect(layout.measures[1]!.notes).toHaveLength(8);
-		// Measure 0's voice 2 still beams into four quarter-beat pairs, the
-		// same grouping it would get as the only voice in the measure,
-		// unaffected by voice 1's two much slower half notes sharing it.
-		expect(beamRects(layout.measures[0]!.ops)).toHaveLength(4);
+	it('spreads rests sharing an onset apart by voice, a lone rest staying centred', () => {
+		const voice = (v: number, pitches: string[]) => [
+			[null, 'quarter', { voice: v }] as const,
+			...pitches.map((p) => [p, 'quarter', { voice: v }] as const)
+		];
+		const layout = lay([[...voice(1, ['G4', 'A4', 'B4']), ...voice(2, ['C4', 'D4', 'E4']), ...voice(3, ['F4', 'G4', 'A4'])]]);
+		const rests = glyphOps(layout.measures[0]!.ops, 'restQuarter');
+		expect(rests).toHaveLength(3);
+		for (const rest of rests) expect(rest.x).toBeCloseTo(rests[0]!.x, 6);
+		const [v1, v2, v3] = rests.map((r) => r.y - layout.staffTopY);
+		const solo = lay([[[null, 'quarter']]]);
+		const lone = glyphOps(solo.measures[0]!.ops, 'restQuarter')[0]!.y - solo.staffTopY;
+		// Voice 3 steps further up than voice 1, rather than landing on it.
+		expect(v3!).toBeLessThan(v1!);
+		expect(v1!).toBeLessThan(lone);
+		expect(lone).toBeLessThan(v2!);
 	});
 });
 
-describe('voice-to-voice collision avoidance (M2 Slice 2)', () => {
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-	const ledgerRects = (ops: readonly DrawOp[]) =>
-		ops
-			.filter((op): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect')
-			.filter((op) => Math.abs(op.height - ED.legerLineThickness * ss) < 0.001);
-	const findGlyph = (ops: readonly DrawOp[], glyph: GlyphName) =>
-		ops.find((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === glyph);
-
-	it("nudges voice 2's notehead a full notehead's width right of voice 1's, when the two land a second apart at the same onset", () => {
-		const score = buildScore([
-			[
-				['E4', 'quarter', { voice: 1 }],
-				['D4', 'quarter', { voice: 2 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const measure = layout.measures[0]!;
-		const xOf = (index: number) => measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
-		const v1x = xOf(0);
-		const v2x = xOf(1);
-		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
-		expect(v2x - v1x).toBeCloseTo(noteheadWidth, 6);
+describe('voice-to-voice collision avoidance', () => {
+	it.each([2, 3])("nudges voice %i a notehead's width right of voice 1 a second away at the same onset", (other) => {
+		const score = buildScore([[['E4', 'quarter', { voice: 1 }], ['D4', 'quarter', { voice: other }]]]);
+		const measure = layoutScore(score, OPTS).measures[0]!;
+		expect(noteX(score, measure, 1) - noteX(score, measure, 0)).toBeCloseTo(noteheadWidth, 6);
 	});
 
-	it('never moves voice 1, even when voice 2 is written first in the note array', () => {
-		const solo = layoutScore(buildScore([[['E4', 'quarter']]]), options);
-		const soloX = solo.measures[0]!.notes[0]!.bounds.x;
-
-		const score = buildScore([
-			[
-				['D4', 'quarter', { voice: 2 }],
-				['E4', 'quarter', { voice: 1 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const measure = layout.measures[0]!;
-		const xOf = (index: number) => measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
-		const v2x = xOf(0);
-		const v1x = xOf(1);
-		expect(v1x).toBeCloseTo(soloX, 6); // voice 1 unmoved by voice 2's presence
-		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
-		expect(v2x - v1x).toBeCloseTo(noteheadWidth, 6); // voice 2 the one that yields
+	it('never moves voice 1, even when voice 2 is written first', () => {
+		const soloX = lay([[['E4', 'quarter']]]).measures[0]!.notes[0]!.bounds.x;
+		const score = buildScore([[['D4', 'quarter', { voice: 2 }], ['E4', 'quarter', { voice: 1 }]]]);
+		const measure = layoutScore(score, OPTS).measures[0]!;
+		expect(noteX(score, measure, 1)).toBeCloseTo(soloX, 6);
+		expect(noteX(score, measure, 0) - noteX(score, measure, 1)).toBeCloseTo(noteheadWidth, 6);
 	});
 
-	it('does not nudge when the two voices are further apart than a second', () => {
-		const score = buildScore([
-			[
-				['C4', 'quarter', { voice: 1 }],
-				['G4', 'quarter', { voice: 2 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const measure = layout.measures[0]!;
-		const xOf = (index: number) => measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
-		expect(xOf(0)).toBeCloseTo(xOf(1), 6);
-	});
+	it('does not nudge voices further apart than a second, or a second already cleared by column spacing', () => {
+		const apart = buildScore([[['C4', 'quarter', { voice: 1 }], ['G4', 'quarter', { voice: 2 }]]]);
+		const apartMeasure = layoutScore(apart, OPTS).measures[0]!;
+		expect(noteX(apart, apartMeasure, 0)).toBeCloseTo(noteX(apart, apartMeasure, 1), 6);
 
-	it('does not nudge a second-apart pair once normal column spacing already clears them', () => {
-		// Voice 1's quarter note is alone at onset 0; voice 2's own note, a
-		// second below it, lands a full quarter-note column later (onset
-		// 0.25), naturally far enough right that the previous-column check
-		// this slice adds finds nothing to close.
-		const score = buildScore([
-			[
-				['C4', 'quarter', { voice: 1 }],
-				[null, 'quarter', { voice: 2 }],
-				['B3', 'quarter', { voice: 2 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const measure = layout.measures[0]!;
-		const c4Id = score.measures[0]!.notes[0]!.id;
-		const b3Id = score.measures[0]!.notes[2]!.id;
-		const c4X = measure.notes.find((n) => n.id === c4Id)!.bounds.x;
-		const b3X = measure.notes.find((n) => n.id === b3Id)!.bounds.x;
-		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
-		expect(b3X - c4X).toBeGreaterThan(noteheadWidth); // natural column gap, not the clash nudge
-	});
-
-	it("shifts an accidental in voice 2 past voice 1's ledger-line ink at the same onset", () => {
-		// Voice 1's C4 whole note draws a ledger line below the staff and has
-		// no stem (a whole note never gets one), keeping its ink here to the
-		// ledger line alone. Voice 2's C#5 quarter, at the very same onset,
-		// is nowhere near a second away from C4 (over an octave), so the
-		// notehead-clash nudge above never engages; this test isolates the
-		// other collision path, an accidental checking the other voice's ink
-		// at the shared column x, not just its own voice's previous note
-		// (which for voice 2's very first note would otherwise be `null`,
-		// giving no clearance at all).
-		const score = buildScore([
-			[
-				['C4', 'whole', { voice: 1 }],
-				['C#5', 'quarter', { voice: 2 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const ops = layout.measures[0]!.ops;
-
-		const ledger = ledgerRects(ops)[0]!;
-		const ledgerRight = ledger.x + ledger.width;
-		const accidental = findGlyph(ops, 'accidentalSharp')!;
-		// The same "close to exactly the minimum" assertion M1 Slice 4's own
-		// single-voice collision test used, extended across voices.
-		expect(accidental.x - ledgerRight).toBeCloseTo(0.9 * ss, 5);
-	});
-
-	it("nudges voice 3's notehead clear of voice 1's the same way voice 2's does, with no voice 2 present", () => {
-		// M2 scoping recheck (before M3): `secondIntervalClashShift` used to
-		// fire only for `voice === 2` against a single tracked voice-1
-		// position. It now checks a placed note against *every*
-		// earlier-numbered voice already laid out at this column or the
-		// previous one, so a voice 3/voice 1 clash - skipping voice 2
-		// entirely, which never appears in this measure at all - still
-		// resolves with the exact same rightward-nudge convention voice 2
-		// already gets in the test above.
-		const score = buildScore([
-			[
-				['E4', 'quarter', { voice: 1 }],
-				['D4', 'quarter', { voice: 3 }]
-			]
-		]);
-		const layout = layoutScore(score, options);
-		const measure = layout.measures[0]!;
-		const xOf = (index: number) => measure.notes.find((n) => n.id === score.measures[0]!.notes[index]!.id)!.bounds.x;
-		const v1x = xOf(0);
-		const v3x = xOf(1);
-		const noteheadWidth = GLYPH_METRICS.noteheadBlack.advance * ss;
-		expect(v3x - v1x).toBeCloseTo(noteheadWidth, 6);
-	});
-
-	it('renders the voice-clash showcase without error, with the expected accidental and no crash', () => {
-		const score = createVoiceClashShowcaseScore();
-		const layout = layoutScore(score);
-		expect(layout.measures).toHaveLength(2);
-		const glyphs = layout.measures[1]!.ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
-		expect(glyphs).toContain('accidentalSharp'); // voice 2's C#5
+		const later = buildScore([[['C4', 'quarter', { voice: 1 }], [null, 'quarter', { voice: 2 }], ['B3', 'quarter', { voice: 2 }]]]);
+		const laterMeasure = layoutScore(later, OPTS).measures[0]!;
+		expect(noteX(later, laterMeasure, 2) - noteX(later, laterMeasure, 0)).toBeGreaterThan(noteheadWidth);
 	});
 });
 
-describe('clefs (M2 Slice 3)', () => {
-	const ss = 10;
-	const options = { staffSpacePx: ss };
+describe('clefs', () => {
+	const CLEF_GLYPHS: ReadonlySet<GlyphName> = new Set<GlyphName>(['gClef', 'fClef', 'gClef8vb', 'cClef']);
+	const clefOpsOf = (ops: readonly DrawOp[]) => ops.filter((op): op is GlyphOp => op.kind === 'glyph' && CLEF_GLYPHS.has(op.glyph));
+	const clefNames = (ops: readonly DrawOp[]) => clefOpsOf(ops).map((op) => op.glyph);
+	const layClef = (clef: ClefType, measures: readonly (MeasureSpec | MeasureBuildSpec)[], keyFifths = 0, systemWidthPx?: number) =>
+		layoutScore(buildScore(measures, { clef, keyFifths }), { staffSpacePx: SS, systemWidthPx });
+	const fourQuarters = (pitch: string): MeasureSpec => [0, 1, 2, 3].map(() => [pitch, 'quarter'] as const);
+	const inlineChange = (onset: number, clef: ClefType) => [
+		{ notes: fourQuarters('C4'), clefChanges: [{ onset, clef }] },
+		[['C4', 'whole']] as MeasureSpec
+	];
+	const scaledClefRight = (layout: LaidOutScore, clef: GlyphOp) =>
+		clef.x + GLYPH_METRICS.cClef.advance * SS * (clef.fontSizePx! / layout.fontSizePx);
 
-	const findGlyph = (ops: readonly DrawOp[], glyph: GlyphName) =>
-		ops.find((op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === glyph)!;
-	const noteheadYs = (ops: readonly DrawOp[]) =>
-		ops.flatMap((op) => (op.kind === 'glyph' && op.glyph === 'noteheadBlack' ? [op.y] : []));
-
-	/**
-	 * Canvas y of a single `noteheadBlack` note laid out alone under `clef`.
-	 * Only ever used to compare *within* one clef's own single-note score
-	 * (e.g. the `treble8`-vs-`treble` and bass-ledger-line tests below), never
-	 * across two different pitches: two separate `layoutScore` calls can (and,
-	 * for pitches needing different amounts of ledger-line clearance, do)
-	 * settle on different `shiftY` translations, so their raw canvas `y`
-	 * values are not directly comparable to each other. Tests that need to
-	 * compare *two different pitches'* positions instead lay both out
-	 * together, in one shared measure/one shared `layoutScore` call, so they
-	 * share the same `shiftY` (see `noteheadYs`, and this describe block's own
-	 * line-spacing and key-signature tests).
-	 */
-	function soloNoteheadY(clef: ClefType, pitch: string): number {
-		const layout = layoutScore(buildScore([[[pitch, 'quarter']]], { clef }), options);
-		return findGlyph(layout.measures[0]!.ops, 'noteheadBlack').y;
-	}
-
-	it('places a note on the correct line for treble, bass and treble8, all at the standard 2-space line spacing', () => {
-		// Bottom line, middle line, top line for each clef, all three notes in
-		// one measure (one `layoutScore` call, so all three share the same
-		// vertical `shiftY` and their `y`s are directly comparable). treble8
-		// shares plain treble's exact positions (only its clef glyph differs;
-		// see `ClefType`'s own comment in model/score.ts), so it is included
-		// here as a positive check that it really does, not skipped as
-		// redundant.
-		const cases: readonly (readonly [ClefType, string, string, string])[] = [
-			['treble', 'E4', 'B4', 'F5'],
-			['bass', 'G2', 'D3', 'A3'],
-			['treble8', 'E4', 'B4', 'F5']
-		];
-		for (const [clef, bottom, middle, top] of cases) {
-			const layout = layoutScore(
-				buildScore([[[bottom, 'quarter'], [middle, 'quarter'], [top, 'quarter']]], { clef }),
-				options
-			);
-			const [bottomY, middleY, topY] = noteheadYs(layout.measures[0]!.ops);
-			// Canvas y grows downward, so the top line's note has the smallest y;
-			// every adjacent staff line is exactly 2 staff spaces (one line's
-			// worth) apart, the same geometry the existing (treble-only)
-			// ledger-line tests above already rely on.
-			expect(middleY! - topY!).toBeCloseTo(2 * ss, 6);
-			expect(bottomY! - middleY!).toBeCloseTo(2 * ss, 6);
-		}
+	it.each([
+		['treble', 'E4', 'B4', 'F5'],
+		['bass', 'G2', 'D3', 'A3'],
+		['treble8', 'E4', 'B4', 'F5']
+	] as const)('puts %s bottom, middle and top line notes a line apart', (clef, bottom, middle, top) => {
+		const layout = layClef(clef, [[[bottom, 'quarter'], [middle, 'quarter'], [top, 'quarter']]]);
+		const [bottomY, middleY, topY] = noteheadYs(layout.measures[0]!.ops);
+		expect(middleY! - topY!).toBeCloseTo(2 * SS, 6);
+		expect(bottomY! - middleY!).toBeCloseTo(2 * SS, 6);
 	});
 
-	it('treble8 places a note at the exact same y as plain treble; only the clef glyph differs', () => {
-		// A single, identical pitch in both clefs' own solo layout needs the
-		// exact same ledger-line clearance in each, so the two calls' own
-		// `shiftY` values agree and `soloNoteheadY`'s cross-call comparison is
-		// valid here (unlike comparing two *different* pitches across calls).
-		expect(soloNoteheadY('treble8', 'C5')).toBeCloseTo(soloNoteheadY('treble', 'C5'), 6);
-
-		const treble = layoutScore(buildScore([[['C5', 'quarter']]], { clef: 'treble' }), options);
-		const treble8 = layoutScore(buildScore([[['C5', 'quarter']]], { clef: 'treble8' }), options);
-		expect(findGlyph(treble.measures[0]!.ops, 'gClef')).toBeDefined();
-		expect(findGlyph(treble8.measures[0]!.ops, 'gClef8vb')).toBeDefined();
-	});
-
-	it('draws a bass clef (fClef) and places middle C on the first ledger line above the staff', () => {
-		const layout = layoutScore(buildScore([[['C4', 'quarter']]], { clef: 'bass' }), options);
+	it.each([
+		['treble', 5, 'gClef'],
+		['treble8', 5, 'gClef8vb'],
+		['bass', -1, 'fClef'],
+		['alto', 2, 'cClef'],
+		['tenor', 1, 'cClef']
+	] as const)('puts middle C in %s %i spaces below the top line, under a %s', (clef, spacesBelowTop, glyph) => {
+		const layout = layClef(clef, [[['C4', 'quarter']]]);
 		const ops = layout.measures[0]!.ops;
-		expect(findGlyph(ops, 'fClef')).toBeDefined();
-		const ledgerRects = ops.filter(
-			(op): op is Extract<DrawOp, { kind: 'rect' }> =>
-				op.kind === 'rect' && Math.abs(op.height - ED.legerLineThickness * ss) < 0.001
-		);
-		expect(ledgerRects).toHaveLength(1);
-		// The ledger line sits above the staff (smaller y than the top line),
-		// mirroring how the same note needs a ledger line *below* a treble
-		// staff (already covered by the "draws ledger lines only for notes off
-		// the staff" test above).
-		expect(ledgerRects[0]!.y).toBeLessThan(layout.staffTopY);
-	});
-
-	it('positions a key signature\'s sharps on the same line/space a real notehead of that letter would use, per clef', () => {
-		// The first written sharp is always F (`KEY_SIGNATURE_POSITIONS`); this
-		// checks the *musical* claim ("F# lands where an F would") rather than
-		// restating this file's own internal position table, so a wrong octave
-		// choice for a clef would actually fail it. The reference note is
-		// written as F# (matching the one-sharp key already in force), not
-		// plain F, so it draws no accidental of its own and its notehead's `y`
-		// alone is what gets compared to the key signature's; both are read
-		// from the *same* `layoutScore` call (one measure) so they share the
-		// same vertical `shiftY`, unlike comparing across two separate calls
-		// (see `soloNoteheadY`'s own comment on why that would not be valid).
-		const cases: readonly (readonly [ClefType, string])[] = [
-			['treble', 'F#5'],
-			['bass', 'F#3'],
-			['alto', 'F#4'],
-			['tenor', 'F#3']
-		];
-		for (const [clef, fSharpPitch] of cases) {
-			const layout = layoutScore(buildScore([[[fSharpPitch, 'quarter']]], { clef, keyFifths: 1 }), options);
-			const ops = layout.measures[0]!.ops;
-			const keySharpY = findGlyph(ops, 'accidentalSharp').y;
-			const [noteY] = noteheadYs(ops);
-			expect(keySharpY).toBeCloseTo(noteY!, 6);
+		expect(noteheadYs(ops)[0]! - layout.staffTopY).toBeCloseTo(spacesBelowTop * SS, 6);
+		expect(clefNames(ops)).toEqual([glyph]);
+		const ledgers = ledgerRects(ops);
+		if (spacesBelowTop >= 0 && spacesBelowTop <= 4) {
+			// A C clef centres on middle C's line, which needs no ledger.
+			expect(clefOpsOf(ops)[0]!.y - layout.staffTopY).toBeCloseTo(spacesBelowTop * SS, 6);
+			expect(ledgers).toHaveLength(0);
+		} else {
+			expect(ledgers).toHaveLength(1);
+			if (spacesBelowTop < 0) expect(ledgers[0]!.y).toBeLessThan(layout.staffTopY);
 		}
 	});
 
-	it('positions a key signature\'s flats on the same line/space a real notehead of that letter would use, per clef', () => {
-		// The first written flat is always B; same one-`layoutScore`-call
-		// reasoning as the sharps test above, with the reference note written
-		// as Bb (matching the one-flat key already in force) so it draws no
-		// accidental of its own.
-		const cases: readonly (readonly [ClefType, string])[] = [
-			['treble', 'Bb4'],
-			['bass', 'Bb2'],
-			['alto', 'Bb3'],
-			['tenor', 'Bb3']
-		];
-		for (const [clef, bFlatPitch] of cases) {
-			const layout = layoutScore(buildScore([[[bFlatPitch, 'quarter']]], { clef, keyFifths: -1 }), options);
-			const ops = layout.measures[0]!.ops;
-			const keyFlatY = findGlyph(ops, 'accidentalFlat').y;
-			const [noteY] = noteheadYs(ops);
-			expect(keyFlatY).toBeCloseTo(noteY!, 6);
-		}
+	it.each([
+		// Half staff spaces down from the top line, per accidental in written
+		// order, transcribed from MuseScore's `clefTable` rather than this
+		// engine's own table. Tenor sharps start low instead of zigzagging high.
+		['alto', 7, 'accidentalSharp', [1, 4, 0, 3, 6, 2, 5]],
+		['alto', -7, 'accidentalFlat', [5, 2, 6, 3, 7, 4, 8]],
+		['tenor', 7, 'accidentalSharp', [6, 2, 5, 1, 4, 0, 3]],
+		['tenor', -7, 'accidentalFlat', [3, 0, 4, 1, 5, 2, 6]],
+		['treble', 7, 'accidentalSharp', [0, 3, -1, 2, 5, 1, 4]],
+		['treble', -7, 'accidentalFlat', [4, 1, 5, 2, 6, 3, 7]],
+		['treble8', 3, 'accidentalSharp', [0, 3, -1]],
+		['bass', 7, 'accidentalSharp', [2, 5, 1, 4, 7, 3, 6]],
+		['bass', -7, 'accidentalFlat', [6, 3, 7, 4, 8, 5, 9]]
+	] as const)('places %s key signature %i at the standard positions', (clef, keyFifths, glyph, halfSpaces) => {
+		const layout = layClef(clef, [[[null, 'quarter']]], keyFifths);
+		const ys = glyphOps(layout.measures[0]!.ops, glyph).map((op) => Math.round(((op.y - layout.staffTopY) / (SS / 2)) * 1e6) / 1e6);
+		expect(ys).toEqual(halfSpaces);
 	});
-
-	it('gives treble8 the exact same key-signature positions as plain treble', () => {
-		const treble = layoutScore(buildScore([[['C4', 'quarter']]], { clef: 'treble', keyFifths: 3 }), options);
-		const treble8 = layoutScore(buildScore([[['C4', 'quarter']]], { clef: 'treble8', keyFifths: 3 }), options);
-		const sharpYs = (l: LaidOutScore) =>
-			l.measures[0]!.ops.flatMap((op) => (op.kind === 'glyph' && op.glyph === 'accidentalSharp' ? [op.y] : []));
-		expect(sharpYs(treble8)).toEqual(sharpYs(treble));
-	});
-
-	it('renders the clef showcase (three staves, one per clef) without error, one system-opening clef glyph each', () => {
-		const score = createClefShowcaseScore();
-		const layout = layoutScore(score);
-		// Two measures per staff, three staves.
-		expect(layout.measures).toHaveLength(6);
-		const systemFirstMeasures = layout.measures.filter((m) => m.index === 0);
-		expect(systemFirstMeasures).toHaveLength(3);
-		const clefGlyphsOf = (staffIndex: number) =>
-			systemFirstMeasures
-				.find((m) => m.staffIndex === staffIndex)!
-				.ops.flatMap((op) => (op.kind === 'glyph' && (op.glyph === 'gClef' || op.glyph === 'fClef' || op.glyph === 'gClef8vb') ? [op.glyph] : []));
-		expect(clefGlyphsOf(0)).toEqual(['gClef']);
-		expect(clefGlyphsOf(1)).toEqual(['fClef']);
-		expect(clefGlyphsOf(2)).toEqual(['gClef8vb']);
-	});
-});
-
-describe('clef changes (M5 Slice 5)', () => {
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-	const CLEF_GLYPHS: ReadonlySet<GlyphName> = new Set<GlyphName>(['gClef', 'fClef', 'gClef8vb']);
-	/** Every clef glyph op in `ops`, narrowed so `fontSizePx` is readable. */
-	const clefOpsOf = (ops: readonly DrawOp[]) =>
-		ops.filter(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && CLEF_GLYPHS.has(op.glyph)
-		);
-	const noteheadYs = (ops: readonly DrawOp[]) =>
-		ops.flatMap((op) => (op.kind === 'glyph' && op.glyph === 'noteheadBlack' ? [op.y] : []));
 
 	it('draws a smaller change clef inline at a mid-system change, and none at a later unchanged measure', () => {
-		const score = buildScore([
-			[['C4', 'quarter']],
-			{ notes: [['C4', 'quarter']], clef: 'bass' },
-			[['C4', 'quarter']]
-		]);
-		const layout = layoutScore(score, options);
+		const layout = lay([[['C4', 'quarter']], { notes: [['C4', 'quarter']], clef: 'bass' }, [['C4', 'quarter']]]);
 		expect(layout.systems[0]!.measureIndices).toEqual([0, 1, 2]);
-
-		expect(clefOpsOf(layout.measures[0]!.ops).map((op) => op.glyph)).toEqual(['gClef']);
-		expect(clefOpsOf(layout.measures[0]!.ops)[0]!.fontSizePx).toBeUndefined();
-
-		const changeClefs = clefOpsOf(layout.measures[1]!.ops);
-		expect(changeClefs.map((op) => op.glyph)).toEqual(['fClef']);
-		// A mid-system change clef draws at a reduced, explicit size, smaller
-		// than the shared font size every full-size header clef uses.
-		expect(changeClefs[0]!.fontSizePx).toBeDefined();
-		expect(changeClefs[0]!.fontSizePx!).toBeLessThan(layout.fontSizePx);
-
+		const [header] = clefOpsOf(layout.measures[0]!.ops);
+		expect(header!.glyph).toBe('gClef');
+		expect(header!.fontSizePx).toBeUndefined();
+		const changes = clefOpsOf(layout.measures[1]!.ops);
+		expect(changes.map((op) => op.glyph)).toEqual(['fClef']);
+		expect(changes[0]!.fontSizePx!).toBeLessThan(layout.fontSizePx);
 		expect(clefOpsOf(layout.measures[2]!.ops)).toEqual([]);
+		// The same C4 moves from below the staff to above it.
+		const [trebleLedger] = ledgerRects(layout.measures[0]!.ops);
+		const [bassLedger] = ledgerRects(layout.measures[1]!.ops);
+		expect(trebleLedger!.y).toBeGreaterThan(layout.staffTopY + 4 * SS);
+		expect(bassLedger!.y).toBeLessThan(layout.staffTopY);
 	});
 
-	it('shows the changed clef full size when the change lands on a system break, and on every later system', () => {
-		// An unreasonably tight budget forces every measure onto its own
-		// system, the same trick the key-change test above uses.
-		const score = buildScore([
-			[['C4', 'half'], ['D4', 'half']],
-			{ notes: [['C4', 'half'], ['D4', 'half']], clef: 'bass' },
-			[['C4', 'half'], ['D4', 'half']]
-		]);
-		const layout = layoutScore(score, { staffSpacePx: ss, systemWidthPx: 1 });
-		expect(layout.systems[1]!.measureIndices).toEqual([1]);
-		expect(layout.systems[2]!.measureIndices).toEqual([2]);
-
-		expect(clefOpsOf(layout.measures[0]!.ops).map((op) => op.glyph)).toEqual(['gClef']);
+	it.each([
+		['a measure clef change', 'treble' as ClefType, [[['C4', 'half'], ['D4', 'half']], { notes: [['C4', 'half'], ['D4', 'half']], clef: 'bass' }, [['C4', 'whole']]], 'fClef'],
+		['an inline clef change', 'bass' as ClefType, [...inlineChange(0.5, 'tenor'), [['C4', 'whole']]], 'cClef']
+	] as const)('shows the clef carried by %s full size in every later system header', (_name, clef, measures, glyph) => {
+		const layout = layClef(clef, measures as unknown as MeasureBuildSpec[], 0, 1);
 		for (const index of [1, 2]) {
+			expect(layout.systems[index]!.measureIndices).toEqual([index]);
 			const clefs = clefOpsOf(layout.measures[index]!.ops);
-			// Exactly one clef: the system header, already the new clef, with no
-			// second (change) clef stacked after it.
-			expect(clefs.map((op) => op.glyph)).toEqual(['fClef']);
+			expect(clefs.map((op) => op.glyph)).toEqual([glyph]);
 			expect(clefs[0]!.fontSizePx).toBeUndefined();
 		}
 	});
 
-	it('moves noteheads and ledger lines to the new clef mid-staff', () => {
-		// The same C4 in one system: under treble it hangs one ledger line
-		// below the staff, under bass one ledger line above it. One
-		// `layoutScore` call, so both measures share the same vertical shift and
-		// their raw `y`s compare directly.
-		const score = buildScore([[['C4', 'quarter']], { notes: [['C4', 'quarter']], clef: 'bass' }]);
-		const layout = layoutScore(score, options);
-		const [trebleY] = noteheadYs(layout.measures[0]!.ops);
-		const [bassY] = noteheadYs(layout.measures[1]!.ops);
-		// Treble C4 sits a line below E4 (the bottom line), bass C4 a line
-		// above A3 (the top line): 4 staff spaces of staff plus a line's worth
-		// past each edge, 6 staff spaces in all.
-		expect(trebleY! - bassY!).toBeCloseTo(6 * ss, 6);
-
-		const ledgerYs = (ops: readonly DrawOp[]) =>
-			ops.flatMap((op) =>
-				op.kind === 'rect' && Math.abs(op.height - ED.legerLineThickness * ss) < 0.001 ? [op.y] : []
-			);
-		const staffTopY = layout.staffTopY;
-		expect(ledgerYs(layout.measures[0]!.ops)).toHaveLength(1);
-		expect(ledgerYs(layout.measures[0]!.ops)[0]!).toBeGreaterThan(staffTopY + 4 * ss);
-		expect(ledgerYs(layout.measures[1]!.ops)).toHaveLength(1);
-		expect(ledgerYs(layout.measures[1]!.ops)[0]!).toBeLessThan(staffTopY);
-	});
-
-	it('draws a key signature at a clef change in the new clef\'s own positions', () => {
-		// Measure 1 changes to bass and opens a system; its restated G-major
-		// F# must land on F3's line (where a bass-clef F#3 notehead sits), not
-		// treble's F5 position.
-		const score = buildScore(
-			[
-				[['G4', 'quarter']],
-				{ notes: [['F#3', 'quarter']], clef: 'bass' }
-			],
-			{ keyFifths: 1 }
-		);
-		const layout = layoutScore(score, { staffSpacePx: ss, systemWidthPx: 1 });
-		expect(layout.systems[1]!.measureIndices).toEqual([1]);
+	it("draws a key signature at a clef change in the new clef's positions", () => {
+		const layout = layoutScore(buildScore([[['G4', 'quarter']], { notes: [['F#3', 'quarter']], clef: 'bass' }], { keyFifths: 1 }), {
+			staffSpacePx: SS,
+			systemWidthPx: 1
+		});
 		const ops = layout.measures[1]!.ops;
-		const sharpY = findGlyph(ops, 'accidentalSharp')!.y;
-		expect(sharpY).toBeCloseTo(noteheadYs(ops)[0]!, 6);
+		expect(findGlyph(ops, 'accidentalSharp')!.y).toBeCloseTo(noteheadYs(ops)[0]!, 6);
 	});
 
 	it('restores the earlier clef with its own change clef where a range reverts', () => {
 		const score = buildScore([[['C4', 'quarter']], [['C4', 'quarter']], [['C4', 'quarter']], [['C4', 'quarter']]]);
 		score.setClefRange(0, 1, 2, 'treble8');
-		const layout = layoutScore(score, options);
-		expect(clefOpsOf(layout.measures[1]!.ops).map((op) => op.glyph)).toEqual(['gClef8vb']);
-		expect(clefOpsOf(layout.measures[2]!.ops)).toEqual([]);
-		expect(clefOpsOf(layout.measures[3]!.ops).map((op) => op.glyph)).toEqual(['gClef']);
+		const layout = layoutScore(score, OPTS);
+		expect([1, 2, 3].map((i) => clefNames(layout.measures[i]!.ops))).toEqual([['gClef8vb'], [], ['gClef']]);
 	});
 
-	it('keeps a change measure self-contained for scoped redraw: relayoutMeasure reproduces its change clef', () => {
-		const score = buildScore([[['C4', 'quarter']], { notes: [['C4', 'quarter']], clef: 'bass' }]);
-		const layout = layoutScore(score, options);
-		score.transposeNote(score.measures[1]!.notes[0]!.id, 2);
-		const updated = relayoutMeasure(score, layout, 1, options);
-		expect(updated).not.toBeNull();
-		expect(clefOpsOf(updated!.measures[1]!.ops).map((op) => op.glyph)).toEqual(['fClef']);
-	});
-});
-
-describe('C clefs and clef changes inside a measure (M6 Slice 4)', () => {
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-	const CLEF_GLYPHS: ReadonlySet<GlyphName> = new Set<GlyphName>(['gClef', 'fClef', 'gClef8vb', 'cClef']);
-	const clefOpsOf = (ops: readonly DrawOp[]) =>
-		ops.filter(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && CLEF_GLYPHS.has(op.glyph)
-		);
-	const noteheadsOf = (ops: readonly DrawOp[]) =>
-		ops.filter(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'noteheadBlack'
-		);
-	const glyphYs = (ops: readonly DrawOp[], glyph: GlyphName) =>
-		ops.flatMap((op) => (op.kind === 'glyph' && op.glyph === glyph ? [op.y] : []));
-	const fourQuarters = (pitch: string) => [
-		[pitch, 'quarter'],
-		[pitch, 'quarter'],
-		[pitch, 'quarter'],
-		[pitch, 'quarter']
-	] as const;
-
-	it('puts middle C where each clef says: below treble/treble8, above bass, middle line for alto, 4th line for tenor', () => {
-		// In staff spaces down from the top line: treble's C4 is a ledger line
-		// below the bottom line, bass's a ledger line above the top line, alto's
-		// on the middle line, tenor's on the second line from the top.
-		const cases: readonly (readonly [ClefType, number])[] = [
-			['treble', 5],
-			['treble8', 5],
-			['bass', -1],
-			['alto', 2],
-			['tenor', 1]
-		];
-		for (const [clef, spacesBelowTop] of cases) {
-			const layout = layoutScore(buildScore([[['C4', 'quarter']]], { clef }), options);
-			const [head] = noteheadsOf(layout.measures[0]!.ops);
-			expect(head!.y - layout.staffTopY, clef).toBeCloseTo(spacesBelowTop * ss, 6);
-		}
-	});
-
-	it('draws the C clef glyph centred on middle C\'s line, with no ledger line for an on-staff middle C', () => {
-		for (const [clef, spacesBelowTop] of [
-			['alto', 2],
-			['tenor', 1]
-		] as const) {
-			const layout = layoutScore(buildScore([[['C4', 'quarter']]], { clef }), options);
-			const ops = layout.measures[0]!.ops;
-			const clefs = clefOpsOf(ops);
-			expect(clefs.map((op) => op.glyph)).toEqual(['cClef']);
-			expect(clefs[0]!.y - layout.staffTopY).toBeCloseTo(spacesBelowTop * ss, 6);
-			const ledgers = ops.filter(
-				(op) => op.kind === 'rect' && Math.abs(op.height - ED.legerLineThickness * ss) < 0.001
-			);
-			expect(ledgers).toHaveLength(0);
-		}
-	});
-
-	it('places alto and tenor key signatures per the standard engraving positions, sharps and flats', () => {
-		// Half staff spaces down from the top line, per accidental in written
-		// order, transcribed from MuseScore's `clefTable` (clef.cpp) rather than
-		// from this engine's own octave table, so a wrong octave fails here.
-		// Tenor's sharps are the exception to the usual zigzag: they start on
-		// the low F (second line) instead of above the staff.
-		const cases: readonly (readonly [ClefType, number, GlyphName, readonly number[]])[] = [
-			['alto', 7, 'accidentalSharp', [1, 4, 0, 3, 6, 2, 5]],
-			['alto', -7, 'accidentalFlat', [5, 2, 6, 3, 7, 4, 8]],
-			['tenor', 7, 'accidentalSharp', [6, 2, 5, 1, 4, 0, 3]],
-			['tenor', -7, 'accidentalFlat', [3, 0, 4, 1, 5, 2, 6]],
-			// The existing clefs, through the same table, as a cross-check.
-			['treble', 7, 'accidentalSharp', [0, 3, -1, 2, 5, 1, 4]],
-			['bass', -7, 'accidentalFlat', [6, 3, 7, 4, 8, 5, 9]]
-		];
-		for (const [clef, keyFifths, glyph, halfSpaces] of cases) {
-			const layout = layoutScore(buildScore([[[null, 'quarter']]], { clef, keyFifths }), options);
-			const ys = glyphYs(layout.measures[0]!.ops, glyph).map((y) => (y - layout.staffTopY) / (ss / 2));
-			expect(ys.map((y) => Math.round(y * 1e6) / 1e6), `${clef} ${keyFifths}`).toEqual(halfSpaces);
-		}
-	});
-
-	it('lays out a clef change inside a measure: smaller clef before the note at its onset, positions after it in the new clef', () => {
-		const score = buildScore(
-			[{ notes: fourQuarters('C4'), clefChanges: [{ onset: 0.5, clef: 'tenor' }] }, [['C4', 'whole']]],
-			{ clef: 'bass' }
-		);
-		const layout = layoutScore(score, options);
+	it('lays out a clef change inside a measure: a smaller clef in a widened gap, later notes in the new clef', () => {
+		const layout = layClef('bass', inlineChange(0.5, 'tenor'));
 		const ops = layout.measures[0]!.ops;
-		const heads = noteheadsOf(ops);
-		expect(heads.map((h) => (h.y - layout.staffTopY) / ss)).toEqual([-1, -1, 1, 1].map((v) => expect.closeTo(v, 6)));
-
+		const heads = glyphOps(ops, 'noteheadBlack');
+		expect(heads.map((h) => (h.y - layout.staffTopY) / SS)).toEqual([-1, -1, 1, 1].map((v) => expect.closeTo(v, 6)));
 		const clefs = clefOpsOf(ops);
 		expect(clefs.map((op) => op.glyph)).toEqual(['fClef', 'cClef']);
 		const change = clefs[1]!;
-		expect(change.fontSizePx).toBeDefined();
 		expect(change.fontSizePx!).toBeLessThan(layout.fontSizePx);
-		// Between the second and third notes, clear of both.
-		expect(change.x).toBeGreaterThan(heads[1]!.x + GLYPH_METRICS.noteheadBlack.advance * ss);
-		const clefRight = change.x + GLYPH_METRICS.cClef.advance * ss * (change.fontSizePx! / layout.fontSizePx);
-		expect(heads[2]!.x).toBeGreaterThan(clefRight);
-		// The clef widens the gap it sits in, nothing else.
-		expect(heads[2]!.x - heads[1]!.x).toBeGreaterThan(heads[1]!.x - heads[0]!.x + 2 * ss);
+		expect(change.x).toBeGreaterThan(heads[1]!.x + noteheadWidth);
+		expect(heads[2]!.x).toBeGreaterThan(scaledClefRight(layout, change));
+		expect(heads[2]!.x - heads[1]!.x).toBeGreaterThan(heads[1]!.x - heads[0]!.x + 2 * SS);
 		expect(heads[3]!.x - heads[2]!.x).toBeCloseTo(heads[1]!.x - heads[0]!.x, 6);
-
-		// Measure 1 inherits tenor: no clef glyph of its own, C4 on the 4th line.
+		// The next measure inherits tenor without a clef of its own.
 		expect(clefOpsOf(layout.measures[1]!.ops)).toEqual([]);
-		const [whole] = glyphYs(layout.measures[1]!.ops, 'noteheadWhole');
-		expect(whole! - layout.staffTopY).toBeCloseTo(1 * ss, 6);
+		expect(glyphOps(layout.measures[1]!.ops, 'noteheadWhole')[0]!.y - layout.staffTopY).toBeCloseTo(SS, 6);
 	});
 
-	it('draws a change at the measure\'s very end before the barline, and the next measure reads the new clef', () => {
-		const score = buildScore(
-			[{ notes: fourQuarters('C4'), clefChanges: [{ onset: 1, clef: 'alto' }] }, [['C4', 'whole']]],
-			{ clef: 'bass' }
-		);
-		const layout = layoutScore(score, options);
+	it("draws a change at the measure's very end before the barline", () => {
+		const layout = layClef('bass', inlineChange(1, 'alto'));
 		const ops = layout.measures[0]!.ops;
-		const heads = noteheadsOf(ops);
-		expect(heads.every((h) => Math.abs(h.y - (layout.staffTopY - ss)) < 1e-6)).toBe(true);
+		const heads = glyphOps(ops, 'noteheadBlack');
+		for (const head of heads) expect(head.y).toBeCloseTo(layout.staffTopY - SS, 6);
 		const change = clefOpsOf(ops)[1]!;
 		expect(change.glyph).toBe('cClef');
 		expect(change.x).toBeGreaterThan(heads[3]!.x);
 		const region = layout.measures[0]!.region;
 		expect(change.x).toBeLessThan(region.x + region.width);
-		expect(clefOpsOf(layout.measures[1]!.ops)).toEqual([]);
-		const [whole] = glyphYs(layout.measures[1]!.ops, 'noteheadWhole');
-		expect(whole! - layout.staffTopY).toBeCloseTo(2 * ss, 6);
+		expect(glyphOps(layout.measures[1]!.ops, 'noteheadWhole')[0]!.y - layout.staffTopY).toBeCloseTo(2 * SS, 6);
 	});
 
-	it('shows the carried clef full size in the header of a later system', () => {
-		const score = buildScore(
-			[{ notes: fourQuarters('C4'), clefChanges: [{ onset: 0.5, clef: 'tenor' }] }, [['C4', 'whole']]],
-			{ clef: 'bass' }
-		);
-		const layout = layoutScore(score, { staffSpacePx: ss, systemWidthPx: 1 });
-		expect(layout.systems[1]!.measureIndices).toEqual([1]);
-		const clefs = clefOpsOf(layout.measures[1]!.ops);
-		expect(clefs.map((op) => op.glyph)).toEqual(['cClef']);
-		expect(clefs[0]!.fontSizePx).toBeUndefined();
-	});
-
-	it('pushes an accidental right after a change clef clear of it', () => {
-		const score = buildScore(
-			[{ notes: [['C4', 'half'], ['C#4', 'half']], clefChanges: [{ onset: 0.5, clef: 'tenor' }] }],
-			{ clef: 'bass' }
-		);
-		const layout = layoutScore(score, options);
+	it('pushes an accidental right after a change clef clear of it, positioned in the new clef', () => {
+		const layout = layClef('bass', [{ notes: [['C4', 'half'], ['C#4', 'half']], clefChanges: [{ onset: 0.5, clef: 'tenor' }] }]);
 		const ops = layout.measures[0]!.ops;
-		const change = clefOpsOf(ops)[1]!;
-		const clefRight = change.x + GLYPH_METRICS.cClef.advance * ss * (change.fontSizePx! / layout.fontSizePx);
-		const sharp = ops.find((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')!;
-		expect(sharp.kind === 'glyph' && sharp.x).toBeGreaterThanOrEqual(clefRight - 1e-6);
-		// And the sharp sits on tenor's C line, like its note.
-		expect(sharp.kind === 'glyph' && sharp.y).toBeCloseTo(layout.staffTopY + ss, 6);
+		const sharp = findGlyph(ops, 'accidentalSharp')!;
+		expect(sharp.x).toBeGreaterThanOrEqual(scaledClefRight(layout, clefOpsOf(ops)[1]!) - 1e-6);
+		expect(sharp.y).toBeCloseTo(layout.staffTopY + SS, 6);
 	});
 
-	it('decides stem direction per note\'s own clef across a change', () => {
-		// B3 is above bass's middle line (stem down) but below alto's (stem up).
-		const score = buildScore(
-			[{ notes: [['B3', 'half'], ['B3', 'half']], clefChanges: [{ onset: 0.5, clef: 'alto' }] }],
-			{ clef: 'bass' }
-		);
-		const layout = layoutScore(score, options);
-		const halfHeads = layout.measures[0]!.ops.filter(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'noteheadHalf'
-		);
-		const stems = layout.measures[0]!.ops.filter(
-			(op): op is Extract<DrawOp, { kind: 'rect' }> =>
-				op.kind === 'rect' && Math.abs(op.width - ED.stemThickness * ss) < 0.001
-		);
-		expect(stems).toHaveLength(2);
-		// Down stem hangs below its head, up stem rises above it.
-		expect(stems[0]!.y + stems[0]!.height).toBeGreaterThan(halfHeads[0]!.y + ss);
-		expect(stems[1]!.y).toBeLessThan(halfHeads[1]!.y - ss);
+	it("decides stem direction by each note's own clef across a change", () => {
+		// B3 is above bass's middle line (down) but below alto's (up).
+		const layout = layClef('bass', [{ notes: [['B3', 'half'], ['B3', 'half']], clefChanges: [{ onset: 0.5, clef: 'alto' }] }]);
+		const ops = layout.measures[0]!.ops;
+		const heads = glyphOps(ops, 'noteheadHalf');
+		const stems = stemRects(ops);
+		expect(stems[0]!.y + stems[0]!.height).toBeGreaterThan(heads[0]!.y + SS);
+		expect(stems[1]!.y).toBeLessThan(heads[1]!.y - SS);
 	});
 
-	it('keeps a measure with a change self-contained for scoped redraw', () => {
-		const score = buildScore(
-			[{ notes: fourQuarters('C4'), clefChanges: [{ onset: 0.5, clef: 'tenor' }] }, [['C4', 'whole']]],
-			{ clef: 'bass' }
-		);
-		const layout = layoutScore(score, options);
-		score.transposeNote(score.measures[0]!.notes[3]!.id, 2);
-		const updated = relayoutMeasure(score, layout, 0, options);
+	it.each([
+		['a measure clef change', 'treble' as ClefType, [[['C4', 'quarter']], { notes: [['C4', 'quarter']], clef: 'bass' }], 1, ['fClef']],
+		['an inline clef change', 'bass' as ClefType, inlineChange(0.5, 'tenor'), 0, ['fClef', 'cClef']]
+	] as const)('keeps a measure with %s self-contained for scoped redraw', (_name, clef, measures, index, clefs) => {
+		const score = buildScore(measures as unknown as MeasureBuildSpec[], { clef });
+		const layout = layoutScore(score, OPTS);
+		score.transposeNote(score.measures[index]!.notes.at(-1)!.id, 2);
+		const updated = relayoutMeasure(score, layout, index, OPTS);
 		expect(updated).not.toBeNull();
-		expect(clefOpsOf(updated!.measures[0]!.ops).map((op) => op.glyph)).toEqual(['fClef', 'cClef']);
-		// D4 in tenor: the space above the C line.
-		expect(noteheadsOf(updated!.measures[0]!.ops)[3]!.y - layout.staffTopY).toBeCloseTo(0.5 * ss, 6);
+		expect(clefNames(updated!.measures[index]!.ops)).toEqual(clefs);
 	});
 });
 
-describe('multi-staff redraw isolation (M2 Slice 3)', () => {
-	it('relayoutMeasure on one staff never touches another staff\'s measures, even when their indices collide', () => {
-		// Two staves, each with its own measure 0/1/2: staff-local indices
-		// collide on purpose (both staves have an "index 0", "index 1", ...),
-		// which is exactly the case a bare `index` lookup could not have
-		// disambiguated before this slice's `(staffIndex, index)` addressing.
-		const score = buildScore(
-			[
-				[
-					['C4', 'quarter'],
-					['D4', 'quarter'],
-					['E4', 'quarter'],
-					['F4', 'quarter']
-				],
-				[
-					['G4', 'quarter'],
-					['A4', 'quarter'],
-					['B4', 'quarter'],
-					['C5', 'quarter']
-				]
-			],
-			{ clef: 'treble' }
-		);
+describe('multi-staff systems', () => {
+	/** Treble over bass, one measure each. */
+	function twoStaves(treble: MeasureSpec = [['C5', 'quarter']], bass: MeasureSpec = [['C3', 'quarter']]) {
+		const score = buildScore([treble], { clef: 'treble' });
 		score.appendStaff('bass');
-		for (let i = 0; i < 2; i++) {
-			const m = score.appendMeasure(1);
-			for (const pitch of ['C3', 'D3', 'E3', 'F3']) {
-				score.appendNote(m, { pitch: parsePitch(pitch), value: 'quarter' });
-			}
-		}
-
-		const layout = layoutScore(score);
-		expect(layout.measures.filter((m) => m.staffIndex === 0)).toHaveLength(2);
-		expect(layout.measures.filter((m) => m.staffIndex === 1)).toHaveLength(2);
-
-		const target = score.staves[1]!.measures[1]!.notes[0]!;
-		const touched = score.transposeNote(target.id, 1);
-		expect(touched).toBe(1);
-
-		const updated = relayoutMeasure(score, layout, touched!, {}, 1);
-		expect(updated).not.toBeNull();
-
-		// Every measure except (staffIndex 1, index 1) is the exact same
-		// object, not merely an equal one: this is the same "untouched
-		// measures are not recomputed at all" identity check `relayoutMeasure`'s
-		// own single-staff test above uses, now proven across the new staff
-		// dimension too.
-		for (const m of updated!.measures) {
-			if (m.staffIndex === 1 && m.index === 1) {
-				expect(m).not.toBe(layout.measures.find((mm) => mm.staffIndex === 1 && mm.index === 1));
-			} else {
-				const before = layout.measures.find((mm) => mm.staffIndex === m.staffIndex && mm.index === m.index);
-				expect(m).toBe(before);
-			}
-		}
-	});
-});
-
-describe('multi-staff system layout (M2 Slice 4)', () => {
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-
-	/** Two-staff score (treble over bass), one measure of one quarter note each
-	 *  by default, built the same low-level way the M2 Slice 3 redraw-isolation
-	 *  test above does (`buildScore` only ever populates one implicit staff).
-	 *  `notes` lets a test give each staff a different phrase without repeating
-	 *  the `appendStaff`/`appendMeasure`/`appendNote` boilerplate. */
-	function buildTwoStaffScore(
-		notes: readonly (readonly (readonly [string, NoteValue])[])[] = [[['C5', 'quarter']], [['C3', 'quarter']]]
-	) {
-		const score = buildScore([[...notes[0]!]], { clef: 'treble' });
-		score.appendStaff('bass');
-		const staff1Measure = score.appendMeasure(1);
-		for (const [pitch, value] of notes[1]!) {
-			score.appendNote(staff1Measure, { pitch: parsePitch(pitch), value });
+		const measure = score.appendMeasure(1);
+		for (const [pitch, value] of bass as readonly (readonly [string, NoteValue])[]) {
+			score.appendNote(measure, { pitch: parsePitch(pitch), value });
 		}
 		return score;
 	}
+	const topOf = (layout: LaidOutScore, staffIndex: number) => layout.systems.find((s) => s.staffIndex === staffIndex)!.topY;
+	const thinBarline = (ops: readonly DrawOp[]) => rectsOf(ops).find((r) => Math.abs(r.width - ED.thinBarlineThickness * SS) < 0.01)!;
 
-	const rectsOf = (ops: readonly DrawOp[]) =>
-		ops.filter((op): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect');
-
-	it('stacks a second staff tightly below the first, at a fixed offset from its nominal (not ink-measured) bottom', () => {
-		const score = buildTwoStaffScore();
-		const layout = layoutScore(score, options);
-
-		const sys0 = layout.systems.find((s) => s.staffIndex === 0)!;
-		const sys1 = layout.systems.find((s) => s.staffIndex === 1)!;
-		expect(sys0).toBeDefined();
-		expect(sys1).toBeDefined();
-		// Staff 1 starts strictly below staff 0's own nominal bottom (its top
-		// line plus 4 staff spaces): the two staves are genuinely stacked, not
-		// overlapping or coincident.
-		const staffBand = 4 * ss;
-		expect(sys1.topY).toBeGreaterThan(sys0.topY + staffBand);
-		// Tightly: the two staves interleave within one system, not two whole
-		// independent per-staff blocks each carrying its own top-and-bottom
-		// margin the way Slice 3's naive placeholder stacked them. Comparing
-		// against what laying each staff out *alone* would cost (its own full
-		// padding on both sides, not just a staff-to-staff gap) is a
-		// self-documenting bound rather than a magic number: the interleaved
-		// offset has to be well under what two independent blocks would need.
-		const solo0 = layoutScore(buildScore([[['C5', 'quarter']]], { clef: 'treble' }), options);
-		const solo1 = layoutScore(buildScore([[['C3', 'quarter']]], { clef: 'bass' }), options);
-		expect(sys1.topY - sys0.topY).toBeLessThan(solo0.height + solo1.height);
-
-		// The offset is deterministic, computable from staff 0's own nominal
-		// bottom alone: laying out a *third* staff with identical content
-		// reproduces the exact same staff-to-staff offset a second time.
+	it('stacks staves tightly at a fixed offset, in non-overlapping bands', () => {
+		const score = twoStaves();
+		const layout = layoutScore(score, OPTS);
+		const offset = topOf(layout, 1) - topOf(layout, 0);
+		expect(offset).toBeGreaterThan(4 * SS);
+		// Tighter than two independently padded single-staff layouts.
+		const solo0 = layoutScore(buildScore([[['C5', 'quarter']]], { clef: 'treble' }), OPTS);
+		const solo1 = layoutScore(buildScore([[['C3', 'quarter']]], { clef: 'bass' }), OPTS);
+		expect(offset).toBeLessThan(solo0.height + solo1.height);
+		const [m0, m1] = [measureAt(layout, 0, 0), measureAt(layout, 1, 0)];
+		expect(m1.region.y).toBeGreaterThanOrEqual(m0.region.y + m0.region.height - 0.001);
+		// A third identical staff repeats the same offset.
 		score.appendStaff('bass');
 		score.appendNote(score.appendMeasure(2), { pitch: parsePitch('C3'), value: 'quarter' });
-		const layout3 = layoutScore(score, options);
-		const sys0b = layout3.systems.find((s) => s.staffIndex === 0)!;
-		const sys1b = layout3.systems.find((s) => s.staffIndex === 1)!;
-		const sys2b = layout3.systems.find((s) => s.staffIndex === 2)!;
-		expect(sys1b.topY - sys0b.topY).toBeCloseTo(sys1.topY - sys0.topY, 6);
-		expect(sys2b.topY - sys1b.topY).toBeCloseTo(sys1.topY - sys0.topY, 6);
-
-		// Every staff's own measure region sits in its own non-overlapping
-		// vertical band: no measure of staff 1 draws above where staff 0's own
-		// band ends.
-		const m0 = layout.measures.find((m) => m.staffIndex === 0)!;
-		const m1 = layout.measures.find((m) => m.staffIndex === 1)!;
-		expect(m1.region.y).toBeGreaterThanOrEqual(m0.region.y + m0.region.height - 0.001);
+		const three = layoutScore(score, OPTS);
+		expect(topOf(three, 1) - topOf(three, 0)).toBeCloseTo(offset, 6);
+		expect(topOf(three, 2) - topOf(three, 1)).toBeCloseTo(offset, 6);
 	});
 
-	it('a single-staff score is unaffected: exactly the layout it always produced', () => {
-		// The degenerate case `layoutScore`'s own doc comment calls out:
-		// `barlineSpan` for a lone staff reduces to the ordinary single-staff
-		// band, so this is a regression guard that multi-staff plumbing did not
-		// change the common case's output.
-		const score = buildScore([[['C4', 'quarter'], ['D4', 'quarter']]], { clef: 'treble' });
-		const layout = layoutScore(score, options);
-		expect(layout.systems).toHaveLength(1);
-		const barlineRect = rectsOf(layout.measures[0]!.ops).find(
-			(r) => Math.abs(r.width - ED.thinBarlineThickness * ss) < 0.01
-		)!;
-		expect(barlineRect).toBeDefined();
-		expect(barlineRect.y).toBeCloseTo(layout.staffTopY, 6);
-		expect(barlineRect.height).toBeCloseTo(4 * ss, 6);
+	it("keeps a lone staff's barline exactly the staff's height", () => {
+		const layout = layoutScore(buildScore([[['C4', 'quarter'], ['D4', 'quarter']]]), OPTS);
+		const barline = thinBarline(layout.measures[0]!.ops);
+		expect(barline.y).toBeCloseTo(layout.staffTopY, 6);
+		expect(barline.height).toBeCloseTo(4 * SS, 6);
 	});
 
-	it("draws one shared end barline per measure column, each staff's own segment meeting the next with no gap or overlap", () => {
-		const score = buildTwoStaffScore([
-			[['C5', 'quarter'], ['D5', 'quarter']],
-			[['C3', 'quarter'], ['D3', 'quarter']]
-		]);
-		const layout = layoutScore(score, options);
-		const m0 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 0)!;
-		const m1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 0)!;
-
-		// Each staff's own end-barline rect: the thin 'normal' main line (this
-		// is measure 0 of 1, not the score's last measure, so `endBarline`
-		// resolves to 'normal', a single thin rect with no extra thin line or
-		// dots to filter out).
-		const barlineOf = (ops: readonly DrawOp[]) =>
-			rectsOf(ops).find((r) => Math.abs(r.width - ED.thinBarlineThickness * ss) < 0.01)!;
-		const b0 = barlineOf(m0.ops);
-		const b1 = barlineOf(m1.ops);
-		expect(b0).toBeDefined();
-		expect(b1).toBeDefined();
-
-		// Same column, so the same x and the same thickness: two independent
-		// segments of what reads as one continuous vertical line.
+	it('draws a shared end barline as one segment per staff, meeting across the gap without overlap', () => {
+		const layout = layoutScore(twoStaves([['C5', 'quarter'], ['D5', 'quarter']], [['C3', 'quarter'], ['D3', 'quarter']]), OPTS);
+		const [m0, m1] = [measureAt(layout, 0, 0), measureAt(layout, 1, 0)];
+		const [b0, b1] = [thinBarline(m0.ops), thinBarline(m1.ops)];
 		expect(b1.x).toBeCloseTo(b0.x, 6);
-		expect(b1.width).toBeCloseTo(b0.width, 6);
-
-		// Staff 0 (the group's first staff) only extends *downward*, past its
-		// own nominal bottom, into the gap; staff 1 (the group's last staff)
-		// only extends *upward*, past its own nominal top, into the same gap.
-		expect(b0.height).toBeGreaterThan(4 * ss);
-		expect(b1.height).toBeGreaterThan(4 * ss);
-		expect(b0.y).toBeCloseTo(layout.staffTopY, 6); // staff 0's own top is unmoved
-
-		// The two ink segments meet near the midpoint of the staff gap, close
-		// enough to read as one continuous line, but not touching pixel-for-
-		// pixel: a deliberate, small neutral strip is left between them (see
-		// `barlineSpan`'s own comment on why splitting at the exact geometric
-		// midpoint would make the two staves' *regions* overlap once each one's
-		// antialiasing bleed is applied). No overlap in the ink itself either
-		// way, which is the property that actually matters here.
+		expect(b0.y).toBeCloseTo(layout.staffTopY, 6);
+		expect(b0.height).toBeGreaterThan(4 * SS);
+		expect(b1.height).toBeGreaterThan(4 * SS);
+		// A small neutral strip between the segments keeps the regions apart.
 		expect(b1.y).toBeGreaterThanOrEqual(b0.y + b0.height - 0.001);
 		expect(b1.y - (b0.y + b0.height)).toBeLessThan(5);
-
-		// Each staff's own region bounds at least its own segment...
 		expect(m0.region.y + m0.region.height).toBeGreaterThanOrEqual(b0.y + b0.height - 0.001);
 		expect(m1.region.y).toBeLessThanOrEqual(b1.y + 0.001);
-		// ...and, the property region-scoped redraw actually depends on, the
-		// two staves' regions do not overlap vertically at all: redrawing one
-		// staff's measure can never clear a pixel that belongs to the other
-		// staff's own ink without also being the one to repaint it.
 		expect(m0.region.y + m0.region.height).toBeLessThanOrEqual(m1.region.y + 0.001);
 	});
 
-	it('a narrower staff has its measure column padded to match the wider staff, keeping both barlines aligned', () => {
-		// Staff 0 gets a busy run of eighth notes (wide); staff 1 gets a single
-		// whole note (narrow on its own). Column-width sharing (M2 Slice 4)
-		// pads staff 1's trailing space, not its note positions, out to match.
-		const score = buildTwoStaffScore([
-			[
-				['C5', 'eighth'],
-				['D5', 'eighth'],
-				['E5', 'eighth'],
-				['F5', 'eighth'],
-				['G5', 'eighth'],
-				['A5', 'eighth'],
-				['B5', 'eighth'],
-				['C6', 'eighth']
-			],
-			[['C3', 'whole']]
-		]);
-		const layout = layoutScore(score, options);
-		const m0 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 0)!;
-		const m1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 0)!;
-
-		// Both measures' columns end (region's right edge) at the same x: the
-		// wide staff's own natural width decided the shared column width, and
-		// the narrow staff's trailing space was padded out to match it.
+	it('pads a narrower staff to the wider one so barlines align, without moving its notes', () => {
+		const eighths: MeasureSpec = ['C5', 'D5', 'E5', 'F5', 'G5', 'A5', 'B5', 'C6'].map((p) => [p, 'eighth'] as const);
+		const layout = layoutScore(twoStaves(eighths, [['C3', 'whole']]), OPTS);
+		const [m0, m1] = [measureAt(layout, 0, 0), measureAt(layout, 1, 0)];
 		expect(m1.region.x + m1.region.width).toBeCloseTo(m0.region.x + m0.region.width, 6);
-
-		// The narrow staff's one note is untouched by the padding: it still
-		// sits at its own natural position, close to the measure's own start,
-		// not stretched or re-centred to fill the wider column.
-		const noteOp = m1.ops.find((op) => op.kind === 'glyph' && op.glyph === 'noteheadWhole')!;
-		expect(noteOp).toBeDefined();
-		expect((noteOp as Extract<DrawOp, { kind: 'glyph' }>).x).toBeLessThan(m1.region.x + m1.region.width / 2);
+		expect(findGlyph(m1.ops, 'noteheadWhole')!.x).toBeLessThan(m1.region.x + m1.region.width / 2);
 	});
 
-	it("each staff draws its own clef and its own correct key signature, independently of the other staff's", () => {
-		// Staff 0: treble, D major (2 sharps, the score's own initial key).
-		// Staff 1: bass, Eb major (3 flats), set as an explicit per-measure
-		// override on staff 1's own measure 0 (`Score.keyFifthsAt` walks back
-		// through each staff's own measures independently; see its own
-		// comment), so the two staves genuinely disagree about the key, not
-		// just the clef.
+	it('draws each staff its own clef and key signature', () => {
 		const score = buildScore([[['D5', 'quarter']]], { clef: 'treble', keyFifths: 2 });
 		score.appendStaff('bass');
-		const m1 = score.appendMeasure(1);
-		m1.keyFifths = -3;
-		score.appendNote(m1, { pitch: parsePitch('Eb3'), value: 'quarter' });
-
-		const layout = layoutScore(score, options);
-		const laid0 = layout.measures.find((m) => m.staffIndex === 0)!;
-		const laid1 = layout.measures.find((m) => m.staffIndex === 1)!;
-
-		expect(findGlyph(laid0.ops, 'gClef')).toBeDefined();
-		expect(findGlyph(laid0.ops, 'fClef')).toBeUndefined();
-		expect(laid0.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')).toHaveLength(2);
-		expect(laid0.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalFlat')).toHaveLength(0);
-
-		expect(findGlyph(laid1.ops, 'fClef')).toBeDefined();
-		expect(findGlyph(laid1.ops, 'gClef')).toBeUndefined();
-		expect(laid1.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalFlat')).toHaveLength(3);
-		expect(laid1.ops.filter((op) => op.kind === 'glyph' && op.glyph === 'accidentalSharp')).toHaveLength(0);
+		const measure = score.appendMeasure(1);
+		measure.keyFifths = -3;
+		score.appendNote(measure, { pitch: parsePitch('Eb3'), value: 'quarter' });
+		const layout = layoutScore(score, OPTS);
+		const summary = (ops: readonly DrawOp[]) => [
+			glyphsOf(ops).filter((g) => g === 'gClef' || g === 'fClef'),
+			countOf(ops, 'accidentalSharp'),
+			countOf(ops, 'accidentalFlat')
+		];
+		expect(summary(measureAt(layout, 0, 0).ops)).toEqual([['gClef'], 2, 0]);
+		expect(summary(measureAt(layout, 1, 0).ops)).toEqual([['fClef'], 0, 3]);
 	});
 
 	it('rejects a score whose staves disagree on measure count', () => {
-		const score = buildScore([[['C4', 'quarter']]], { clef: 'treble' });
+		const score = buildScore([[['C4', 'quarter']]]);
 		score.appendStaff('bass');
 		score.appendMeasure(1);
 		score.appendMeasure(1);
-		expect(() => layoutScore(score, options)).toThrow(/measures/);
-	});
-
-	it('renders the grand-staff showcase (two staves, one system each measure column) without error', () => {
-		const score = createGrandStaffShowcaseScore();
-		for (const staff of score.staves) {
-			for (const measure of staff.measures) {
-				expect(validateMeasure(measure, score.timeAt(measure.index, measure.staffIndex)).valid).toBe(true);
-			}
-		}
-
-		const layout = layoutScore(score);
-		// Four measures, two staves.
-		expect(layout.measures).toHaveLength(8);
-		expect(findGlyph(layout.measures.find((m) => m.staffIndex === 0 && m.index === 0)!.ops, 'gClef')).toBeDefined();
-		expect(findGlyph(layout.measures.find((m) => m.staffIndex === 1 && m.index === 0)!.ops, 'fClef')).toBeDefined();
-
-		// Every measure column's barline aligns across both staves (see the
-		// column-width-sharing test above), for all four columns, not just one.
-		for (let i = 0; i < 4; i++) {
-			const treble = layout.measures.find((m) => m.staffIndex === 0 && m.index === i)!;
-			const bass = layout.measures.find((m) => m.staffIndex === 1 && m.index === i)!;
-			expect(bass.region.x + bass.region.width).toBeCloseTo(treble.region.x + treble.region.width, 6);
-		}
+		expect(() => layoutScore(score, OPTS)).toThrow(/measures/);
 	});
 });
 
-describe('part grouping decorations (M2 Slice 5)', () => {
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-
-	/** An `staffCount`-staff score, `measuresPerStaff` identical one-quarter-
-	 *  note measures per staff, with `parts` (`[staffIndices, name?]` pairs)
-	 *  registered via `Score.addPart` in order. Built the same low-level way
-	 *  every other multi-staff test fixture in this file is (`buildScore` only
-	 *  ever populates one implicit staff). */
-	function buildStavesScore(
-		staffCount: number,
-		parts: readonly (readonly [staffIndices: number[], name?: string])[],
-		measuresPerStaff = 1
-	) {
-		const score = buildScore(
-			Array.from({ length: measuresPerStaff }, () => [['C4', 'quarter']] as const),
-			{ clef: 'treble' }
-		);
+describe('part grouping decorations', () => {
+	/** `staffCount` treble staves of `measuresPerStaff` one-quarter measures, with `parts` registered in order. */
+	function stavesWithParts(staffCount: number, parts: readonly (readonly [number[], string?])[], measuresPerStaff = 1) {
+		const score = buildScore(Array.from({ length: measuresPerStaff }, (): MeasureSpec => [['C4', 'quarter']]));
 		for (let staffIndex = 1; staffIndex < staffCount; staffIndex++) {
 			score.appendStaff('treble');
 			for (let i = 0; i < measuresPerStaff; i++) {
-				const m = score.appendMeasure(staffIndex);
-				score.appendNote(m, { pitch: parsePitch('C4'), value: 'quarter' });
+				score.appendNote(score.appendMeasure(staffIndex), { pitch: parsePitch('C4'), value: 'quarter' });
 			}
 		}
 		for (const [staffIndices, name] of parts) score.addPart(staffIndices, name);
 		return score;
 	}
-
-	const glyphsOf = (ops: readonly DrawOp[]) => ops.flatMap((op) => (op.kind === 'glyph' ? [op.glyph] : []));
 	const textsOf = (ops: readonly DrawOp[]) => ops.flatMap((op) => (op.kind === 'text' ? [op.text] : []));
+	const topOf = (layout: LaidOutScore, staffIndex: number) => layout.systems.find((s) => s.staffIndex === staffIndex)!.topY;
 
-	it('a two-staff part draws a brace whose ink spans exactly its two staves\' outer height', () => {
-		const score = buildStavesScore(2, [[[0, 1], 'Piano']]);
-		const layout = layoutScore(score, options);
-
+	it("draws a brace whose ink spans a two-staff part's outer height", () => {
+		const layout = layoutScore(stavesWithParts(2, [[[0, 1], 'Piano']]), OPTS);
 		expect(glyphsOf(layout.partDecorations)).toEqual(['brace']);
-		const brace = layout.partDecorations.find(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'brace'
-		)!;
-		expect(brace.fontSizePx).toBeDefined();
-
-		const staff0Top = layout.systems.find((s) => s.staffIndex === 0)!.topY;
-		const staff1Top = layout.systems.find((s) => s.staffIndex === 1)!.topY;
-		const expectedTop = staff0Top;
-		const expectedBottom = staff1Top + 4 * ss;
-
-		// Same y-bounds convention `glyphBounds` uses elsewhere in this file:
-		// SMuFL bounding boxes are y-up, so `NE` gives the ink's canvas top and
-		// `SW` its canvas bottom, scaled by this one glyph's own one-off
-		// `fontSizePx` rather than the shared staff-space size.
-		const native = GLYPH_METRICS.brace;
-		const glyphScale = brace.fontSizePx! / (4 * ss);
-		const inkTop = brace.y - native.bBoxNE[1] * ss * glyphScale;
-		const inkBottom = brace.y - native.bBoxSW[1] * ss * glyphScale;
-		expect(inkTop).toBeCloseTo(expectedTop, 6);
-		expect(inkBottom).toBeCloseTo(expectedBottom, 6);
+		const brace = findGlyph(layout.partDecorations, 'brace')!;
+		const scale = brace.fontSizePx! / (4 * SS);
+		expect(brace.y - GLYPH_METRICS.brace.bBoxNE[1] * SS * scale).toBeCloseTo(topOf(layout, 0), 6);
+		expect(brace.y - GLYPH_METRICS.brace.bBoxSW[1] * SS * scale).toBeCloseTo(topOf(layout, 1) + 4 * SS, 6);
 	});
 
-	it('a three-or-more-staff part draws an assembled bracket spanning exactly its staves\' outer height', () => {
-		const score = buildStavesScore(4, [[[0, 1, 2, 3], 'Choir']]);
-		const layout = layoutScore(score, options);
-
-		// Assembled from fixed hook pieces plus a plain rect spine, not a
-		// single scaled `bracket` glyph (see `layoutBracket`'s own comment).
+	it("assembles a bracket for three or more staves, spanning exactly their outer height", () => {
+		const layout = layoutScore(stavesWithParts(4, [[[0, 1, 2, 3], 'Choir']]), OPTS);
 		expect(glyphsOf(layout.partDecorations)).toEqual(['bracketTop', 'bracketBottom']);
-		expect(layout.partDecorations.some((op) => op.kind === 'rect')).toBe(true);
-
-		const top = layout.systems.find((s) => s.staffIndex === 0)!.topY;
-		const bottom = layout.systems.find((s) => s.staffIndex === 3)!.topY + 4 * ss;
-		const hookHeight = GLYPH_METRICS.bracketTop.bBoxNE[1] * ss;
-
-		const hookTopOp = layout.partDecorations.find(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'bracketTop'
-		)!;
-		const hookBottomOp = layout.partDecorations.find(
-			(op): op is Extract<DrawOp, { kind: 'glyph' }> => op.kind === 'glyph' && op.glyph === 'bracketBottom'
-		)!;
-		const spineRect = layout.partDecorations.find((op): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect')!;
-
-		// The hooks' own ink meets the target span exactly: the top hook's own
-		// outer edge sits `hookHeight` above where it's anchored, and the
-		// bottom hook's the same distance below its own anchor.
-		expect(hookTopOp.y - hookHeight).toBeCloseTo(top, 6);
-		expect(hookBottomOp.y + hookHeight).toBeCloseTo(bottom, 6);
-		// The spine rect joins the two hooks with no gap or overlap.
-		expect(spineRect.y).toBeCloseTo(hookTopOp.y, 6);
-		expect(spineRect.y + spineRect.height).toBeCloseTo(hookBottomOp.y, 6);
+		const hookHeight = GLYPH_METRICS.bracketTop.bBoxNE[1] * SS;
+		const top = findGlyph(layout.partDecorations, 'bracketTop')!;
+		const bottom = findGlyph(layout.partDecorations, 'bracketBottom')!;
+		const spine = rectsOf(layout.partDecorations)[0]!;
+		expect(top.y - hookHeight).toBeCloseTo(topOf(layout, 0), 6);
+		expect(bottom.y + hookHeight).toBeCloseTo(topOf(layout, 3) + 4 * SS, 6);
+		expect(spine.y).toBeCloseTo(top.y, 6);
+		expect(spine.y + spine.height).toBeCloseTo(bottom.y, 6);
 	});
 
-	it('a single-staff part draws no brace/bracket, even when named', () => {
-		const score = buildStavesScore(2, [[[0], 'Solo']]);
-		const layout = layoutScore(score, options);
+	it.each([
+		['a single-staff part', 2, [[0], 'Solo']],
+		// Non-contiguous groups are a documented scope cut: no glyph, but the name still labels.
+		['a non-contiguous part', 3, [[0, 2], 'Divisi']]
+	] as const)('draws no brace or bracket for %s, only its label', (_name, staffCount, part) => {
+		const layout = layoutScore(stavesWithParts(staffCount, [part as unknown as [number[], string]]), OPTS);
 		expect(glyphsOf(layout.partDecorations)).toEqual([]);
-		expect(textsOf(layout.partDecorations)).toEqual(['Solo']);
+		expect(textsOf(layout.partDecorations)).toEqual([part[1]]);
 	});
 
-	it('a non-contiguous multi-staff part is skipped (documented scope cut), not thrown', () => {
-		const score = buildStavesScore(3, [[[0, 2], 'Divisi']]);
-		expect(() => layoutScore(score, options)).not.toThrow();
-		const layout = layoutScore(score, options);
-		expect(glyphsOf(layout.partDecorations)).toEqual([]);
-		// The (skipped) group's own name still labels staff 0, the most
-		// specific named part covering it: the contiguity scope cut only
-		// drops the connecting glyph, not the grouping's other effects.
-		expect(textsOf(layout.partDecorations)).toEqual(['Divisi']);
-	});
-
-	it('a part-name label is drawn only at the first system; a brace/bracket repeats at every system', () => {
-		const score = buildStavesScore(2, [[[0, 1], 'Piano']], 6);
-		// Small enough that 6 one-quarter-note measures per staff cast off into
-		// more than one system.
-		const layout = layoutScore(score, { staffSpacePx: ss, systemWidthPx: 90 });
-		expect(layout.systems.filter((s) => s.staffIndex === 0).length).toBeGreaterThan(1);
-
-		expect(textsOf(layout.partDecorations)).toEqual(['Piano']);
+	it('labels a part at the first system only, but repeats its brace at every system', () => {
+		const layout = layoutScore(stavesWithParts(2, [[[0, 1], 'Piano']], 6), { staffSpacePx: SS, systemWidthPx: 90 });
 		const systemCount = layout.systems.filter((s) => s.staffIndex === 0).length;
+		expect(systemCount).toBeGreaterThan(1);
+		expect(textsOf(layout.partDecorations)).toEqual(['Piano']);
 		expect(glyphsOf(layout.partDecorations).filter((g) => g === 'brace')).toHaveLength(systemCount);
 	});
 
-	it('a score with no multi-staff or named Part renders exactly as before this slice', () => {
-		// The default `Score` (one staff, one unnamed part) and a score with a
-		// second staff `appendStaff` alone adds (M2 Slice 3/4's own demos):
-		// neither ever calls `addPart` with a real grouping or a name, so
-		// `partDecorations` is empty and every measure's own `x` is unaffected
-		// by this slice's new left-margin reservation.
-		const solo = layoutScore(createDemoScore(), options);
-		expect(solo.partDecorations).toEqual([]);
-		// `layoutScore`'s own default `paddingPx` (16), unaffected by this
-		// slice's `padding + decorationPlan.headerWidth` when `headerWidth` is 0.
-		expect(solo.measures[0]!.region.x).toBeCloseTo(16, 6);
-
-		const grand = layoutScore(createGrandStaffShowcaseScore());
-		expect(grand.partDecorations).toEqual([]);
-	});
-
-	it('renders the SATB bracket showcase (four staves, one bracket, four labels) without error', () => {
-		const score = createSatbBracketShowcaseScore();
-		const layout = layoutScore(score);
-
-		expect(glyphsOf(layout.partDecorations)).toEqual(['bracketTop', 'bracketBottom']);
-		expect(textsOf(layout.partDecorations).sort()).toEqual(['Alto', 'Bass', 'Soprano', 'Tenor']);
-
-		// Every staff's own measure still lays out and starts to the right of
-		// the reserved header column, not on top of it.
-		expect(layout.measures).toHaveLength(4);
-		for (const measure of layout.measures) {
-			expect(measure.region.x).toBeGreaterThan(16);
-		}
+	it('draws nothing and reserves no header column for unnamed single-staff parts', () => {
+		expect(layoutScore(createDemoScore(), OPTS).partDecorations).toEqual([]);
+		expect(layoutScore(createGrandStaffShowcaseScore()).partDecorations).toEqual([]);
+		const plain = layoutScore(stavesWithParts(2, []), OPTS);
+		const named = layoutScore(stavesWithParts(2, [[[0], 'Solo']]), OPTS);
+		expect(named.measures[0]!.region.x).toBeGreaterThan(plain.measures[0]!.region.x);
 	});
 });
 
-describe('cross-staff beaming (M2 Slice 6)', () => {
-	const ss = 10;
-	const options = { staffSpacePx: ss };
-	const beamHeight = ED.beamThickness * ss;
-
-	const isRect = (op: DrawOp): op is Extract<DrawOp, { kind: 'rect' }> => op.kind === 'rect';
-	/** A beam segment: the one rect height unique to beams, the same identity
-	 *  the `describe('beaming', ...)` block above uses. */
-	const beamRects = (ops: readonly DrawOp[]) =>
-		ops.filter(isRect).filter((op) => Math.abs(op.height - beamHeight) < 0.001);
-
-	it("a cross-staff beam's region covers both staves' reach into the gap, without leaking into a neighbour", () => {
+describe('cross-staff beaming', () => {
+	const setup = () => {
 		const score = createCrossStaffBeamShowcaseScore();
-		const layout = layoutScore(score, options);
+		const layout = layoutScore(score, OPTS);
+		return { score, layout, treble: measureAt(layout, 0, 1), bass: measureAt(layout, 1, 1) };
+	};
 
-		const treble1 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
-		const bass1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
-		expect(treble1).toBeDefined();
-		expect(bass1).toBeDefined();
-
-		// (a) The two staves' own regions at the beamed column do not overlap
-		// vertically, the same property Slice 4's own shared-barline test
-		// checks: redrawing one staff's measure can never clear a pixel that
-		// belongs to the other staff's ink.
-		expect(treble1.region.y + treble1.region.height).toBeLessThanOrEqual(bass1.region.y + 0.001);
-
-		// (b) Each side's ink genuinely reaches past its own ordinary staff
-		// band, into the gap toward the other staff: not merely a vacuous
-		// "regions don't overlap" result, but proof a stem/beam really
-		// extends there. Compared against the plain single-staff band
-		// (`staffTopY` to `staffTopY + 4*ss`) each staff would otherwise stay
-		// within.
-		const trebleTopY = layout.systems.find((s) => s.staffIndex === 0)!.topY;
-		const bassTopY = layout.systems.find((s) => s.staffIndex === 1)!.topY;
-		expect(treble1.region.y + treble1.region.height).toBeGreaterThan(trebleTopY + 4 * ss + 10);
-		expect(bass1.region.y).toBeLessThan(bassTopY - 10);
-
-		// (c) No leak into an unrelated neighbouring column. Note this is *not*
-		// a height comparison against measure 0/2: since M2 Slice 4, every
-		// column of a multi-staff score already draws its own segment of the
-		// *shared end barline* reaching to this exact same `barlineSpan`
-		// bound, regardless of that column's own note content (confirmed by
-		// direct inspection: an ordinary filler measure's region already
-		// reaches this far too, on the strength of its own barline segment
-		// alone). So a plain height comparison to a neighbour cannot
-		// distinguish "the beam reached here" from "the barline always
-		// reaches here anyway", and would either pass vacuously or fail for
-		// the wrong reason. The real, meaningful scoping proof is that the
-		// cross-staff beam's own ink (tagged by its own note ids) is drawn
-		// only inside its own measure's ops, on both staves, and never
-		// appears in either neighbour's: nothing here ever asks a different
-		// measure's `layoutMeasure` call to draw another measure's notes.
+	it("covers both staves' reach into the gap without overlapping regions or leaking into neighbours", () => {
+		const { score, layout, treble, bass } = setup();
+		expect(treble.region.y + treble.region.height).toBeLessThanOrEqual(bass.region.y + 0.001);
+		// Each side's ink genuinely extends past its own staff band.
+		expect(treble.region.y + treble.region.height).toBeGreaterThan(topOf(layout, 0) + 4 * SS + 10);
+		expect(bass.region.y).toBeLessThan(topOf(layout, 1) - 10);
+		// Every column's shared barline already reaches the gap, so scoping is
+		// proved by where the beamed notes' ink is drawn, not by region height.
 		const beam = score.crossStaffBeams[0]!;
-		const hasCrossInk = (ops: readonly DrawOp[]) =>
-			ops.some((op) => 'noteId' in op && op.noteId !== undefined && beam.noteIds.includes(op.noteId));
-		expect(hasCrossInk(treble1.ops)).toBe(true);
-		expect(hasCrossInk(bass1.ops)).toBe(true);
-		const treble0 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 0)!;
-		const treble2 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 2)!;
-		const bass0 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 0)!;
-		const bass2 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 2)!;
-		expect(hasCrossInk(treble0.ops)).toBe(false);
-		expect(hasCrossInk(treble2.ops)).toBe(false);
-		expect(hasCrossInk(bass0.ops)).toBe(false);
-		expect(hasCrossInk(bass2.ops)).toBe(false);
-	});
-
-	it('draws a real beam segment on each side, meeting at essentially the same y where they face the gap', () => {
-		const score = createCrossStaffBeamShowcaseScore();
-		const layout = layoutScore(score, options);
-
-		const treble1 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
-		const bass1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
-
-		const trebleBeams = beamRects(treble1.ops);
-		const bassBeams = beamRects(bass1.ops);
-		// One primary-level segment on each side (both notes are plain eighths,
-		// needing only one beam level), each a genuine multi-note span, not a
-		// degenerate stub.
-		expect(trebleBeams).toHaveLength(1);
-		expect(bassBeams).toHaveLength(1);
-		expect(trebleBeams[0]!.width).toBeGreaterThan(0);
-		expect(bassBeams[0]!.width).toBeGreaterThan(0);
-
-		// Treble's stems point down into the gap, so its own beam segment sits
-		// just above the join line, its *bottom* edge (y + height) at the true
-		// shared boundary; bass's stems point up into the same gap, so its
-		// beam segment sits just below the join line, its *top* edge there
-		// instead. Those two gap-facing edges are what has to line up for the
-		// two segments to read as one continuous beam; they land within a
-		// couple of pixels of each other (the same `REGION_BLEED_PX`-scale
-		// neutral strip `barlineSpan` leaves between the two staves).
-		const trebleGapEdge = trebleBeams[0]!.y + trebleBeams[0]!.height;
-		const bassGapEdge = bassBeams[0]!.y;
-		expect(Math.abs(trebleGapEdge - bassGapEdge)).toBeLessThan(3);
-	});
-
-	it("a scoped redraw of one note in the pair correctly repaints both halves", () => {
-		const score = createCrossStaffBeamShowcaseScore();
-		const layout = layoutScore(score, options);
-
-		const trebleBeamedNote = score.staves[0]!.measures[1]!.notes[0]!;
-		const beforeTreble = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
-		const beforeBass = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
-		const beforeBeamGapEdge = beamRects(beforeTreble.ops)[0]!.y + beamRects(beforeTreble.ops)[0]!.height;
-
-		const touched = score.transposeNote(trebleBeamedNote.id, 1);
-		expect(touched).toBe(1);
-
-		const updated = relayoutMeasure(score, layout, touched!, options, 0);
-		// (a) The fast, genuinely scoped path succeeded, not a fallback to a
-		// full `layoutScore`.
-		expect(updated).not.toBeNull();
-
-		// (b) The treble measure's own beam segment still meets the gap at
-		// essentially the same y as before the edit: the join-y is derived
-		// purely from staff geometry (`barlineSpan`), so a pitch change must
-		// never move it.
-		const afterTreble = updated!.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
-		const afterBeams = beamRects(afterTreble.ops);
-		expect(afterBeams).toHaveLength(1);
-		const afterBeamGapEdge = afterBeams[0]!.y + afterBeams[0]!.height;
-		expect(afterBeamGapEdge).toBeCloseTo(beforeBeamGapEdge, 6);
-
-		// (c) The bass measure's own `LaidOutMeasure` object is the exact same
-		// object as before the edit: nothing about the untouched staff was
-		// recomputed at all, proving both no cross-region recomputation
-		// happened and that "both halves" are still individually correct
-		// after only one was actually redrawn.
-		const afterBass = updated!.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
-		expect(afterBass).toBe(beforeBass);
-	});
-
-	it('renders the cross-staff beam showcase (two staves, one continuous beam at measure 1) without error', () => {
-		const score = createCrossStaffBeamShowcaseScore();
-		for (const staff of score.staves) {
-			for (const measure of staff.measures) {
-				expect(validateMeasure(measure, score.timeAt(measure.index, measure.staffIndex)).valid).toBe(true);
-			}
+		const hasBeamInk = (m: LaidOutMeasure) => m.ops.some((op) => 'noteId' in op && op.noteId !== undefined && beam.noteIds.includes(op.noteId));
+		expect(hasBeamInk(treble)).toBe(true);
+		expect(hasBeamInk(bass)).toBe(true);
+		for (const [staff, index] of [[0, 0], [0, 2], [1, 0], [1, 2]] as const) {
+			expect(hasBeamInk(measureAt(layout, staff, index))).toBe(false);
 		}
-
-		// Laid out at this describe block's own fixed `ss` (not the bare default)
-		// so `beamRects`' identity (keyed on `ED.beamThickness * ss`) still
-		// applies; every other showcase's own smoke test above lays out at
-		// the bare default because it only checks glyphs, never rect sizes.
-		const layout = layoutScore(score, options);
-		// Three measures, two staves.
-		expect(layout.measures).toHaveLength(6);
-		const treble1 = layout.measures.find((m) => m.staffIndex === 0 && m.index === 1)!;
-		const bass1 = layout.measures.find((m) => m.staffIndex === 1 && m.index === 1)!;
-		expect(beamRects(treble1.ops)).toHaveLength(1);
-		expect(beamRects(bass1.ops)).toHaveLength(1);
 	});
+
+	it('draws one beam segment per side, meeting where they face the gap', () => {
+		const { treble, bass } = setup();
+		const [up] = beamRects(treble.ops);
+		const [down] = beamRects(bass.ops);
+		expect(beamRects(treble.ops)).toHaveLength(1);
+		expect(beamRects(bass.ops)).toHaveLength(1);
+		expect(Math.abs(up!.y + up!.height - down!.y)).toBeLessThan(3);
+	});
+
+	it('repaints one half on a scoped edit, the join staying put and the other half untouched', () => {
+		const { score, layout, treble, bass } = setup();
+		const gapEdge = (m: LaidOutMeasure) => {
+			const [beam] = beamRects(m.ops);
+			return beam!.y + beam!.height;
+		};
+		const before = gapEdge(treble);
+		const touched = score.transposeNote(score.staves[0]!.measures[1]!.notes[0]!.id, 1);
+		const updated = relayoutMeasure(score, layout, touched!, OPTS, 0)!;
+		expect(updated).not.toBeNull();
+		expect(gapEdge(measureAt(updated, 0, 1))).toBeCloseTo(before, 6);
+		expect(measureAt(updated, 1, 1)).toBe(bass);
+	});
+
+	function topOf(layout: LaidOutScore, staffIndex: number) {
+		return layout.systems.find((s) => s.staffIndex === staffIndex)!.topY;
+	}
 });

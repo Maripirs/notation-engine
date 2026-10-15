@@ -37,74 +37,44 @@ describe('parseXml', () => {
 		expect(root.text).toBe('5 &plusmn; 1');
 	});
 
-	it('skips the XML declaration, comments and processing instructions', () => {
-		const root = parseXml(
-			`<?xml version="1.0" encoding="UTF-8"?>\n<!-- a comment -->\n<?php noop ?>\n<root><!-- inner -->x</root>`
-		);
-		expect(root.name).toBe('root');
-		expect(root.text).toBe('x');
-	});
-
-	it('skips a plain DOCTYPE', () => {
-		const root = parseXml(
-			'<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "http://www.musicxml.org/dtds/partwise.dtd">\n<score-partwise/>'
-		);
-		expect(root.name).toBe('score-partwise');
-	});
-
-	it('skips a DOCTYPE carrying an internal subset with > characters inside', () => {
-		const root = parseXml(
-			'<!DOCTYPE root [\n  <!ENTITY foo "bar">\n  <!ELEMENT root (#PCDATA)>\n]>\n<root>hi</root>'
-		);
-		expect(root.name).toBe('root');
-		expect(root.text).toBe('hi');
+	it.each([
+		['the XML declaration, comments and processing instructions', `<?xml version="1.0" encoding="UTF-8"?>\n<!-- a comment -->\n<?php noop ?>\n<root><!-- inner -->x</root>`],
+		['a plain DOCTYPE', '<!DOCTYPE score-partwise PUBLIC "-//Recordare//DTD MusicXML 4.0 Partwise//EN" "x.dtd">\n<root>x</root>'],
+		['a DOCTYPE whose internal subset has > inside', '<!DOCTYPE root [\n  <!ENTITY foo "bar">\n  <!ELEMENT root (#PCDATA)>\n]>\n<root>x</root>']
+	])('skips %s', (_what, xml) => {
+		const root = parseXml(xml);
+		expect([root.name, root.text]).toEqual(['root', 'x']);
 	});
 
 	it('treats CDATA as literal text', () => {
-		const root = parseXml('<p><![CDATA[ <not> & </a parsed> ]]></p>');
-		expect(root.text).toBe(' <not> & </a parsed> ');
+		expect(parseXml('<p><![CDATA[ <not> & </a parsed> ]]></p>').text).toBe(' <not> & </a parsed> ');
 	});
 
-	it('throws on a mismatched close tag', () => {
-		expect(() => parseXml('<a><b></a></b>')).toThrow(/does not match open tag/);
-	});
-
-	it('throws on an unclosed tag at end of input', () => {
-		expect(() => parseXml('<a><b></b>')).toThrow(/unclosed tags|end of input/);
-	});
-
-	it('throws on an unquoted attribute value', () => {
-		expect(() => parseXml('<a foo=bar></a>')).toThrow(/not quoted/);
-	});
-
-	it('throws when there is no root element', () => {
-		expect(() => parseXml('<?xml version="1.0"?>\n<!-- nothing here -->\n')).toThrow();
+	it.each([
+		['a mismatched close tag', '<a><b></a></b>', /does not match open tag/],
+		['an unclosed tag at end of input', '<a><b></b>', /unclosed tags|end of input/],
+		['an unquoted attribute value', '<a foo=bar></a>', /not quoted/],
+		['no root element', '<?xml version="1.0"?>\n<!-- nothing here -->\n', undefined]
+	])('throws on %s', (_what, xml, message) => {
+		expect(() => parseXml(xml)).toThrow(message);
 	});
 });
 
 describe('navigation helpers', () => {
-	const tree = parseXml(
-		'<part><measure n="1"><note>C</note><note>D</note></measure><measure n="2"><note>E</note></measure></part>'
-	);
+	const tree = parseXml('<part><measure n="1"><note>C</note><note>D</note></measure><measure n="2"><note>E</note></measure></part>');
 
-	it('child returns the first matching direct child', () => {
+	it('child, children and descendants find direct and nested matches', () => {
 		expect(child(tree, 'measure')!.attrs.n).toBe('1');
 		expect(child(tree, 'nope')).toBeUndefined();
-	});
-
-	it('children returns all matching direct children', () => {
 		expect(children(tree, 'measure')).toHaveLength(2);
 		// `note` is not a direct child of `part`.
 		expect(children(tree, 'note')).toHaveLength(0);
+		expect(descendants(tree, 'note').map((n) => n.text)).toEqual(['C', 'D', 'E']);
 	});
 
 	it('childText trims and returns undefined for a missing child', () => {
 		const withSpace = parseXml('<x><y>  spaced  </y></x>');
 		expect(childText(withSpace, 'y')).toBe('spaced');
 		expect(childText(withSpace, 'z')).toBeUndefined();
-	});
-
-	it('descendants finds matching elements at any depth', () => {
-		expect(descendants(tree, 'note').map((n) => n.text)).toEqual(['C', 'D', 'E']);
 	});
 });

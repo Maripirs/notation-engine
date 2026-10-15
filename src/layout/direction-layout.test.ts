@@ -4,12 +4,8 @@ import { describe, expect, it } from 'vitest';
 import { buildScore, Score, type MeasureBuildSpec, type MeasureSpec, type WedgeSpec } from '../model/score.js';
 import { GLYPH_METRICS } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
-import type { DrawOp, LaidOutMeasure, LaidOutScore } from './types.js';
-
-const SS = 10;
-
-type GlyphOp = Extract<DrawOp, { kind: 'glyph' }>;
-type CurveOp = Extract<DrawOp, { kind: 'curve' }>;
+import { SS, type CurveOp, type GlyphOp } from './test-helpers.js';
+import type { LaidOutMeasure, LaidOutScore } from './types.js';
 
 function lay(
 	measures: readonly (MeasureSpec | MeasureBuildSpec)[],

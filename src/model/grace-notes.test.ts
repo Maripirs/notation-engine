@@ -5,9 +5,7 @@
 // rather than as an ordinary event.
 
 import { describe, expect, it } from 'vitest';
-import { EditHistory } from './edit-history.js';
 import { parsePitch } from './pitch.js';
-import { assertScoresEquivalent } from './score-equivalence.js';
 import {
 	ACCIACCATURA,
 	APPOGGIATURA,
@@ -17,6 +15,7 @@ import {
 	Note,
 	noteEvents,
 	Score,
+	TRIPLET,
 	validateMeasure
 } from './score.js';
 
@@ -42,7 +41,7 @@ function graceScore(): Score {
 	]);
 }
 
-describe('grace notes take no measure time (M6 Slice 8)', () => {
+describe('grace notes take no measure time', () => {
 	it('has zero duration, so a measure with graces still sums and validates as full', () => {
 		const score = graceScore();
 		const [m0, m1] = score.measures;
@@ -60,19 +59,9 @@ describe('grace notes take no measure time (M6 Slice 8)', () => {
 		const events = noteEvents(score.measures[0]!.notes);
 		expect(events.map((e) => e.map((n) => n.pitch!.step).join(''))).toEqual(['CE', 'G']);
 	});
-
-	it('does not count a voice holding only grace notes as a voice to fill', () => {
-		const score = new Score();
-		const measure = score.appendMeasure();
-		score.appendNote(measure, { pitch: parsePitch('C5'), value: 'whole' });
-		score.appendNote(measure, { pitch: parsePitch('E4'), value: 'eighth', voice: 2, grace: APPOGGIATURA });
-		const validation = validateMeasure(measure, FOUR_FOUR);
-		expect(validation.valid).toBe(true);
-		expect(validation.perVoice.map((v) => v.voice)).toEqual([1]);
-	});
 });
 
-describe('graceRuns (M6 Slice 8)', () => {
+describe('graceRuns', () => {
 	it('attaches each run to the next event anchor of its own voice', () => {
 		const score = graceScore();
 		const [m0, m1] = score.measures;
@@ -87,31 +76,29 @@ describe('graceRuns (M6 Slice 8)', () => {
 		expect(trailing[0]!.principal).toBeNull();
 	});
 
-	it('keeps two voices apart', () => {
+	it('keeps voices apart, and a voice holding only graces is not a voice to fill', () => {
 		const score = new Score();
 		const measure = score.appendMeasure();
 		const g1 = score.appendNote(measure, { pitch: parsePitch('D5'), value: 'eighth', grace: ACCIACCATURA });
 		const g2 = score.appendNote(measure, { pitch: parsePitch('D4'), value: 'eighth', voice: 2, grace: APPOGGIATURA });
 		const p1 = score.appendNote(measure, { pitch: parsePitch('C5'), value: 'whole' });
 		const p2 = score.appendNote(measure, { pitch: parsePitch('C4'), value: 'whole', voice: 2 });
-		const runs = graceRuns(measure.notes);
-		expect(runs.map((r) => [r.notes[0]!.id, r.principal!.id])).toEqual([
+		const g3 = score.appendNote(measure, { pitch: parsePitch('E4'), value: 'eighth', voice: 3, grace: APPOGGIATURA });
+		expect(graceRuns(measure.notes).map((r) => [r.notes[0]!.id, r.principal?.id ?? null])).toEqual([
 			[g1.id, p1.id],
-			[g2.id, p2.id]
+			[g2.id, p2.id],
+			[g3.id, null]
 		]);
+		const validation = validateMeasure(measure, FOUR_FOUR);
+		expect(validation.valid).toBe(true);
+		expect(validation.perVoice.map((v) => v.voice)).toEqual([1, 2]);
 	});
 
-	it('refuses grace rests, grace chord members and tupleted graces', () => {
+	it('refuses grace rests, grace chord members, tupleted graces and chords anchored on a grace', () => {
 		expect(() => new Note('x', { pitch: null, value: 'eighth', grace: APPOGGIATURA })).toThrow(/grace/);
-		expect(() => new Note('x', { pitch: parsePitch('C4'), value: 'eighth', chordWithPrevious: true, grace: APPOGGIATURA })).toThrow(
-			/grace/
-		);
-		expect(
-			() => new Note('x', { pitch: parsePitch('C4'), value: 'eighth', tuplet: { actualNotes: 3, normalNotes: 2 }, grace: APPOGGIATURA })
-		).toThrow(/grace/);
-	});
-
-	it('never lets a chord member stand on a grace note', () => {
+		expect(() => new Note('x', { pitch: parsePitch('C4'), value: 'eighth', chordWithPrevious: true, grace: APPOGGIATURA })).toThrow(/grace/);
+		expect(() => new Note('x', { pitch: parsePitch('C4'), value: 'eighth', tuplet: TRIPLET, grace: APPOGGIATURA })).toThrow(/grace/);
+		// Nor may a later chord member stand on a grace note as its anchor.
 		const score = new Score();
 		const measure = score.appendMeasure();
 		score.appendNote(measure, { pitch: parsePitch('D5'), value: 'eighth', grace: APPOGGIATURA });
@@ -125,37 +112,18 @@ describe('graceRuns (M6 Slice 8)', () => {
 	});
 });
 
-describe('grace notes survive clone and are compared by equivalence (M6 Slice 8)', () => {
-	it('clones a grace with its attributes, and equivalence notices a lost slash', () => {
+describe('correction ops on grace notes', () => {
+	it('noteToRest removes a grace note outright, dropping a slur to its principal', () => {
 		const score = graceScore();
-		const copy = score.clone();
-		assertScoresEquivalent(copy, score);
-		expect(copy.measures[0]!.notes[0]!.grace).toEqual(ACCIACCATURA);
+		const grace = score.measures[0]!.notes[0]!;
+		expect(score.noteToRest(grace.id)).toEqual([{ staffIndex: 0, measureIndex: 0 }]);
+		expect(score.findNote(grace.id)).toBeUndefined();
+		expect(score.measures[0]!.notes.filter((n) => n.isGrace)).toHaveLength(2);
+		expect(validateMeasure(score.measures[0]!, FOUR_FOUR).valid).toBe(true);
 
-		const plain = buildScore([[['D5', 'eighth', { grace: APPOGGIATURA }], ['C5', 'whole']]]);
-		const slashed = buildScore([[['D5', 'eighth', { grace: ACCIACCATURA }], ['C5', 'whole']]]);
-		expect(() => assertScoresEquivalent(plain, slashed)).toThrow(/grace/);
-	});
-});
-
-describe('correction ops on grace notes (M6 Slice 8)', () => {
-	it('noteToRest removes a grace note outright, and undo restores it', () => {
-		const history = new EditHistory(graceScore());
-		const before = history.current.clone();
-		const grace = history.current.measures[0]!.notes[0]!;
-		const touched = history.record((s) => s.noteToRest(grace.id));
-		expect(touched).toEqual([{ staffIndex: 0, measureIndex: 0 }]);
-		expect(history.current.findNote(grace.id)).toBeUndefined();
-		expect(history.current.measures[0]!.notes.filter((n) => n.isGrace)).toHaveLength(2);
-		expect(validateMeasure(history.current.measures[0]!, FOUR_FOUR).valid).toBe(true);
-		history.undo();
-		assertScoresEquivalent(history.current, before);
-	});
-
-	it('noteToRest on a grace drops a slur from it to its principal', () => {
-		const score = buildScore([[['D5', 'eighth', { grace: APPOGGIATURA }], ['C5', 'whole']]], {}, [{ start: [0, 0], end: [0, 1] }]);
-		expect(score.noteToRest(score.measures[0]!.notes[0]!.id)).not.toBeNull();
-		expect(score.slurs).toHaveLength(0);
+		const slurred = buildScore([[['D5', 'eighth', { grace: APPOGGIATURA }], ['C5', 'whole']]], {}, [{ start: [0, 0], end: [0, 1] }]);
+		slurred.noteToRest(slurred.measures[0]!.notes[0]!.id);
+		expect(slurred.slurs).toHaveLength(0);
 	});
 
 	it('refuses setDuration, chord edits and ties on a grace note', () => {
@@ -180,15 +148,7 @@ describe('correction ops on grace notes (M6 Slice 8)', () => {
 		const [, c5, , , e5] = score.measures[0]!.notes;
 		// Shortening the principal pads after it; the graces stay in front.
 		expect(score.setDuration(c5!.id, 'eighth')).not.toBeNull();
-		expect(score.measures[0]!.notes.map((n) => `${n.pitch?.step ?? 'r'}${n.isGrace ? 'g' : ''}`)).toEqual([
-			'Dg',
-			'C',
-			'r',
-			'Fg',
-			'Gg',
-			'E',
-			'G'
-		]);
+		expect(score.measures[0]!.notes.map((n) => `${n.pitch?.step ?? 'r'}${n.isGrace ? 'g' : ''}`)).toEqual(['Dg', 'C', 'r', 'Fg', 'Gg', 'E', 'G']);
 		expect(validateMeasure(score.measures[0]!, FOUR_FOUR).valid).toBe(true);
 		// The next event in the voice skips the graces in between.
 		expect(score.addChordMember(e5!.id, parsePitch('G5'))).not.toBeNull();

@@ -9,5 +9,5 @@
 	"include": ["src"],
 	// Tests and the benchmark live next to the code they cover, but they are not
 	// part of the published surface and the benchmark pulls in Node-only types.
-	"exclude": ["src/**/*.test.ts", "src/**/*.bench.ts"]
+	"exclude": ["src/**/*.test.ts", "src/**/test-helpers.ts", "src/**/*.bench.ts"]
 }

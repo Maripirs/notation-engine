@@ -6,27 +6,15 @@
 
 import { describe, expect, it } from 'vitest';
 import { createArticulationShowcaseScore } from '../demo-score.js';
-import { buildScore, type MeasureSpec, type Score } from '../model/score.js';
+import { buildScore, type Score } from '../model/score.js';
 import { GLYPH_METRICS, type GlyphName } from '../render/glyph-metrics.js';
 import { layoutScore, relayoutMeasure } from './layout.js';
+import { headOf, ids, layoutOne, SS, type GlyphOp, type RectOp } from './test-helpers.js';
 import type { DrawOp, LaidOutScore } from './types.js';
 
-const SS = 10;
-type GlyphOp = Extract<DrawOp, { kind: 'glyph' }>;
-type RectOp = Extract<DrawOp, { kind: 'rect' }>;
-
-function layoutOne(measures: readonly MeasureSpec[]) {
-	const score = buildScore(measures, { keyFifths: 0 });
-	const layout = layoutScore(score, { staffSpacePx: SS });
-	return { score, layout, ops: layout.measures[0]!.ops };
-}
-
-const ids = (score: Score, m = 0) => score.measures[m]!.notes.map((note) => note.id);
 const isMark = (op: DrawOp): op is GlyphOp =>
 	op.kind === 'glyph' && (op.glyph.startsWith('artic') || op.glyph.startsWith('fermata'));
 const marksOf = (ops: readonly DrawOp[], id: string) => ops.filter((op): op is GlyphOp => isMark(op) && op.noteId === id);
-const headOf = (ops: readonly DrawOp[], id: string) =>
-	ops.find((op): op is GlyphOp => op.kind === 'glyph' && op.noteId === id && op.glyph.startsWith('notehead'))!;
 const stemOf = (ops: readonly DrawOp[], id: string) =>
 	ops.find((op): op is RectOp => op.kind === 'rect' && op.noteId === id && op.height > 2 * SS)!;
 

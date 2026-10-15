@@ -7,25 +7,12 @@ import { describe, expect, it } from 'vitest';
 import { ACCIACCATURA, APPOGGIATURA, assertScoresEquivalent, buildScore } from '../model/index.js';
 import { exportMusicXml } from './musicxml-export.js';
 import { createImportDiagnostics, importMusicXml } from './musicxml-import.js';
-import { child, children, descendants, parseXml, type XmlElement } from './xml.js';
+import { n, onePart, roundTrip } from './test-helpers.js';
+import { child, children, descendants, type XmlElement } from './xml.js';
 
-function doc(body: string): string {
-	return `<?xml version="1.0" encoding="UTF-8"?>\n<score-partwise version="4.0">\n${body}\n</score-partwise>\n`;
-}
-
-const ATTRS =
-	'<attributes><divisions>2</divisions><key><fifths>0</fifths></key>' +
-	'<time><beats>4</beats><beat-type>4</beat-type></time><clef><sign>G</sign><line>2</line></clef></attributes>';
-
-const note = (step: string, duration: number, type: string, voice = 1) =>
-	`<note><pitch><step>${step}</step><octave>4</octave></pitch><duration>${duration}</duration><voice>${voice}</voice><type>${type}</type></note>`;
+const note = (step: string, duration: number, type: string, voice = 1, extra = '') => n(step, duration, type, extra, { voice, octave: 4 });
 const grace = (step: string, attrs: string, type = 'eighth', voice = 1, extra = '') =>
 	`<note><grace${attrs}/><pitch><step>${step}</step><octave>5</octave></pitch><voice>${voice}</voice><type size="cue">${type}</type><stem>up</stem>${extra}</note>`;
-
-function onePart(measures: readonly string[]): string {
-	const body = measures.map((inner, i) => `<measure number="${i + 1}">${i === 0 ? ATTRS : ''}${inner}</measure>`).join('\n');
-	return doc(`<part-list><score-part id="P1"><part-name>S</part-name></score-part></part-list>\n<part id="P1">\n${body}\n</part>`);
-}
 
 /** Each `<note>` of a measure as `grace:STEP` / `note:STEP`, plus backups. */
 function stream(measure: XmlElement): string[] {
@@ -38,17 +25,8 @@ function stream(measure: XmlElement): string[] {
 		);
 }
 
-function roundTrip(xml: string) {
-	const score = importMusicXml(xml);
-	const exported = exportMusicXml(score);
-	const again = importMusicXml(exported);
-	assertScoresEquivalent(again, score);
-	expect(exportMusicXml(again)).toBe(exported);
-	return { score, root: parseXml(exported) };
-}
-
 describe('MusicXML grace notes (M6 Slice 8)', () => {
-	it('reads <grace> into the model with its slash and steal/make times', () => {
+	it('reads <grace> with its slash and steal/make times, and writes it before its principal with no <duration>', () => {
 		const xml = onePart([
 			grace('D', ' slash="yes"') +
 				note('C', 2, 'quarter') +
@@ -65,16 +43,7 @@ describe('MusicXML grace notes (M6 Slice 8)', () => {
 		expect(notes[0]!.value).toBe('eighth');
 		expect(notes[2]!.grace).toEqual({ slash: false, stealTimePrevious: null, stealTimeFollowing: 30, makeTime: 1 / 8 });
 		expect(notes[2]!.value).toBe('16th');
-	});
 
-	it('writes each grace before its principal with no <duration>, and reads it back the same', () => {
-		const xml = onePart([
-			grace('D', ' slash="yes"') +
-				note('C', 2, 'quarter') +
-				grace('A', ' steal-time-following="30" make-time="1"', '16th') +
-				note('G', 2, 'quarter') +
-				note('E', 4, 'half')
-		]);
 		const { root } = roundTrip(xml);
 		const measure = descendants(root, 'measure')[0]!;
 		expect(stream(measure)).toEqual(['grace:D', 'note:C', 'grace:A', 'note:G', 'note:E']);
@@ -104,7 +73,7 @@ describe('MusicXML grace notes (M6 Slice 8)', () => {
 	it('pairs a slur from a grace note to its principal', () => {
 		const xml = onePart([
 			grace('A', '', 'eighth', 1, '<notations><slur type="start" number="1"/></notations>') +
-				note('A', 2, 'quarter').replace('</type>', '</type><notations><slur type="stop" number="1"/></notations>') +
+				note('A', 2, 'quarter', 1, '<notations><slur type="stop" number="1"/></notations>') +
 				note('G', 6, 'half')
 		]);
 		const diagnostics = createImportDiagnostics();
