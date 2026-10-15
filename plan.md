@@ -1200,6 +1200,9 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       Document the Node/node-canvas path (`registerFont`) for headless
       rendering. Acceptance: the scratch-app check above loads the font
       with zero asset config; a unit test covers the default URL shape.
+      Follow-up: where the host's tooling breaks that URL (Vite 6/7 dev
+      pre-bundling, esbuild), the default load falls back to a lazily
+      imported data-URL chunk, `dist/Bravura-inline.js`.
 - [ ] **Slice 3: Embed API.** `mountScore(container, source, options)`
       where `source` is a MusicXML string or a `Score`, returning a
       handle: `load(source)`, `play()`/`pause()`/`stop()`/`seek()`,
@@ -1249,6 +1252,8 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 
 ## Backlog
 
+- [M7] An esbuild `--bundle` without `--splitting` folds the 431KB font
+  fallback chunk into the host bundle; say so in the Slice 5 README.
 - Full layout of Brahms "Der Abend" (337 measures, 6 staves) takes ~1.1s,
   vs 11-67ms for the other SFCC scores; profile once chords land (M6
   Slice 2), since first paint on open is the user-visible cost.
@@ -1359,10 +1364,3 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   its snapshot, `SFCC corpus:` suite titles, "finds all 7 fixtures"); rename
   to a neutral "corpus" when Slice 4 scrubs private references (the rename
   regenerates the snapshot file's keys, so re-run with the env var and `-u`).
-- [M7] Default font URL breaks in Vite 6/7 dev (dep pre-bundling moves the
-  module to `node_modules/.vite/deps/`; Vite 8 and all builds are fine) and
-  esbuild never rewrites `new URL(..., import.meta.url)`; both workarounds
-  are in the `font.ts` header, carry them into the Slice 5 README, or have
-  `mountScore` (Slice 3) fall back gracefully.
-- [M7] `assets/bravura/README.md` still says only the woff2 "is shipped to
-  the browser"; mention the package also ships it as `dist/Bravura.woff2`.

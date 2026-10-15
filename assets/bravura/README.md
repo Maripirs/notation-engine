@@ -19,7 +19,9 @@ is still ours.
 Font version: **Bravura 1.482** (per `fontVersion` in `bravura_metadata.json`),
 fetched 2026-09-04.
 
-Only `Bravura.woff2` is shipped to the browser. The two JSON files are here as
+Only `Bravura.woff2` is shipped to the browser: the package publishes it as
+`dist/Bravura.woff2` (plus `dist/Bravura-inline.js`, the same font as a data
+URL for hosts whose bundler breaks the file URL). The two JSON files are here as
 the auditable source for the *derived* metrics in `src/render/glyph-metrics.ts`,
 which is what the engine actually imports. They are deliberately not imported at
 runtime: together they are ~1.5 MB, versus the few hundred bytes of metrics the

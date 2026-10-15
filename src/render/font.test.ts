@@ -1,6 +1,7 @@
 // The bundled font: `bravuraFontUrl` must point at a real woff2, and
-// `loadSmuflFont` must use it by default while still honouring an explicit URL.
-// The browser globals are stubbed just enough to record what FontFace was given.
+// `loadSmuflFont` must use it by default while still honouring an explicit URL,
+// and fall back to the inlined copy only when the default fails. The browser
+// globals are stubbed just enough to record what FontFace was given.
 
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -19,7 +20,11 @@ describe('loadSmuflFont', () => {
 		vi.unstubAllGlobals();
 	});
 
-	function stubBrowser(): { sources: string[]; added: unknown[] } {
+	// `fails` picks which sources reject on load, like a 404 would.
+	function stubBrowser(fails: (source: string) => boolean = () => false): {
+		sources: string[];
+		added: unknown[];
+	} {
 		const sources: string[] = [];
 		const added: unknown[] = [];
 		vi.stubGlobal(
@@ -27,12 +32,14 @@ describe('loadSmuflFont', () => {
 			class {
 				constructor(
 					readonly family: string,
-					source: string
+					readonly source: string
 				) {
 					sources.push(source);
 				}
 				load(): Promise<this> {
-					return Promise.resolve(this);
+					return fails(this.source)
+						? Promise.reject(new DOMException('A network error occurred.', 'NetworkError'))
+						: Promise.resolve(this);
 				}
 			}
 		);
@@ -49,6 +56,21 @@ describe('loadSmuflFont', () => {
 		expect(family).toBe('Bravura');
 		expect(sources).toEqual([`url(${JSON.stringify(expected)})`]);
 		expect(added).toHaveLength(1);
+	});
+
+	it('falls back to the inlined font when the bundled URL fails', async () => {
+		const { sources, added } = stubBrowser((source) => !source.includes('data:'));
+		await expect(loadSmuflFont()).resolves.toBe('Bravura');
+		expect(sources).toHaveLength(2);
+		expect(sources[1]).toMatch(/^url\("data:font\/woff2;base64,/);
+		expect(added).toHaveLength(1);
+	});
+
+	it('rejects without falling back when an explicit URL fails', async () => {
+		const { sources, added } = stubBrowser(() => true);
+		await expect(loadSmuflFont('/fonts/Missing.woff2')).rejects.toThrow(/network error/);
+		expect(sources).toEqual([`url("/fonts/Missing.woff2")`]);
+		expect(added).toHaveLength(0);
 	});
 
 	it('throws outside a browser', async () => {
