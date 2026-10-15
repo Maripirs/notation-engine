@@ -11,8 +11,10 @@ import {
 	type NoteId,
 	type Pitch,
 	type Score,
-	type Staff
+	type Staff,
+	type WedgeKind
 } from '../model/index.js';
+import { measurePlayOrder, type PlayedMeasure } from './play-order.js';
 import { durationToSeconds } from './tempo.js';
 
 /**
@@ -43,6 +45,14 @@ export interface OnsetEvent {
 	 * so this is the whole of it.
 	 */
 	readonly velocity?: number;
+	/**
+	 * Which played measure this attack falls in (M6 Slice 14): an index into
+	 * `measurePlayOrder(score)`, telling the passes of a repeated note apart.
+	 * Present only when the score's play order differs from its written order
+	 * (it has a repeat that is taken), so a score without repeats keeps the
+	 * exact events it had before.
+	 */
+	readonly playIndex?: number;
 }
 
 /**
@@ -191,28 +201,40 @@ function stepLevel(level: number, dir: 1 | -1): number {
 }
 
 /**
- * One staff's loudness over written time (wholes from the top of the score):
- * `at(x)` is the level for an attack at `x`. Built once per staff from its
+ * One staff's loudness over written time (wholes from the top of the
+ * unfolded score): `at(x)` is the level for an attack at `x`. Marks are
+ * placed once per pass, so the level in force is whatever was last set in
+ * played order (a repeat's first bar takes the level its own last bar left). Built once per staff from its
  * dynamics and hairpins; see `DYNAMIC_LEVELS` for the rules.
  */
 function staffDynamics(
 	score: Score,
 	staffIndex: number,
-	measureStarts: readonly number[]
+	order: readonly PlayedMeasure[],
+	playStarts: readonly number[]
 ): ((x: number) => number) | null {
 	const staff = score.staves[staffIndex]!;
 	const marks: { x: number; kind: DynamicKind }[] = [];
-	for (const measure of staff.measures) {
-		for (const mark of measure.dynamics) marks.push({ x: measureStarts[measure.index]! + mark.onset, kind: mark.kind });
+	order.forEach(({ measureIndex }, k) => {
+		for (const mark of staff.measures[measureIndex]?.dynamics ?? []) marks.push({ x: playStarts[k]! + mark.onset, kind: mark.kind });
+	});
+	// A hairpin plays from each pass through its start measure to the next
+	// played occurrence of its stop measure; one cut off by a jump back is
+	// dropped (skipping an ending forward does not cut it).
+	const wedges: { kind: WedgeKind; start: number; stop: number }[] = [];
+	for (const w of score.wedges) {
+		if (w.staffIndex !== staffIndex) continue;
+		order.forEach(({ measureIndex }, k) => {
+			if (measureIndex !== w.start.measureIndex) return;
+			for (let j = k; j < order.length; j++) {
+				if (j > k && order[j]!.measureIndex <= order[j - 1]!.measureIndex) return;
+				if (order[j]!.measureIndex !== w.stop.measureIndex) continue;
+				wedges.push({ kind: w.kind, start: playStarts[k]! + w.start.onset, stop: playStarts[j]! + w.stop.onset });
+				return;
+			}
+		});
 	}
-	const wedges = score.wedges
-		.filter((w) => w.staffIndex === staffIndex)
-		.map((w) => ({
-			kind: w.kind,
-			start: measureStarts[w.start.measureIndex]! + w.start.onset,
-			stop: measureStarts[w.stop.measureIndex]! + w.stop.onset
-		}))
-		.sort((a, b) => a.start - b.start);
+	wedges.sort((a, b) => a.start - b.start);
 	if (marks.length === 0 && wedges.length === 0) return null;
 	marks.sort((a, b) => a.x - b.x);
 
@@ -297,22 +319,21 @@ function attackVelocity(marks: readonly Articulation[]): number {
  * needing a second pass to sort.
  */
 /**
- * Where each measure index starts, in whole notes from the top of the score.
+ * How long each measure index lasts, in whole notes.
  *
  * A measure lasts as long as its longest voice on any staff (so a pickup or
  * an under-full measure is not padded to the time signature), falling back to
  * the time signature's capacity when no staff has any notes there. Measure
- * starts are shared by every staff and voice, which is what keeps a voice
+ * starts (these lengths laid end to end in play order) are shared by every
+ * staff and voice, which is what keeps a voice
  * that is silent for several measures (has no notes at all there, not even
  * rests) from drifting: it re-anchors to the right bar line each measure
  * instead of resuming from wherever its own last note left off.
  */
-function measureStartsWholes(score: Score): number[] {
+function measureLengthsWholes(score: Score): number[] {
 	const measureCount = Math.max(0, ...score.staves.map((staff) => staff.measures.length));
-	const starts: number[] = [];
-	let cursor = 0;
+	const lengths: number[] = [];
 	for (let index = 0; index < measureCount; index++) {
-		starts.push(cursor);
 		let longest = 0;
 		for (const staff of score.staves) {
 			const measure = staff.measures[index];
@@ -324,27 +345,30 @@ function measureStartsWholes(score: Score): number[] {
 			}
 			longest = Math.max(longest, ...perVoice.values());
 		}
-		cursor += longest > 0 ? longest : measureCapacityWholes(score.timeAt(index));
+		lengths.push(longest > 0 ? longest : measureCapacityWholes(score.timeAt(index)));
 	}
-	return starts;
+	return lengths;
 }
 
 /**
  * The score's fermata spans as a time warp: `warp(x)` maps a written
- * position (wholes from the top of the score) to a played one, adding
+ * position (wholes from the top of the unfolded score, see
+ * `computePlaybackTimeline`) to a played one (one span per pass), adding
  * `FERMATA_FACTOR - 1` times however much of every fermata span lies before
  * `x`. Spans are merged first (see the constants' comment above), so two
  * voices' fermatas on one chord stretch it once. Identity (`x => x`) when the
  * score has none, the common case.
  */
-function fermataWarp(score: Score, measureStarts: readonly number[]): (x: number) => number {
+function fermataWarp(score: Score, order: readonly PlayedMeasure[], playStarts: readonly number[]): (x: number) => number {
 	const spans: [number, number][] = [];
 	for (const staff of score.staves) {
-		for (const measure of staff.measures) {
+		for (let k = 0; k < order.length; k++) {
+			const measure = staff.measures[order[k]!.measureIndex];
+			if (!measure) continue;
 			const cursors = new Map<number, number>();
 			for (const chord of noteEvents(measure.notes)) {
 				const anchor = chord[0]!;
-				const start = cursors.get(anchor.voice) ?? measureStarts[measure.index]!;
+				const start = cursors.get(anchor.voice) ?? playStarts[k]!;
 				const end = start + anchor.durationWholes;
 				cursors.set(anchor.voice, end);
 				if (eventFermata(chord) !== null && end > start) spans.push([start, end]);
@@ -429,6 +453,14 @@ function voicesInStaff(staff: Staff): number[] {
  * `STACCATO_FRACTION`: positions are first computed in written wholes, then
  * passed through the fermata warp, then turned into seconds.
  *
+ * Repeats and voltas (M6 Slice 14) are unfolded: the measures play in
+ * `measurePlayOrder` order, laid end to end, so a repeated note has one event
+ * per pass (same `noteId`, later `startSeconds`, and `playIndex` telling them
+ * apart). A jump breaks every tie chain: a note tied over the jump ends at its
+ * own length, and its target, reached later, starts a fresh event. Fermatas,
+ * dynamics, hairpins and graces left at a bar's end apply per pass, in played
+ * order.
+ *
  * The returned array's order falls out of construction (staves in
  * `score.staves` order, each staff's voices in first-seen order, each
  * voice's notes in measure-then-position order) rather than from an explicit
@@ -442,13 +474,23 @@ function voicesInStaff(staff: Staff): number[] {
 export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 	const bpm = score.tempoBpm;
 	const events: OnsetEvent[] = [];
-	const measureStarts = measureStartsWholes(score);
-	const warp = fermataWarp(score, measureStarts);
+	// The measures in played order (M6 Slice 14), laid end to end: each
+	// occurrence of a measure starts where the previous played one ended.
+	const order = measurePlayOrder(score);
+	const lengths = measureLengthsWholes(score);
+	const playStarts: number[] = [];
+	let playCursor = 0;
+	for (const { measureIndex } of order) {
+		playStarts.push(playCursor);
+		playCursor += lengths[measureIndex]!;
+	}
+	const unfolded = order.some((played, k) => played.measureIndex !== k) || order.length !== lengths.length;
+	const warp = fermataWarp(score, order, playStarts);
 	const seconds = (wholes: number): number => durationToSeconds(wholes, bpm);
 
 	for (const staff of score.staves) {
 		// The staff's dynamics (M6 Slice 6), or `null` for none.
-		const dynamicLevel = staffDynamics(score, staff.index, measureStarts);
+		const dynamicLevel = staffDynamics(score, staff.index, order, playStarts);
 		for (const voice of voicesInStaff(staff)) {
 			let cursorWholes = 0;
 			// The still-accumulating events tie chains are extending, keyed by
@@ -463,8 +505,14 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 			// previous measure (see `APPOGGIATURA_FRACTION`).
 			let pendingGraces: Note[] = [];
 
-			for (const measure of staff.measures) {
-				cursorWholes = measureStarts[measure.index]!;
+			for (let k = 0; k < order.length; k++) {
+				const measure = staff.measures[order[k]!.measureIndex];
+				if (!measure) continue;
+				// A jump (a repeat taken, or an ending skipped) breaks every tie
+				// chain: the note it was waiting for is not what plays next.
+				if (k > 0 && order[k]!.measureIndex !== order[k - 1]!.measureIndex + 1) openByTarget = new Map();
+				const at = unfolded ? { playIndex: k } : {};
+				cursorWholes = playStarts[k]!;
 				const gracesBefore = new Map<NoteId, readonly Note[]>();
 				const trailingGraces: Note[] = [];
 				for (const run of graceRuns(measure.notes)) {
@@ -499,7 +547,8 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 								pitch: grace.pitch!,
 								startSeconds: graceStart,
 								durationSeconds: seconds(warp(to)) - graceStart,
-								...(level !== 1 ? { velocity: level } : {})
+								...(level !== 1 ? { velocity: level } : {}),
+								...at
 							});
 							stolenWholes = to - cursorWholes;
 						});
@@ -527,7 +576,8 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 								pitch: note.pitch!,
 								startSeconds,
 								durationSeconds: noteDurationSeconds,
-								...(velocity !== 1 ? { velocity } : {})
+								...(velocity !== 1 ? { velocity } : {}),
+								...at
 							});
 							eventIndex = events.length - 1;
 						}

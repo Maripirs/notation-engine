@@ -26,3 +26,4 @@ export {
 export { midiToFrequency, pitchToFrequency } from './pitch-to-frequency.js';
 export { playOnsetEvent, type SynthesisOptions } from './synthesis.js';
 export { PlaybackEngine, type PlaybackEngineOptions } from './playback-engine.js';
+export { measurePlayOrder, type PlayedMeasure } from './play-order.js';

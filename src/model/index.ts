@@ -14,6 +14,7 @@ export type {
 	Articulation,
 	BarlineType,
 	EndingEnd,
+	EndingSpan,
 	EndingStart,
 	ClefChange,
 	ClefType,

@@ -187,6 +187,17 @@ export interface EndingEnd {
 }
 
 /**
+ * One volta as a span of measure indices (`Score.endings`): it covers
+ * `first..last` inclusive, opened by `start` and closed by `end`.
+ */
+export interface EndingSpan {
+	readonly first: number;
+	readonly last: number;
+	readonly start: EndingStart;
+	readonly end: EndingEnd;
+}
+
+/**
  * The clefs this engine draws. `treble` and `bass` are the ordinary G and F
  * clefs. `treble8` is the "octave treble" (vocal tenor) clef: notated on
  * exactly the same lines and spaces as plain `treble` (only the small "8"
@@ -1310,6 +1321,28 @@ export class Score {
 		const explicit = measures[measureIndex]?.endBarline;
 		if (explicit !== undefined) return explicit;
 		return measureIndex === measures.length - 1 ? 'final' : 'normal';
+	}
+
+	/**
+	 * The score's voltas in order, read off the top staff (every staff carries
+	 * the same fields): each `endingStart` paired with the next `endingEnd` at
+	 * or after it. A start with no end (import never leaves one) is skipped.
+	 * Shared by the volta brackets (layout) and the play order (playback).
+	 */
+	endings(): EndingSpan[] {
+		const measures = this.staves[0]?.measures ?? [];
+		const endings: EndingSpan[] = [];
+		for (let i = 0; i < measures.length; i++) {
+			const start = measures[i]!.endingStart;
+			if (!start) continue;
+			let j = i;
+			while (j < measures.length && !measures[j]!.endingEnd) j++;
+			const end = measures[j]?.endingEnd;
+			if (!end) continue;
+			endings.push({ first: i, last: j, start, end });
+			i = j;
+		}
+		return endings;
 	}
 
 	/** Append a note (or rest) to a measure, returning it so callers can keep its id. */

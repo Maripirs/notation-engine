@@ -1123,7 +1123,7 @@ element by Slice 3 and stays there.
       piece). Clear above-staff marks and dynamics the way the existing
       above-staff stacking does; scoped redraw stays correct.
       Acceptance: relational layout tests; demo check.
-- [ ] **Slice 14: Playback unfolding.** Build a measure play order: a
+- [x] **Slice 14: Playback unfolding.** Build a measure play order: a
       backward repeat jumps to the nearest forward repeat (or the score
       start), honouring `times`; each pass takes the ending whose numbers
       match. The timeline plays measures in that order, so a note id can
@@ -1251,4 +1251,6 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   labels are not clamped to their measure's band (a long label in a narrow
   measure could overhang it), and a scoped edit in the system above a volta
   can eat into `VOLTA.systemClearance` without falling back (only overlap
-  is caught).
+  is caught). Playback drops a hairpin cut by a jump back (its stop measure
+  not reached before the repeat), and a tie into a measure entered by a
+  jump is re-struck rather than held (Frost Myth m65 is all such ties).

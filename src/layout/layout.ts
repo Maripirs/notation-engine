@@ -5153,23 +5153,14 @@ interface Ending {
 	readonly hooked: boolean;
 }
 
-/** The top staff's endings, in order. A start with no end (import never
- *  leaves one) is skipped. */
+/** The top staff's endings, in order (`Score.endings`), with their labels. */
 function scoreEndings(score: Score): Ending[] {
-	const measures = score.staves[0]?.measures ?? [];
-	const endings: Ending[] = [];
-	for (let i = 0; i < measures.length; i++) {
-		const start = measures[i]!.endingStart;
-		if (!start) continue;
-		let j = i;
-		while (j < measures.length && !measures[j]!.endingEnd) j++;
-		const end = measures[j]?.endingEnd;
-		if (!end) continue;
-		const label = start.text ?? `${start.numbers.join(', ')}.`;
-		endings.push({ first: i, last: j, label, hooked: end.kind === 'stop' });
-		i = j;
-	}
-	return endings;
+	return score.endings().map(({ first, last, start, end }) => ({
+		first,
+		last,
+		label: start.text ?? `${start.numbers.join(', ')}.`,
+		hooked: end.kind === 'stop'
+	}));
 }
 
 /** How far a bracket's hooks or label reach below its line, pixels. */
