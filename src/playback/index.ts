@@ -9,6 +9,7 @@ export {
 	DYNAMIC_ACCENTS,
 	DYNAMIC_LEVELS,
 	FERMATA_FACTOR,
+	firstOnsetSeconds,
 	GRACE_RUN_MAX_FRACTION,
 	GRACE_TOTAL_MAX_FRACTION,
 	graceLengthsWholes,

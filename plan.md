@@ -1130,7 +1130,7 @@ element by Slice 3 and stays there.
       appear in several events. A tie chain ends at a jump; fermatas,
       dynamics and graces apply per pass. Acceptance: timeline tests on
       the hand-built fixture; Frost Myth m65 plays twice.
-- [ ] **Slice 15: Cursor and seek across repeats.** The playback cursor
+- [x] **Slice 15: Cursor and seek across repeats.** The playback cursor
       and follow-scroll jump back with the music; pause/resume keeps the
       current pass; seeking from a note starts at its first pass.
       Acceptance: headless demo probe on the fixture.
@@ -1254,3 +1254,5 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   is caught). Playback drops a hairpin cut by a jump back (its stop measure
   not reached before the repeat), and a tie into a measure entered by a
   jump is re-struck rather than held (Frost Myth m65 is all such ties).
+  The demo has no play-from-note control, so `firstOnsetSeconds` is
+  exported but not wired in.

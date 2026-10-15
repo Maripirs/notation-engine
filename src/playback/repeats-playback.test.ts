@@ -8,7 +8,7 @@ import { importMusicXml } from '../io/index.js';
 import { buildScore, type NoteId, type Score } from '../model/index.js';
 import { createSatbBracketShowcaseScore } from '../demo-score.js';
 import { measurePlayOrder } from './play-order.js';
-import { computePlaybackTimeline } from './timeline.js';
+import { computePlaybackTimeline, firstOnsetSeconds } from './timeline.js';
 
 const fixture = (path: string): Score =>
 	importMusicXml(readFileSync(join(import.meta.dirname, '../test/fixtures', path), 'utf8'));
@@ -106,5 +106,26 @@ describe('computePlaybackTimeline: repeats (M6 Slice 14)', () => {
 		const jumpAt = Math.min(...inM65.map((e) => e.startSeconds));
 		const before = events.filter((e) => e.playIndex! < second);
 		expect(Math.max(...before.map((e) => e.startSeconds + e.durationSeconds))).toBeCloseTo(jumpAt, 9);
+	});
+});
+
+describe('firstOnsetSeconds (M6 Slice 15)', () => {
+	// Measure (1-based) and the pass to start at: m2 plays twice, m6 three
+	// times, m5 (2nd ending) only on the second pass.
+	it.each([
+		[2, 1],
+		[6, 1],
+		[5, 2]
+	])('seeks to measure %i on pass %i', (measure, pass) => {
+		const events = computePlaybackTimeline(VOLTAS);
+		const order = measurePlayOrder(VOLTAS);
+		const note = VOLTAS.staves[0]!.measures[measure - 1]!.notes[0]!.id;
+		const at = firstOnsetSeconds(events, note);
+		const hit = events.find((e) => e.noteId === note && e.startSeconds === at)!;
+		expect(order[hit.playIndex!]).toEqual({ measureIndex: measure - 1, pass });
+	});
+
+	it('is undefined for an id with no event', () => {
+		expect(firstOnsetSeconds(computePlaybackTimeline(VOLTAS), 'nope' as NoteId)).toBeUndefined();
 	});
 });

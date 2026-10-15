@@ -598,3 +598,20 @@ export function computePlaybackTimeline(score: Score): OnsetEvent[] {
 
 	return events;
 }
+
+/**
+ * Where playback should start to play from `noteId` (M6 Slice 15): the
+ * `startSeconds` of its earliest event, so a note inside a repeat starts at
+ * its first pass, not a later one. Hand the result to `PlaybackEngine.seek`.
+ * `undefined` when the note has no event of its own: a rest, or a note only
+ * reached as a tie's continuation (it sounds inside its source's event; on a
+ * later pass entered by a jump it can strike afresh, and that is then what
+ * this returns).
+ */
+export function firstOnsetSeconds(events: readonly OnsetEvent[], noteId: NoteId): number | undefined {
+	let first: number | undefined;
+	for (const event of events) {
+		if (event.noteId === noteId && (first === undefined || event.startSeconds < first)) first = event.startSeconds;
+	}
+	return first;
+}
