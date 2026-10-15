@@ -130,10 +130,12 @@ describe('deleting notes and their payloads', () => {
 		const [c, d] = score.staves[0]!.measures[0]!.notes;
 		expect(score.noteToRest(c!.id)).not.toBeNull();
 		expect(c!.passthrough).toEqual([]);
+		// Lyrics are modelled since M6 Slice 9; the rest drops its own too.
+		expect(c!.lyrics).toEqual([]);
 		const written = expectRoundTrip(score);
 		expect(count(written, /<lyric /g)).toBe(1);
 		expect(count(written, /<slur /g)).toBe(0);
-		expect(d!.passthrough.map((e) => e.name)).toEqual(['lyric']);
+		expect(d!.lyrics.map((l) => l.text)).toEqual(['di']);
 	});
 
 	it('removing a chord anchor hands its source tuplet bracket to the promoted head', () => {

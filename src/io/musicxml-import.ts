@@ -58,6 +58,7 @@ import {
 	DYNAMIC_KINDS,
 	Measure,
 	measureCapacityWholes,
+	NO_LYRICS,
 	NO_PASSTHROUGH,
 	sortDynamics,
 	NOTE_VALUES,
@@ -73,6 +74,7 @@ import {
 	type WedgeKind,
 	type Fermata,
 	type GraceNote,
+	type Lyric,
 	type MeasurePassthrough,
 	type Note,
 	type NoteId,
@@ -84,6 +86,7 @@ import {
 	type TupletRatio
 } from '../model/index.js';
 import { add, noteDurationQuarters, quartersToWholes, reduce, sub, ZERO, type Rational } from './rational.js';
+import { readLyric } from './lyric-xml.js';
 import { child, childText, children, descendants, parseXml, type XmlElement } from './xml.js';
 
 /**
@@ -1272,6 +1275,7 @@ function buildNote(
 	const statedDots = Math.min(2, children(noteEl, 'dot').length) as 0 | 1 | 2;
 	const notationsEls = children(noteEl, 'notations');
 	const marks = readMarks(notationsEls);
+	const lyrics = readLyrics(noteEl);
 
 	let note: Note;
 	// `<rest measure="yes"/>` (M6 Slice 1): a rest that fills its measure
@@ -1290,7 +1294,8 @@ function buildNote(
 			voice,
 			measureRestWholes,
 			articulations: marks.articulations,
-			fermata: marks.fermata
+			fermata: marks.fermata,
+			lyrics: lyrics.lyrics
 		});
 	} else {
 		const typeText = childText(noteEl, 'type');
@@ -1312,7 +1317,8 @@ function buildNote(
 			chordWithPrevious,
 			articulations: marks.articulations,
 			fermata: marks.fermata,
-			grace: graceEl ? readGrace(graceEl, divisions) : null
+			grace: graceEl ? readGrace(graceEl, divisions) : null,
+			lyrics: lyrics.lyrics
 		});
 	}
 	// A member keeps pointing a further `<chord/>` at the same chord: the
@@ -1360,7 +1366,8 @@ function buildNote(
 		tieStop,
 		slurStarts,
 		slurStops,
-		ownedMarks: marks.owned
+		ownedMarks: marks.owned,
+		ownedLyrics: lyrics.owned
 	});
 	return { k, note };
 }
@@ -1414,6 +1421,34 @@ function readMarks(notationsEls: readonly XmlElement[]): {
 const NO_OWNED_MARKS: ReadonlySet<XmlElement> = new Set();
 
 /**
+ * The lyrics of a `<note>` the model can hold (M6 Slice 9; see
+ * `model/lyrics.ts`), and the `<lyric>` elements they came from (`owned`,
+ * left out of the note's passthrough by `finalizeNotePassthrough`). A
+ * `<lyric>` is promoted when its content is the schema's syllable form,
+ * `(<syllabic>?, <text>, (<elision>, <syllabic>?, <text>)*, <extend>?)`, or
+ * a lone `<extend>`, followed only by `<end-line>`, `<end-paragraph>`,
+ * `<footnote>` or `<level>` (`lyric-xml.ts`'s `readLyric`); anything else
+ * (`<humming>`, `<laughing>`, content out of order) stays passthrough whole.
+ * A second lyric for a verse the note already has (malformed, but cheap to
+ * keep) stays passthrough too, so a note holds at most one per verse.
+ * Each promoted lyric keeps its element as `source`, so export writes back
+ * every attribute and formatting detail verbatim (`model/lyrics.ts`).
+ */
+function readLyrics(noteEl: XmlElement): { readonly lyrics: readonly Lyric[]; readonly owned: ReadonlySet<XmlElement> } {
+	let lyrics: Lyric[] | undefined;
+	let owned: Set<XmlElement> | undefined;
+	for (const el of noteEl.children) {
+		if (el.name !== 'lyric') continue;
+		const lyric = readLyric(el);
+		if (!lyric || lyrics?.some((other) => other.verse === lyric.verse)) continue;
+		(lyrics ??= []).push(lyric);
+		(owned ??= new Set()).add(el);
+	}
+	return { lyrics: lyrics ?? NO_LYRICS, owned: owned ?? NO_OWNED_MARKS };
+}
+
+
+/**
  * Settle a built note's `Note.passthrough` once ties and slurs are linked
  * (they decide what is still unowned): every `<note>` child the model does
  * not own, in source order, plus
@@ -1449,6 +1484,7 @@ function finalizeNotePassthrough(record: BuiltNoteRecord, score: Score, report: 
 	};
 
 	for (const c of record.el.children) {
+		if (record.ownedLyrics.has(c)) continue;
 		if (!NOTE_OWNED.has(c.name)) {
 			keep(c);
 			report.keep(c.name);
@@ -1564,6 +1600,8 @@ type BuiltNoteRecord = {
 	/** The `<articulations>` children and `<fermata>` read into the model
 	 *  (`readMarks`), left out of the note's passthrough. */
 	readonly ownedMarks: ReadonlySet<XmlElement>;
+	/** The `<lyric>`s read into the model (`readLyrics`), likewise left out. */
+	readonly ownedLyrics: ReadonlySet<XmlElement>;
 };
 
 /**

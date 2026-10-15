@@ -14,8 +14,8 @@
 // A payload is anchored at one of four places, each the narrowest owner that
 // can re-emit it in the right spot and that an edit naturally carries along:
 //
-//   - `Note.passthrough`: unmodelled children of one `<note>` (`<lyric>`,
-//     `<notehead>`, `<cue>`, `<notations>` holding only what the model does
+//   - `Note.passthrough`: unmodelled children of one `<note>` (a `<lyric>`
+//     the model cannot hold, e.g. `<humming>`, since M6 Slice 9; `<notehead>`, `<cue>`, `<notations>` holding only what the model does
 //     not own, an unmatched `<tie>`, ...). It rides on the `Note`, so a
 //     transpose keeps it, a chord member keeps its own, and deleting a note
 //     (Slice 7) drops exactly its own payload with it.

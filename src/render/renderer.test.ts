@@ -1238,3 +1238,54 @@ describe('CanvasRenderer: dynamics and hairpins in a scoped redraw (M6 Slice 6)'
 		}
 	});
 });
+
+describe('CanvasRenderer: lyrics in a scoped redraw (M6 Slice 9)', () => {
+	it('repaints a measure\'s syllables and its pieces of a hyphen and an extender, inside its region', () => {
+		const score = buildScore([
+			[['C5', 'half', { lyrics: [{ text: 'Hal', syllabic: 'begin' }] }], ['D5', 'half']],
+			[['E5', 'whole']],
+			[['F5', 'half', { lyrics: [{ text: 'le', syllabic: 'end' }] }], ['G5', 'half', { lyrics: [{ text: 'sing', extend: 'start' }] }]],
+			[['A5', 'whole']],
+			[['B5', 'whole', { lyrics: [{ text: 'on' }] }]]
+		]);
+		const layout = layoutScore(score);
+		const recorder = recordingContext();
+		const renderer = new CanvasRenderer(recorder.ctx, layout);
+		renderer.drawAll();
+		const lyricInk = (index: number) =>
+			renderer.layout.measures[index]!.ops.filter(
+				(op) => op.kind === 'text' || (op.kind === 'rect' && op.y > renderer.layout.staffTopY + 6 * renderer.layout.staffSpacePx)
+			);
+		// The hyphen run crosses measure 2, and the extender reaches measure 4.
+		expect(lyricInk(1).length).toBeGreaterThan(0);
+		expect(lyricInk(3).length).toBeGreaterThan(0);
+
+		for (const index of [0, 1, 2, 3, 4]) {
+			recorder.calls.length = 0;
+			if (index === 2) {
+				// A transpose on the sung F5 goes through the scoped path.
+				const touched = score.transposeNote(score.measures[2]!.notes[0]!.id, -1)!;
+				const updated = relayoutMeasure(score, renderer.layout, touched);
+				expect(updated).not.toBeNull();
+				renderer.setLayout(updated!);
+			}
+			renderer.redrawMeasure(index);
+			const measure = renderer.layout.measures[index]!;
+			const clear = recorder.calls[0]!;
+			for (const op of lyricInk(index)) {
+				if (op.kind === 'text') {
+					// Painted by this redraw, its baseline inside the cleared area.
+					expect(recorder.calls.some((call) => call.call === 'fillText' && call.x === op.x && call.y === op.y)).toBe(true);
+					expect(op.y - op.fontSizePx).toBeGreaterThanOrEqual(clear.y);
+					expect(op.y + 0.3 * op.fontSizePx).toBeLessThanOrEqual(clear.bottom);
+					expect(within(measure.region, { ...clear, x: op.x, right: op.x })).toBe(true);
+				} else if (op.kind === 'rect') {
+					const painted = recorder.calls.find((call) => call.call === 'fillRect' && call.x === op.x && call.y === op.y);
+					expect(painted).toBeDefined();
+					expect(within(measure.region, painted!)).toBe(true);
+					expect(painted!.bottom).toBeLessThanOrEqual(clear.bottom);
+				}
+			}
+		}
+	});
+});

@@ -63,6 +63,7 @@ import {
 	ZERO,
 	type Rational
 } from './rational.js';
+import { lyricElement } from './lyric-xml.js';
 
 /**
  * Serialize `score` as a MusicXML 4.0 `score-partwise` document.
@@ -1073,8 +1074,9 @@ interface NoteContext {
  * elements, `<tied>`/`<tuplet>`/`<slur>`, then `<articulations>`/`<fermata>`). Anything absent is simply skipped.
  *
  * `Note.passthrough` (M6 Slice 3) is slotted into that same order
- * (`NOTE_ORDER`): a `<cue/>` first, a `<notehead>` after `<stem>`, a `<lyric>`
- * after `<notations>`, an unmatched `<tie>` after the model's own. Two
+ * (`NOTE_ORDER`): a `<cue/>` first, a `<notehead>` after `<stem>`, an
+ * unpromoted `<lyric>` after the model's lyrics (M6 Slice 9), an unmatched
+ * `<tie>` after the model's own. Two
  * passthrough names are merged rather than slotted, since the model writes
  * the same element: a `<rest>`'s display children go inside the `<rest>`
  * written here, and the first passthrough `<notations>` (already cut down to
@@ -1239,6 +1241,14 @@ function writeNote(xml: XmlBuilder, score: Score, note: Note, ctx: NoteContext):
 	} else {
 		for (const el of notationsExtras) xml.element(el);
 	}
+
+	// Lyrics (M6 Slice 9) after `<notations>`, each its source element when
+	// unchanged (`lyricElement`). A `<lyric>` the model could not hold is
+	// still in the passthrough and follows the model's (same slot, so
+	// `slots.rest()`), the one reordering a round trip can make: only between
+	// a promoted verse and an unpromoted one (`<humming>`) on the same note.
+	slots.before('lyric');
+	for (const lyric of note.lyrics) xml.element(lyricElement(lyric));
 
 	slots.rest();
 	xml.close('note');

@@ -348,7 +348,7 @@ describe('importMusicXml: C clefs and clef changes inside a measure (M6 Slice 4)
 describe('importMusicXml — tolerance for unsupported content', () => {
 	afterEach(() => vi.restoreAllMocks());
 
-	it('keeps lyrics, grace notes, articulations and dynamics out of the model quietly, warns once on a truly unknown element', () => {
+	it('reads lyrics, grace notes, articulations and dynamics quietly, warns once on a truly unknown element', () => {
 		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 		const xml = doc(`
       <part-list><score-part id="P1"><part-name>Test</part-name></score-part></part-list>
@@ -629,12 +629,12 @@ describe('importMusicXml: drop and passthrough diagnostics (M6 Slices 1, 3)', ()
 			// The tempo direction is exactly export's own shape in the first
 			// measure, so it is `Score.tempoBpm`, not passthrough.
 			// (Its staccato and fermata are modelled since M6 Slice 5, the
-			// `<p/>` since Slice 6, the grace note since Slice 8; its
+			// `<p/>` since Slice 6, the grace note since Slice 8, the lyric
+			// since Slice 9; its
 			// direction's `<sound>` stays payload. The hairpin start has no stop
 			// to pair with, so it stays too.)
 			ending: 1,
 			florble: 1,
-			lyric: 1,
 			print: 1,
 			'score-instrument': 1,
 			sound: 1,

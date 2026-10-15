@@ -57,6 +57,7 @@
 import { opaqueElementKey, type MeasurePassthrough, type OpaqueElement } from './passthrough.js';
 import { formatPitch, type Pitch } from './pitch.js';
 import type { DirectionSource, DynamicMark, Wedge, WedgeEnd } from './directions.js';
+import type { Lyric } from './lyrics.js';
 import type { ClefChange, Measure, Note, Part, Score } from './score.js';
 
 /**
@@ -212,6 +213,17 @@ function graceKey(note: Note): string {
 	return `${g.slash ? 'slash' : 'plain'} ${time(g.stealTimePrevious)} ${time(g.stealTimeFollowing)} ${time(g.makeTime)}`;
 }
 
+function lyricsKey(lyrics: readonly Lyric[]): string {
+	return lyrics
+		.map(
+			(l) =>
+				`${l.verse}:${l.syllabic}:${JSON.stringify(l.text)}` +
+				l.elisions.map((e) => `_${e.syllabic}:${JSON.stringify(e.text)}`).join('') +
+				`:${l.extend ?? '-'}:${l.source ? opaqueElementKey(l.source) : '-'}`
+		)
+		.join(' | ');
+}
+
 function assertNoteEquivalent(
 	where: string,
 	actualScore: Score,
@@ -236,6 +248,9 @@ function assertNoteEquivalent(
 	assertEqual(`${where} fermata`, actualNote.fermata, expectedNote.fermata);
 	// Grace notes (M6 Slice 8): being one, and every attribute of one.
 	assertEqual(`${where} grace`, graceKey(actualNote), graceKey(expectedNote));
+	// Lyrics (M6 Slice 9), per head as written, in order, source included (so
+	// a round trip that rewrote a `<lyric>`'s formatting is caught too).
+	assertEqual(`${where} lyrics`, lyricsKey(actualNote.lyrics), lyricsKey(expectedNote.lyrics));
 	assertEqual(`${where} passthrough`, notePayloadKey(actualNote.passthrough), notePayloadKey(expectedNote.passthrough));
 
 	// Tie linkage: both must either start no tie, or start one that lands on a

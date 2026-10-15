@@ -7,6 +7,8 @@
 // Divisi's editor and player a wrapper rather than a port.
 
 import bravuraUrl from '../assets/bravura/Bravura.woff2?url';
+// M6 Slice 9's hand-written SATB-with-lyrics fixture, one click away.
+import satbLyricsXml from '../src/test/fixtures/satb-lyrics.musicxml?raw';
 import {
 	CanvasRenderer,
 	computePlaybackTimeline,
@@ -616,6 +618,14 @@ async function openMusicXml(file: File): Promise<void> {
 		`whole-score repaint                ${lastFullDrawMs.toFixed(2)} ms`
 	].join('\n');
 }
+
+document.querySelector<HTMLButtonElement>('#open-lyrics')!.addEventListener('click', () => {
+	// Through the same path as a picked file (M6 Slice 9's demo check: two
+	// verses, hyphens and extenders across system breaks, dynamics above).
+	openMusicXml(new File([satbLyricsXml], 'satb-lyrics.musicxml')).catch((error: unknown) => {
+		status.textContent = `Could not open the lyrics sample: ${error instanceof Error ? error.message : String(error)}`;
+	});
+});
 
 openInput.addEventListener('change', () => {
 	const file = openInput.files?.[0];

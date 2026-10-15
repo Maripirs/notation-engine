@@ -500,7 +500,16 @@ export class CanvasRenderer {
 				// assumes the shared Bravura font is active (set once per draw call
 				// above, not per op).
 				ctx.font = `${op.fontSizePx}px ${this.#options.labelFontFamily}`;
-				ctx.fillText(op.text, op.x, op.y);
+				if (op.align === 'center') {
+					// A lyric syllable (M6 Slice 9), centred on its note by the real
+					// text metrics; every other op draws left-aligned.
+					const previous = ctx.textAlign;
+					ctx.textAlign = 'center';
+					ctx.fillText(op.text, op.x, op.y);
+					ctx.textAlign = previous;
+				} else {
+					ctx.fillText(op.text, op.x, op.y);
+				}
 				ctx.font = `${this.#layout.fontSizePx}px "${this.#options.fontFamily}"`;
 			} else if (op.fontSizePx !== undefined) {
 				// A one-off scaled glyph (M2 Slice 5's brace, stretched to fit its

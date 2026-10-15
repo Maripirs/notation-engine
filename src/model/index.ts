@@ -44,6 +44,18 @@ export type {
 	WedgeKind
 } from './directions.js';
 export { DYNAMIC_KINDS, NO_DYNAMICS, positionBefore, sortDynamics } from './directions.js';
+export type { ElidedSyllable, Lyric, LyricExtend, LyricSpec, Syllabic } from './lyrics.js';
+export {
+	compareVerses,
+	eventLyrics,
+	lyricContinuesWord,
+	lyricDisplayText,
+	lyricStartsExtender,
+	makeLyric,
+	mergeLyrics,
+	NO_LYRICS,
+	normalizeLyrics
+} from './lyrics.js';
 export { assertScoresEquivalent } from './score-equivalence.js';
 export type { Fraction, MeasurePassthrough, OpaqueElement } from './passthrough.js';
 export { NO_PASSTHROUGH, opaqueElementKey, withoutNoteMarkup, withoutTieMarkup } from './passthrough.js';

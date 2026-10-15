@@ -102,7 +102,9 @@ describe('passthrough on a Note', () => {
 	it('keeps unowned note children on the note, re-emitted in schema order', () => {
 		const { score, root } = roundTrip(xml);
 		const notes = score.staves[0]!.measures[0]!.notes;
-		expect(notes[0]!.passthrough.map((e) => e.name)).toEqual(['notehead', 'notations', 'lyric']);
+		// The <lyric> is the model's since M6 Slice 9 (`Note.lyrics`).
+		expect(notes[0]!.passthrough.map((e) => e.name)).toEqual(['notehead', 'notations']);
+		expect(notes[0]!.lyrics.map((l) => l.text)).toEqual(['la']);
 		// Only what the model does not own: the linked `<tied>` is the model's,
 		// and so is the `<staccato/>` (M6 Slice 5), leaving the `<articulations>`
 		// cut down to its breath mark; an angled fermata is not modelled.

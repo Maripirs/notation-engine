@@ -24,6 +24,7 @@ import {
 	type Wedge,
 	type WedgeKind
 } from './directions.js';
+import { mergeLyrics, NO_LYRICS, normalizeLyrics, type Lyric, type LyricSpec } from './lyrics.js';
 import {
 	NO_PASSTHROUGH,
 	withoutNoteMarkup,
@@ -389,6 +390,13 @@ export interface NoteSpec {
 	 * passthrough).
 	 */
 	readonly grace?: GraceNote | null;
+	/**
+	 * The lyric syllables sung on this note, at most one per verse (M6 Slice
+	 * 9; see `lyrics.ts`). Normally on a chord's anchor; a lyric a source
+	 * wrote on another head stays on that head, and layout draws the event's
+	 * union (`eventLyrics`), as for articulations.
+	 */
+	readonly lyrics?: readonly (Lyric | LyricSpec)[];
 	/** See `Note.passthrough`. */
 	readonly passthrough?: readonly OpaqueElement[];
 }
@@ -417,9 +425,13 @@ export class Note {
 	fermata: Fermata | null;
 	/** See `NoteSpec.grace`. `null` for every ordinary note or rest. */
 	readonly grace: GraceNote | null;
+	/** See `NoteSpec.lyrics`. Frozen, replaced wholesale (never mutated), so a
+	 *  clone may share it. */
+	lyrics: readonly Lyric[];
 	/**
 	 * Unmodelled children of this note's `<note>` (M6 Slice 3, see
-	 * `passthrough.ts`), in source order: `<lyric>`, `<notehead>`, `<cue>`, a
+	 * `passthrough.ts`), in source order: a `<lyric>` the model cannot hold
+	 * (M6 Slice 9: `<humming>`, `<laughing>`), `<notehead>`, `<cue>`, a
 	 * `<notations>` cut down to the children the model does not own, a
 	 * `<tie>`/`<tied>`/`<slur>` end that never found its partner, ... Export
 	 * slots each back into its schema position. It belongs to this note alone,
@@ -442,6 +454,7 @@ export class Note {
 		this.articulations = normalizeArticulations(spec.articulations);
 		this.fermata = spec.fermata ?? null;
 		this.grace = spec.grace ?? null;
+		this.lyrics = normalizeLyrics(spec.lyrics);
 		this.passthrough = spec.passthrough ?? NO_PASSTHROUGH;
 		if (this.grace !== null && (this.pitch === null || this.chordWithPrevious || this.tuplet !== null)) {
 			throw new Error(`Note ${id}: grace is only valid on a pitched note that is not a chord member or a tuplet`);
@@ -1688,7 +1701,11 @@ export class Score {
 	 * `tiedToId` too), its articulations (a staccato rest means nothing), and
 	 * its own passthrough payload (M6 Slice 3's promise: deleting a note drops
 	 * exactly its own payload, including any unmatched `<tie>`/`<tied>`/
-	 * `<slur>` ends and lyrics). A fermata stays: a fermata over a rest is
+	 * `<slur>` ends), and its lyrics (M6 Slice 9: a rest is not sung; the
+	 * syllables go rather than jump to a neighbouring note, since which note
+	 * should take them is a judgement no op can make, and undo restores them).
+	 * On a chord head with siblings the lyrics move to the remaining anchor
+	 * instead (`removeChordMember`). A fermata stays: a fermata over a rest is
 	 * ordinary notation, and dropping it would lose a real hold. A slur that
 	 * starts or ends on the note moves to the nearest pitched event inside the
 	 * slur (same voice preferred), so a phrase mark survives deleting a stray
@@ -1713,6 +1730,7 @@ export class Score {
 		this.#untie(note, touched);
 		note.pitch = null;
 		note.articulations = NO_ARTICULATIONS;
+		note.lyrics = NO_LYRICS;
 		note.passthrough = NO_PASSTHROUGH;
 		this.#reanchorSlurs(id, measure, null, touched);
 		this.#detachFromCrossStaffBeam(id, measure, null, touched);
@@ -1918,7 +1936,9 @@ export class Score {
 	 * value/dots/tuplet and any passthrough `<tuplet>` bracket the old anchor
 	 * carried (export writes a run's brackets on its anchors). The removed
 	 * head's articulations and fermata move to the remaining anchor (they
-	 * belong to the chord, whichever head they were written on), its ties are
+	 * belong to the chord, whichever head they were written on), and so do its
+	 * lyrics (M6 Slice 9; a verse the anchor already sings keeps the anchor's
+	 * syllable, see `mergeLyrics`), its ties are
 	 * cleared at both ends, its own payload is dropped, and a slur or
 	 * cross-staff beam anchored on it moves to the remaining anchor.
 	 */
@@ -2092,6 +2112,7 @@ export class Score {
 				chordWithPrevious: false,
 				articulations: [...successor.articulations, ...note.articulations],
 				fermata: successor.fermata ?? note.fermata,
+				lyrics: mergeLyrics(successor.lyrics, note.lyrics),
 				passthrough
 			});
 			anchor.tiedToId = successor.tiedToId;
@@ -2101,6 +2122,7 @@ export class Score {
 			anchor = event[0]!;
 			anchor.articulations = normalizeArticulations([...anchor.articulations, ...note.articulations]);
 			if (anchor.fermata === null) anchor.fermata = note.fermata;
+			anchor.lyrics = mergeLyrics(anchor.lyrics, note.lyrics);
 			measure.notes.splice(measure.notes.indexOf(note), 1);
 		}
 		this.#measureOfNote.delete(note.id);
@@ -2264,6 +2286,7 @@ export class Score {
 						articulations: note.articulations,
 						fermata: note.fermata,
 						grace: note.grace,
+						lyrics: note.lyrics,
 						passthrough: note.passthrough
 					});
 					// Set directly, not through the spec's `tiedToId` (which would
@@ -2328,6 +2351,7 @@ function specOf(note: Note): NoteSpec {
 		articulations: note.articulations,
 		fermata: note.fermata,
 		grace: note.grace,
+		lyrics: note.lyrics,
 		passthrough: note.passthrough
 	};
 }
@@ -2385,6 +2409,8 @@ export type MeasureSpec = readonly (readonly [
 		/** M6 Slice 8: a grace note before the voice's next event (see
 		 *  `NoteSpec.grace`), e.g. `['D5', 'eighth', { grace: ACCIACCATURA }]`. */
 		grace?: GraceNote;
+		/** M6 Slice 9; on a chord, set on the anchor only. */
+		lyrics?: readonly LyricSpec[];
 	}
 ])[];
 
@@ -2511,7 +2537,8 @@ export function buildScore(
 					// the shape an exporter (and MuseScore) writes.
 					articulations: i === 0 ? extra?.articulations : undefined,
 					fermata: i === 0 ? extra?.fermata : undefined,
-					grace: extra?.grace
+					grace: extra?.grace,
+					lyrics: i === 0 ? extra?.lyrics : undefined
 				});
 				builtNotes.push(note);
 				if (extra?.tiedToNext) tieRequests.push(note);

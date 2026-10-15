@@ -67,10 +67,18 @@ export type DrawOp =
 	| {
 			readonly kind: 'text';
 			readonly text: string;
-			/** Text origin (baseline-left, `CanvasRenderingContext2D`'s own default). */
+			/** Text origin (baseline-left, `CanvasRenderingContext2D`'s own
+			 *  default), or the baseline's centre with `align: 'center'`. */
 			readonly x: number;
 			readonly y: number;
 			readonly fontSizePx: number;
+			/**
+			 * Horizontal alignment about `x` (M6 Slice 9): `'center'` for a lyric
+			 * syllable centred under its note. The renderer measures and centres
+			 * the real text itself, so centring stays exact even though layout
+			 * only estimates text widths. Omitted means `'left'`.
+			 */
+			readonly align?: 'left' | 'center';
 			readonly noteId?: NoteId;
 	  }
 	| {
@@ -196,6 +204,16 @@ export interface LaidOutScore {
 		readonly topY: number;
 		readonly spacingScale: number;
 		readonly staffIndex: number;
+		/**
+		 * This row's verse lines, in order, and verse 1's baseline (M6 Slice
+		 * 9; see `layout.ts`'s lyric section). Both absent for a row without
+		 * lyrics. Recorded so `relayoutMeasure` can tell whether an edit moved
+		 * the row's lyric line (a full relayout) or not (a scoped one), and
+		 * whether the staff's barlines join the next staff's (a lyric staff's
+		 * do not: they would run through the text).
+		 */
+		readonly lyricVerses?: readonly string[];
+		readonly lyricBaseline?: number;
 	}[];
 	/**
 	 * Part-grouping decorations (M2 Slice 5): a brace or bracket per

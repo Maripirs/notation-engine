@@ -33,6 +33,14 @@ import type {
 	TimeSignature
 } from '../model/score.js';
 import { eventArticulations, eventFermata, graceRuns, measureDurationWholes, noteEvents } from '../model/score.js';
+import {
+	compareVerses,
+	eventLyrics,
+	lyricContinuesWord,
+	lyricDisplayText,
+	lyricStartsExtender,
+	type Lyric
+} from '../model/lyrics.js';
 import type { DynamicKind, DynamicMark, Placement, Wedge } from '../model/directions.js';
 import { diatonicIndex, keyAlterForStep, type Step } from '../model/pitch.js';
 import {
@@ -352,7 +360,8 @@ function onsetKey(onset: number): number {
  * double-counting whatever beat both voices happen to have a note on.
  */
 function measureColumns(
-	notes: readonly Note[]
+	notes: readonly Note[],
+	lyrics?: LyricExtras | null
 ): readonly { readonly onset: number; readonly width: number }[] {
 	const onsets = noteOnsets(notes);
 	const columns = new Map<number, { onset: number; width: number }>();
@@ -369,7 +378,19 @@ function measureColumns(
 		const existing = columns.get(key);
 		if (!existing || width > existing.width) columns.set(key, { onset, width });
 	}
-	return [...columns.values()].sort((a, b) => a.onset - b.onset);
+	const sorted = [...columns.values()].sort((a, b) => a.onset - b.onset);
+	if (!lyrics || lyrics.extras.size === 0) return sorted;
+	// Lyric widening (M6 Slice 9; see `lyricColumnExtras`): each column takes
+	// the extra room of every stretch of time it spans, so a staff holding a
+	// half note against another's syllable-bearing quarters still moves its
+	// later notes by the same amount, keeping the staves aligned.
+	return sorted.map((column, i) => {
+		const from = onsetKey(column.onset);
+		const to = i + 1 < sorted.length ? onsetKey(sorted[i + 1]!.onset) : Number.POSITIVE_INFINITY;
+		let width = column.width;
+		for (const [u, extra] of lyrics.extras) if (u >= from && u < to) width += extra;
+		return width === column.width ? column : { onset: column.onset, width };
+	});
 }
 
 /**
@@ -695,6 +716,10 @@ const REGION_BLEED_PX = 1;
  * need to also know what the *neighbouring* staff's content did, exactly
  * like the naive midpoint split it replaces.
  *
+ * `joins` (M6 Slice 9, see `barlineJoins`) can cut either side short: a
+ * staff carrying lyrics neither reaches down to the next staff nor is
+ * reached up to by it.
+ *
  * A repeat-start barline (`Measure.startBarline`, drawn by
  * `layoutRepeatStartBarline`) is deliberately excluded from this treatment:
  * it is rare enough, and this slice's own acceptance criteria narrow enough
@@ -703,7 +728,16 @@ const REGION_BLEED_PX = 1;
  * than doubling this function's own complexity for a shape nothing here
  * currently exercises.
  */
-function barlineSpan(staffIndex: number, staffCount: number, staffTopY: number, ss: number): { top: number; bottom: number } {
+function barlineSpan(
+	staffIndex: number,
+	staffCount: number,
+	staffTopY: number,
+	ss: number,
+	joins: { readonly above: boolean; readonly below: boolean } = {
+		above: staffIndex > 0,
+		below: staffIndex < staffCount - 1
+	}
+): { top: number; bottom: number } {
 	// Clamped at 0 defensively: only reachable at a `staffSpacePx` far smaller
 	// than any real engraving use (`SPACING.staffGap` is 6 staff spaces, so
 	// this would need `ss` under roughly a third of a pixel), where the two
@@ -712,9 +746,25 @@ function barlineSpan(staffIndex: number, staffCount: number, staffTopY: number, 
 	// the wrong way.
 	const halfGap = Math.max(0, (SPACING.staffGap * ss) / 2 - REGION_BLEED_PX);
 	return {
-		top: staffTopY - (staffIndex > 0 ? halfGap : 0),
-		bottom: staffTopY + 4 * ss + (staffIndex < staffCount - 1 ? halfGap : 0)
+		top: staffTopY - (joins.above ? halfGap : 0),
+		bottom: staffTopY + 4 * ss + (joins.below ? halfGap : 0)
 	};
+}
+
+/**
+ * Which sides of a staff's barlines join a neighbour's in a system row (M6
+ * Slice 9): every staff joins the next, except below a staff carrying lyrics
+ * in that row (and so above the staff after it). Vocal scores break their
+ * barlines there so they never run through the text, and the gap under a
+ * lyric staff is not the fixed `SPACING.staffGap` the split point assumes.
+ */
+function barlineJoins(
+	staffIndex: number,
+	staffCount: number,
+	lyricsAbove: boolean,
+	lyricsHere: boolean
+): { readonly above: boolean; readonly below: boolean } {
+	return { above: staffIndex > 0 && !lyricsAbove, below: staffIndex < staffCount - 1 && !lyricsHere };
 }
 
 /** One `Part` (see `model/score.ts`) that draws a brace or bracket: a
@@ -1133,7 +1183,16 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	const decorationPlan = computePartDecorationPlan(score, ss);
 
 	const measures: LaidOutMeasure[] = [];
-	const systems: { measureIndices: number[]; topY: number; spacingScale: number; staffIndex: number }[] = [];
+	const systems: {
+		measureIndices: number[];
+		topY: number;
+		spacingScale: number;
+		staffIndex: number;
+		lyricVerses?: readonly string[];
+		lyricBaseline?: number;
+	}[] = [];
+	// Each staff's lyrics (M6 Slice 9), indexed once for every row.
+	const lyricIndexes = score.staves.map((_, staffIndex) => staffLyricIndex(score, staffIndex));
 	const partDecorationOps: DrawOp[] = [];
 	// Which system each measure lands in (M6 Slice 6): a hairpin crossing a
 	// system break is drawn one segment per system.
@@ -1194,9 +1253,20 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 		// this loop finishes) needs every staff's top in one place to work out
 		// a group's own outer span.
 		const staffTopYs: number[] = [];
+		// The verse lines each staff's row draws (M6 Slice 9): known from the
+		// model before anything is laid out, so the barline split below can
+		// leave a lyric staff's barlines unjoined.
+		const rowVerses = lyricIndexes.map((index) => rowLyricVerses(index, plan[0]!, plan[plan.length - 1]!));
 		for (let staffIndex = 0; staffIndex < staffCount; staffIndex++) {
 			const staff = score.staves[staffIndex]!;
-			const span = barlineSpan(staffIndex, staffCount, staffTopY, ss);
+			const verses = rowVerses[staffIndex]!;
+			const span = barlineSpan(
+				staffIndex,
+				staffCount,
+				staffTopY,
+				ss,
+				barlineJoins(staffIndex, staffCount, (rowVerses[staffIndex - 1]?.length ?? 0) > 0, verses.length > 0)
+			);
 			staffTopYs.push(staffTopY);
 
 			let x = padding + decorationPlan.headerWidth;
@@ -1225,12 +1295,30 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 				rowMeasures.push(laid);
 				x = laid.region.x + laid.region.width;
 			}
-			// Dynamics and hairpins (M6 Slice 6), once the row's measures exist:
-			// they line up across the row and a hairpin spans measures.
-			const directed = layoutDirectionRow(score, { staffIndex, measures: rowMeasures, staffTopY, ss, systemOf });
+			// Lyrics (M6 Slice 9), then dynamics and hairpins (M6 Slice 6), once
+			// the row's measures exist: each lines up across the row, and
+			// hyphens, extenders and hairpins span measures. Lyrics first, since
+			// a row with lyrics moves its unplaced dynamics above the staff and
+			// its below-placed ones under the text.
+			const lyricIndex = lyricIndexes[staffIndex]!;
+			let lyricBottom: number | null = null;
+			let lyricBaselineY: number | undefined;
+			if (lyricIndex && verses.length > 0) {
+				const sung = layoutLyricRow({ staffIndex, measures: rowMeasures, staffTopY, ss, systemOf, index: lyricIndex, verses });
+				rowMeasures.splice(0, rowMeasures.length, ...sung.measures);
+				lyricBottom = sung.bottom;
+				lyricBaselineY = sung.baseline;
+			}
+			const directed = layoutDirectionRow(score, { staffIndex, measures: rowMeasures, staffTopY, ss, systemOf, lyricBottom });
 			rowMeasures.splice(0, rowMeasures.length, ...directed);
 			measures.push(...rowMeasures);
-			systems.push({ measureIndices: [...plan], topY: staffTopY, spacingScale: scales[staffIndex]!, staffIndex });
+			systems.push({
+				measureIndices: [...plan],
+				topY: staffTopY,
+				spacingScale: scales[staffIndex]!,
+				staffIndex,
+				...(lyricBaselineY !== undefined ? { lyricVerses: verses, lyricBaseline: lyricBaselineY } : {})
+			});
 
 			const rowBottom = Math.max(staffTopY + 4 * ss, ...rowMeasures.map((m) => m.region.y + m.region.height));
 			groupBottom = Math.max(groupBottom, rowBottom);
@@ -1240,7 +1328,16 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 			// deterministic, computable before any staff's content is laid
 			// out, for `barlineSpan`'s split point to have no circular
 			// dependency on it.
-			if (staffIndex < staffCount - 1) staffTopY = staffTopY + 4 * ss + SPACING.staffGap * ss;
+			//
+			// Except below a staff carrying lyrics (M6 Slice 9), whose barlines
+			// do not join the next staff's (`barlineJoins`), so nothing needs
+			// the split point there: the gap grows to clear everything the row
+			// drew (its verse lines, and any dynamic placed under them) by
+			// `LYRIC.nextStaffGap`, never shrinking below the fixed gap.
+			if (staffIndex < staffCount - 1) {
+				staffTopY = staffTopY + 4 * ss + SPACING.staffGap * ss;
+				if (lyricBottom !== null) staffTopY = Math.max(staffTopY, rowBottom + LYRIC.nextStaffGap * ss);
+			}
 		}
 
 		partDecorationOps.push(
@@ -1253,7 +1350,11 @@ export function layoutScore(score: Score, options: LayoutOptions = {}): LaidOutS
 	const top = Math.min(0, ...measures.map((m) => m.region.y));
 	const shiftY = padding - top;
 	const shiftedMeasures = measures.map((m) => translateMeasure(m, shiftY));
-	const shiftedSystems = systems.map((s) => ({ ...s, topY: s.topY + shiftY }));
+	const shiftedSystems = systems.map((s) =>
+		s.lyricBaseline === undefined
+			? { ...s, topY: s.topY + shiftY }
+			: { ...s, topY: s.topY + shiftY, lyricBaseline: s.lyricBaseline + shiftY }
+	);
 	// Part decorations never reach above the topmost measure's own region (a
 	// brace/bracket's ink is bounded exactly to its own staves' span by
 	// construction, and a label sits well inside its own staff's band; see
@@ -1350,7 +1451,7 @@ function systemSpacingScale(
 		// and under-stretching the system relative to what `naturalWidth`
 		// (computed by `probeMeasureWidth`, which already lays the measure out
 		// through the same column logic) actually needs filled.
-		for (const column of measureColumns(measure.notes)) advanceSpaces += column.width;
+		for (const column of measureColumns(measure.notes, lyricColumnExtras(score, measureIndex))) advanceSpaces += column.width;
 	}
 	// An entirely note-free plan (nothing to stretch) has no sensible scale;
 	// natural spacing is already whatever this system is going to look like.
@@ -1576,7 +1677,21 @@ export function relayoutMeasure(
 	// is left alone: fixing it would need probing every other staff's own
 	// natural width at this column, which is out of this slice's scope; that
 	// remains a separate, documented, pre-existing gap.
-	const span = barlineSpan(staffIndex, score.staves.length, system.topY, ss);
+	// Lyrics (M6 Slice 9): the row's verse lines must be the ones it was laid
+	// out with, or the staff gap, the barline joins and every syllable of the
+	// row are stale (an op dropped the last syllable of a verse).
+	const lyricIndex = staffLyricIndex(score, staffIndex);
+	const verses = rowLyricVerses(lyricIndex, system.measureIndices[0]!, system.measureIndices[system.measureIndices.length - 1]!);
+	const cachedVerses = system.lyricVerses ?? NO_VERSES;
+	if (verses.length !== cachedVerses.length || verses.some((verse, i) => verse !== cachedVerses[i])) return null;
+	const above = staffIndex > 0 ? layout.systems.find((s) => s.staffIndex === staffIndex - 1 && s.measureIndices.includes(measureIndex)) : undefined;
+	const span = barlineSpan(
+		staffIndex,
+		score.staves.length,
+		system.topY,
+		ss,
+		barlineJoins(staffIndex, score.staves.length, (above?.lyricVerses?.length ?? 0) > 0, verses.length > 0)
+	);
 	const base = layoutMeasure(score, measure, {
 		ss,
 		staffTopY: system.topY,
@@ -1597,19 +1712,52 @@ export function relayoutMeasure(
 	// marked measure's ink, so if this edit moved it, every other marked
 	// measure in the system is stale too: that is a full relayout, not a
 	// single-measure one.
-	let laid = base;
 	const first = system.measureIndices[0]!;
 	const last = system.measureIndices[system.measureIndices.length - 1]!;
+	const systemOf: number[] = [];
+	staffSystems.forEach((s, i) => {
+		for (const m of s.measureIndices) systemOf[m] = i;
+	});
+	const cached = (i: number) => layout.measures.find((m) => m.staffIndex === staffIndex && m.index === i)!;
+
+	// Lyrics (M6 Slice 9), redone for this measure against its cached
+	// neighbours, the way dynamics are below. A moved baseline makes every
+	// other measure of the row stale, and so does another measure whose piece
+	// of a hyphen or extender reads a syllable this edit moved (a transpose that
+	// adds an accidental shifts the head): both are a full relayout.
+	let laid = base;
+	let lyricBottom: number | null = null;
+	if (lyricIndex && verses.length > 0 && system.lyricBaseline !== undefined) {
+		const before: LyricRow = { staffIndex, measures: system.measureIndices.map(cached), staffTopY: system.topY, ss, systemOf, index: lyricIndex, verses };
+		const after: LyricRow = { ...before, measures: system.measureIndices.map((i) => (i === measureIndex ? base : cached(i))) };
+		const baseline = lyricBaseline(after);
+		if (Math.abs(baseline - system.lyricBaseline) > 0.001) return null;
+		// Every other measure of the row, not only the adjacent ones: a long
+		// hyphen run or extender can cross several barlines.
+		for (const neighbour of system.measureIndices) {
+			if (neighbour === measureIndex) continue;
+			const was = lyricOpsForMeasure(before, baseline, cached(neighbour));
+			const now = lyricOpsForMeasure(after, baseline, cached(neighbour));
+			if (!sameOps(was, now)) return null;
+		}
+		laid = withDirectionOps(base, lyricOpsForMeasure(after, baseline, base), system.topY, ss);
+		lyricBottom = lyricBlockBottom(after, baseline);
+	}
+
+	// Dynamics and hairpins (M6 Slice 6), likewise.
 	if (rowHasDirections(score, staffIndex, first, last)) {
-		const systemOf: number[] = [];
-		staffSystems.forEach((s, i) => {
-			for (const m of s.measureIndices) systemOf[m] = i;
-		});
-		const cached = (i: number) => layout.measures.find((m) => m.staffIndex === staffIndex && m.index === i)!;
-		const before: DirectionRow = { staffIndex, measures: system.measureIndices.map(cached), staffTopY: system.topY, ss, systemOf };
+		const before: DirectionRow = {
+			staffIndex,
+			measures: system.measureIndices.map(cached),
+			staffTopY: system.topY,
+			ss,
+			systemOf,
+			lyricBottom
+		};
+		const withLyrics = laid;
 		const after: DirectionRow = {
 			...before,
-			measures: system.measureIndices.map((i) => (i === measureIndex ? base : cached(i)))
+			measures: system.measureIndices.map((i) => (i === measureIndex ? withLyrics : cached(i)))
 		};
 		const old = directionBaselines(score, before);
 		const baselines = directionBaselines(score, after);
@@ -1618,7 +1766,7 @@ export function relayoutMeasure(
 		const moved = (a: number | null, b: number | null): boolean =>
 			a === null || b === null ? a !== b : Math.abs(a - b) > 0.001;
 		if (moved(old.above, baselines.above) || moved(old.below, baselines.below)) return null;
-		laid = withDirectionOps(base, directionOpsForMeasure(score, after, baselines, base), system.topY, ss);
+		laid = withDirectionOps(laid, directionOpsForMeasure(score, after, baselines, laid), system.topY, ss);
 	}
 
 	// Sub-pixel tolerance: the same arithmetic run twice should agree exactly,
@@ -1814,7 +1962,11 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// header: the left edge a whole-measure rest is centred against (see
 	// `centreMeasureRests`).
 	const contentStartX = cursor;
-	cursor += SPACING.measureLeadIn * ss;
+	// Lyric widening (M6 Slice 9), shared by every staff at this measure: the
+	// columns' extra room, and extra lead-in (fixed, like the lead-in itself)
+	// when the first syllable would otherwise overhang the barline.
+	const lyricExtras = lyricColumnExtras(score, measure.index);
+	cursor += (SPACING.measureLeadIn + (lyricExtras?.lead ?? 0)) * ss;
 
 	// Two voices in one staff (M2 Slice 1): a measure's notes no longer form
 	// one flat sequential stream to walk with a single cursor. `notesByVoice`
@@ -1968,7 +2120,7 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// system's justification factor the same way a single-voice note's own
 	// advance always was.
 	const scale = ctx.spacingScale ?? 1;
-	const columns = measureColumns(measure.notes);
+	const columns = measureColumns(measure.notes, lyricExtras);
 	const columnOffsetPx = new Map<number, number>();
 	let columnsWidthPx = 0;
 	for (const column of columns) {
@@ -2238,6 +2390,9 @@ function layoutMeasure(score: Score, measure: Measure, ctx: MeasureContext): Lai
 	// cursor always produced.
 	cursor += columnsWidthPx + clefInsertPx + graceInsertPx + Math.max(0, ...finalShiftByVoice.values());
 	cursor += SPACING.measureTrailOut * ss;
+	// The last syllable (M6 Slice 9) must end inside the measure too: the
+	// barline moves right past it, measured on the heads just placed.
+	cursor = Math.max(cursor, lyricRightEdge(measure, notes, ss));
 
 	// Staff lines are per measure, spanning exactly this measure's band, for the
 	// same reason the header is: a region-scoped repaint has to be able to put
@@ -4548,6 +4703,13 @@ interface DirectionRow {
 	/** System index of every measure on this staff, so a hairpin can tell
 	 *  which of its systems a measure is in. */
 	readonly systemOf: readonly number[];
+	/**
+	 * Whether this row carries lyrics (M6 Slice 9), and the bottom of its
+	 * lyric block. A dynamic or hairpin with no stated placement goes above a
+	 * row with lyrics (choral engraving: below the staff is the text's); one
+	 * explicitly placed below clears the lyrics. Absent for a row without.
+	 */
+	readonly lyricBottom?: number | null;
 }
 
 /** A wedge's effective stop: a stop on the downbeat of a measure that opens a
@@ -4562,8 +4724,8 @@ function wedgeStop(score: Score, wedge: Wedge, systemOf: readonly number[]): { m
 	return stop;
 }
 
-function sideOf(placement: Placement | null): Placement {
-	return placement ?? 'below';
+function sideOf(placement: Placement | null, row: DirectionRow): Placement {
+	return placement ?? (row.lyricBottom != null ? 'above' : 'below');
 }
 
 /**
@@ -4585,16 +4747,18 @@ function directionBaselines(score: Score, row: DirectionRow): { above: number | 
 	const last = row.measures[row.measures.length - 1]?.index ?? -1;
 	const staff = score.staves[staffIndex]!;
 	for (const laid of row.measures) {
-		for (const dynamic of staff.measures[laid.index]!.dynamics) mark(laid, sideOf(dynamic.placement));
+		for (const dynamic of staff.measures[laid.index]!.dynamics) mark(laid, sideOf(dynamic.placement, row));
 	}
 	for (const wedge of score.wedges) {
 		if (wedge.staffIndex !== staffIndex) continue;
 		const stop = wedgeStop(score, wedge, row.systemOf);
 		if (stop.measureIndex < first || wedge.start.measureIndex > last) continue;
 		for (const laid of row.measures) {
-			if (laid.index >= wedge.start.measureIndex && laid.index <= stop.measureIndex) mark(laid, sideOf(wedge.placement));
+			if (laid.index >= wedge.start.measureIndex && laid.index <= stop.measureIndex) mark(laid, sideOf(wedge.placement, row));
 		}
 	}
+	// Below a row's lyrics, not between them and the staff.
+	if (lowest !== null && row.lyricBottom != null) lowest = Math.max(lowest, row.lyricBottom);
 	return {
 		below: lowest === null ? null : lowest + (DIRECTION.clearance + DIRECTION.ascent) * ss,
 		above: highest === null ? null : highest - (DIRECTION.clearance + DIRECTION.descent) * ss
@@ -4685,7 +4849,7 @@ function directionOpsForMeasure(
 
 	for (const mark of staff.measures[laid.index]!.dynamics) {
 		const placed = dynamicPlacement(score, staffIndex, laid, mark, ss);
-		ops.push({ kind: 'glyph', glyph: placed.glyph, x: placed.x, y: baselineOf(sideOf(mark.placement)) });
+		ops.push({ kind: 'glyph', glyph: placed.glyph, x: placed.x, y: baselineOf(sideOf(mark.placement, row)) });
 	}
 
 	const thisSystem = row.systemOf[laid.index]!;
@@ -4695,12 +4859,12 @@ function directionOpsForMeasure(
 		if (wedge.staffIndex !== staffIndex || wedge.start.measureIndex > laid.index) continue;
 		const stop = wedgeStop(score, wedge, row.systemOf);
 		if (stop.measureIndex < laid.index) continue;
-		const side = sideOf(wedge.placement);
+		const side = sideOf(wedge.placement, row);
 		// Is there a dynamic on this side at (measure, onset)? Its box, if so.
 		const dynamicAt = (index: number, onset: number) => {
 			const laidThere = laidOf(index);
 			const mark = laidThere
-				? staff.measures[index]!.dynamics.find((d) => sideOf(d.placement) === side && Math.abs(d.onset - onset) < 1e-9)
+				? staff.measures[index]!.dynamics.find((d) => sideOf(d.placement, row) === side && Math.abs(d.onset - onset) < 1e-9)
 				: undefined;
 			return laidThere && mark ? dynamicPlacement(score, staffIndex, laidThere, mark, ss) : undefined;
 		};
@@ -4785,6 +4949,21 @@ function rowHasDirections(score: Score, staffIndex: number, first: number, last:
 	return score.wedges.some((w) => w.staffIndex === staffIndex && w.start.measureIndex <= last && w.stop.measureIndex >= first);
 }
 
+/** Whether two op lists draw the same thing, within a sub-pixel tolerance
+ *  (cached ops went through `layoutScore`'s final translation). */
+function sameOps(a: readonly DrawOp[], b: readonly DrawOp[]): boolean {
+	if (a.length !== b.length) return false;
+	return a.every((op, i) => {
+		const other = b[i]!;
+		if (op.kind !== other.kind) return false;
+		const x = op as unknown as Record<string, unknown>;
+		const y = other as unknown as Record<string, unknown>;
+		return Object.keys(x).every((key) =>
+			typeof x[key] === 'number' ? Math.abs((x[key] as number) - (y[key] as number)) <= 0.001 : x[key] === y[key]
+		);
+	});
+}
+
 /** `laid` with `extra` ops appended and its region grown to cover them. */
 function withDirectionOps(laid: LaidOutMeasure, extra: readonly DrawOp[], staffTopY: number, ss: number): LaidOutMeasure {
 	if (extra.length === 0) return laid;
@@ -4801,6 +4980,538 @@ function layoutDirectionRow(score: Score, row: DirectionRow): LaidOutMeasure[] {
 	return row.measures.map((laid) =>
 		withDirectionOps(laid, directionOpsForMeasure(score, row, baselines, laid), row.staffTopY, row.ss)
 	);
+}
+
+// --- Lyrics (M6 Slice 9) -----------------------------------------------------
+//
+// Verse lines sit below the staff, verse 1 nearest, each on one baseline per
+// system row (like Slice 6's dynamics: a row's syllables line up whatever
+// notes they sit under). Three passes share the work:
+//
+//   - Horizontal spacing (`lyricColumnExtras`, read by `measureColumns`):
+//     syllables are estimated, model-only, and the onset columns are widened
+//     until adjacent syllables of a verse keep a minimum gap (a hyphen's worth
+//     inside a word). Every staff of the measure shares one widening, keyed by
+//     onset, so homophonic choral staves stay aligned.
+//   - The measure's own edges (`layoutMeasure`): extra lead-in when the first
+//     syllable would overhang the left barline (estimated), and the barline
+//     pushed right past the last syllable (measured on the laid-out heads),
+//     so a syllable never leaves its measure's band and region.
+//   - The row pass (`layoutLyricRow`), once a row's measures exist: the shared
+//     baseline below the lowest ink of the measures carrying lyrics, then each
+//     measure's syllables plus its pieces of hyphens and extender lines. Those
+//     span notes, measures and systems, so like Slice 6's hairpins they are
+//     cut at barlines, each measure owning its piece, and every measure
+//     recomputes the same connector from the model and its row.
+//
+// Text is measured by estimate (`estimateLyricWidthSpaces`): layout has no
+// canvas, the same position `estimateTextWidthPx` takes for part names. The
+// renderer centres a syllable itself (`text` op `align: 'center'`), so an
+// estimate error only loosens or tightens the gaps, never the centring.
+
+const LYRIC = {
+	/** Lyric text size, staff spaces (about 10pt on a 7mm staff). */
+	fontSpaces: 2,
+	/** Smallest distance from the staff's bottom line to verse 1's baseline. */
+	firstBaseline: 4.6,
+	/** Blank between the lowest ink a verse line clears and its letters' tops. */
+	inkClearance: 0.9,
+	/** How far capitals and ascenders reach above the baseline, and
+	 *  descenders below it, staff spaces (0.72 and 0.25 em). */
+	ascent: 1.45,
+	descent: 0.5,
+	/** Baseline to baseline between verse lines. */
+	lineSpacing: 2.6,
+	/** Minimum blank between two words of one verse. */
+	wordGap: 0.8,
+	/** Minimum blank between two syllables of one word: room for a hyphen
+	 *  with some air either side. */
+	hyphenGap: 1.6,
+	/** Minimum blank between a syllable and its measure's barline (a hyphen
+	 *  that crosses it gets `hyphenGap / 2` on each side instead). */
+	edgeMargin: 0.4,
+	hyphenWidth: 0.65,
+	hyphenThickness: 0.13,
+	/** Height of a hyphen's centre above the baseline: about half an x-height. */
+	hyphenRise: 0.6,
+	/** A gap narrower than this gets no hyphen (only reachable in a
+	 *  compressed system, since spacing reserves `hyphenGap`). */
+	hyphenMinGap: 1,
+	/** Roughly one hyphen per this many spaces of a long gap (Gould: repeat
+	 *  hyphens across a wide gap so the eye can follow the word). */
+	hyphenSpacing: 6,
+	/** The room before a syllable that continues a word from the previous
+	 *  system, where that system's hyphen is repeated. */
+	breakHyphenRoom: 1.6,
+	/** Gap between a syllable and the extender line after it. */
+	extenderGap: 0.25,
+	extenderThickness: 0.11,
+	/** An extender shorter than this is not drawn (a "melisma" of the
+	 *  syllable's own note, which is no melisma). */
+	extenderMin: 0.8,
+	/** Blank between a lyric staff's lowest ink (its last verse line, or a
+	 *  below-placed dynamic under it) and the next staff's top line: room for
+	 *  that staff's ledger lines and above-placed dynamics. */
+	nextStaffGap: 4.5
+} as const;
+
+/** Rough advance of a character in a sans-serif text face, in em: the
+ *  renderer draws lyrics with its label font (`CanvasRendererOptions`). */
+function lyricCharEm(ch: string): number {
+	if (/[ijl.,;:'!|’ ]/.test(ch)) return 0.25;
+	if (/[ftrI\-()]/.test(ch)) return 0.33;
+	if (/[mwMW]/.test(ch)) return 0.85;
+	if (/[A-Z]/.test(ch)) return 0.68;
+	return 0.55;
+}
+
+/** Estimated width of a lyric's text, staff spaces. */
+function estimateLyricWidthSpaces(text: string): number {
+	let em = 0;
+	for (const ch of text) em += lyricCharEm(ch);
+	return em * LYRIC.fontSpaces;
+}
+
+/** Margin a syllable keeps from its measure's left / right edge. */
+function lyricLeftMargin(lyric: Lyric): number {
+	return lyric.syllabic === 'middle' || lyric.syllabic === 'end' ? LYRIC.hyphenGap / 2 : LYRIC.edgeMargin;
+}
+function lyricRightMargin(lyric: Lyric): number {
+	return lyricContinuesWord(lyric) ? LYRIC.hyphenGap / 2 : LYRIC.edgeMargin;
+}
+
+/**
+ * Where a syllable's text goes relative to its notehead, in whatever unit
+ * `headLeft`/`headWidth` are in (`unit` is that unit's size of a staff
+ * space). Centred under the head, the usual rule; a syllable starting an
+ * extender is left-aligned with the head instead (Gould: the syllable of a
+ * melisma starts at the note, and the line carries on from it).
+ */
+function syllableSpan(
+	lyric: Lyric,
+	headLeft: number,
+	headWidth: number,
+	unit: number
+): { readonly left: number; readonly right: number; readonly x: number; readonly align: 'left' | 'center' } {
+	const width = estimateLyricWidthSpaces(lyricDisplayText(lyric)) * unit;
+	if (lyricStartsExtender(lyric)) return { left: headLeft, right: headLeft + width, x: headLeft, align: 'left' };
+	const centre = headLeft + headWidth / 2;
+	return { left: centre - width / 2, right: centre + width / 2, x: centre, align: 'center' };
+}
+
+/** The notehead (or rest) inside a hit box: the boxes are padded by a fixed
+ *  amount (`layoutNote`), which this takes back off. */
+function headOfBox(bounds: Rect, anchor: Note, ss: number): { readonly left: number; readonly width: number } {
+	const pad = (anchor.pitch === null ? 0.25 : 0.3) * ss;
+	return { left: bounds.x + pad, width: bounds.width - 2 * pad };
+}
+
+/** One syllable of a measure, for spacing: its column onset (`onsetKey`),
+ *  verse, and extent in staff spaces from its column's start. */
+interface LyricSpacingItem {
+	readonly onset: number;
+	readonly verse: string;
+	readonly lyric: Lyric;
+	readonly left: number;
+	readonly right: number;
+}
+
+/** The widest accidental, plus its gap to the head: what an accidental eats
+ *  out of its note's cell before the head (`layoutNote`). */
+const ACCIDENTAL_ALLOWANCE =
+	Math.max(...Object.values(ACCIDENTAL_GLYPHS).map((glyph) => GLYPH_METRICS[glyph].advance)) + SPACING.accidentalGap;
+
+/**
+ * A measure's syllables with their estimated extents. The head's offset in
+ * its cell is estimated too: an accidental is assumed wherever a head's alter
+ * differs from the key's (ignoring accidentals carried through the measure,
+ * which only overestimates, i.e. leaves a little more room than needed).
+ */
+function lyricSpacingItems(notes: readonly Note[], keyFifths: number): LyricSpacingItem[] {
+	const items: LyricSpacingItem[] = [];
+	let onsets: Map<NoteId, number> | undefined;
+	for (const event of noteEvents(notes)) {
+		const lyrics = eventLyrics(event);
+		if (lyrics.length === 0) continue;
+		onsets ??= noteOnsets(notes);
+		const anchor = event[0]!;
+		const headWidth = GLYPH_METRICS[anchor.pitch === null ? REST_GLYPHS[anchor.value] : NOTEHEAD_GLYPHS[anchor.value]].advance;
+		const accidental = event.some((n) => n.pitch !== null && n.pitch.alter !== keyAlterForStep(keyFifths, n.pitch.step));
+		const headLeft = accidental ? ACCIDENTAL_ALLOWANCE : 0;
+		for (const lyric of lyrics) {
+			if (lyric.text === '') continue;
+			const span = syllableSpan(lyric, headLeft, headWidth, 1);
+			items.push({ onset: onsetKey(onsets.get(anchor.id)!), verse: lyric.verse, lyric, left: span.left, right: span.right });
+		}
+	}
+	return items;
+}
+
+/**
+ * The lyric widening of one measure index, shared by every staff (see the
+ * section comment): `extras` maps an onset (`onsetKey`) to the staff spaces
+ * added to the stretch of time starting there, and `lead` is extra lead-in,
+ * unjustified like the header, so the first syllable clears the barline.
+ * `null` when no staff has lyrics in this measure.
+ *
+ * Every staff with lyrics contributes its own constraints, all solved on one
+ * grid of onsets (the union of those staves' columns): for each pair of
+ * adjacent syllables of a verse, the blank between them must reach
+ * `hyphenGap` inside a word and `wordGap` between words, and any shortfall is
+ * spread over the time between the two onsets in proportion to duration.
+ * Widening only ever grows a gap, so fixing the pairs one by one leaves every
+ * earlier pair fixed. Model-only and cheap, so `layoutMeasure` recomputes it
+ * on every call (casting-off probes, justification, the real pass and a
+ * scoped relayout all agree).
+ */
+interface LyricExtras {
+	readonly extras: ReadonlyMap<number, number>;
+	readonly lead: number;
+}
+
+function lyricColumnExtras(score: Score, measureIndex: number): LyricExtras | null {
+	const staves: { readonly columns: readonly { readonly onset: number; readonly width: number }[]; readonly items: LyricSpacingItem[] }[] = [];
+	for (const staff of score.staves) {
+		const measure = staff.measures[measureIndex];
+		if (!measure || !measure.notes.some((n) => n.lyrics.length > 0)) continue;
+		const items = lyricSpacingItems(measure.notes, score.keyFifthsAt(measureIndex, staff.index));
+		if (items.length > 0) staves.push({ columns: measureColumns(measure.notes), items });
+	}
+	if (staves.length === 0) return null;
+
+	const grid = [...new Set(staves.flatMap((s) => s.columns.map((c) => onsetKey(c.onset))))].sort((a, b) => a - b);
+	const extra = new Map<number, number>(grid.map((u) => [u, 0]));
+	const position = (columns: readonly { readonly onset: number; readonly width: number }[], onset: number): number => {
+		let x = 0;
+		for (const column of columns) {
+			if (onsetKey(column.onset) >= onset) break;
+			x += column.width;
+		}
+		for (const u of grid) {
+			if (u >= onset) break;
+			x += extra.get(u)!;
+		}
+		return x;
+	};
+	const spread = (from: number, to: number, amount: number): void => {
+		const spans: [number, number][] = [];
+		for (let i = 0; i < grid.length; i++) {
+			const u = grid[i]!;
+			if (u < from || u >= to) continue;
+			spans.push([u, Math.min(grid[i + 1] ?? to, to) - u]);
+		}
+		const total = spans.reduce((sum, [, d]) => sum + d, 0);
+		for (const [u, d] of spans) extra.set(u, extra.get(u)! + (total > 0 ? (amount * d) / total : amount / spans.length));
+	};
+
+	let lead = 0;
+	for (const { columns, items } of staves) {
+		const byVerse = new Map<string, LyricSpacingItem[]>();
+		for (const item of items) {
+			const chain = byVerse.get(item.verse);
+			if (!chain) byVerse.set(item.verse, [item]);
+			else if (!chain.some((other) => other.onset === item.onset)) chain.push(item);
+		}
+		for (const chain of byVerse.values()) {
+			chain.sort((a, b) => a.onset - b.onset);
+			const first = chain[0]!;
+			lead = Math.max(lead, lyricLeftMargin(first.lyric) - first.left - SPACING.measureLeadIn - position(columns, first.onset));
+			for (let i = 1; i < chain.length; i++) {
+				const a = chain[i - 1]!;
+				const b = chain[i]!;
+				const need = lyricContinuesWord(a.lyric) ? LYRIC.hyphenGap : LYRIC.wordGap;
+				const gap = position(columns, b.onset) + b.left - (position(columns, a.onset) + a.right);
+				if (need - gap > 1e-9) spread(a.onset, b.onset, need - gap);
+			}
+		}
+	}
+	for (const [u, value] of extra) if (value <= 0) extra.delete(u);
+	return { extras: extra, lead: Math.max(0, lead) };
+}
+
+/** One lyric of a staff in score order: its measure, its event (anchor
+ *  first, as `noteEvents` groups it), and where that event sits in its
+ *  voice's run of events across the staff (`StaffLyricIndex.voiceEvents`). */
+interface LyricSlot {
+	readonly measureIndex: number;
+	readonly event: readonly Note[];
+	readonly lyric: Lyric;
+	readonly voice: number;
+	readonly at: number;
+}
+
+/**
+ * A line a syllable draws on towards a later note: a hyphen to the next
+ * syllable of its word (`end` that slot), or an extender to the last note of
+ * its melisma (`end` that event). Model-only, so every measure of every row
+ * derives the same set.
+ */
+interface LyricConnector {
+	readonly kind: 'hyphen' | 'extender';
+	readonly start: LyricSlot;
+	readonly endMeasure: number;
+	readonly endEvent: readonly Note[];
+	readonly endSlot: LyricSlot | null;
+}
+
+interface StaffLyricIndex {
+	readonly slotsByMeasure: ReadonlyMap<number, readonly LyricSlot[]>;
+	readonly connectors: readonly LyricConnector[];
+}
+
+/**
+ * A staff's lyrics as layout needs them, or `null` when it has none: every
+ * slot by measure, and every hyphen and extender. Chains are per voice and
+ * verse, so an SA staff whose two voices both sing verse 1 hyphenates each
+ * voice's words separately.
+ *
+ * An extender runs from its syllable through the voice's following events
+ * that sing nothing in its verse, stopping before the next syllable of the
+ * verse or a rest; an extend-only lyric with `type="stop"` (some encoders
+ * mark the melisma's last note so) ends it there explicitly.
+ */
+function staffLyricIndex(score: Score, staffIndex: number): StaffLyricIndex | null {
+	const staff = score.staves[staffIndex]!;
+	if (!staff.measures.some((m) => m.notes.some((n) => n.lyrics.length > 0))) return null;
+	const voiceEvents = new Map<number, { readonly measureIndex: number; readonly event: readonly Note[] }[]>();
+	const chains = new Map<string, LyricSlot[]>();
+	const slotsByMeasure = new Map<number, LyricSlot[]>();
+	for (const measure of staff.measures) {
+		for (const event of noteEvents(measure.notes)) {
+			const voice = event[0]!.voice;
+			let list = voiceEvents.get(voice);
+			if (!list) voiceEvents.set(voice, (list = []));
+			list.push({ measureIndex: measure.index, event });
+			for (const lyric of eventLyrics(event)) {
+				const slot: LyricSlot = { measureIndex: measure.index, event, lyric, voice, at: list.length - 1 };
+				const key = `${voice}\u0000${lyric.verse}`;
+				const chain = chains.get(key);
+				if (chain) chain.push(slot);
+				else chains.set(key, [slot]);
+				const here = slotsByMeasure.get(measure.index);
+				if (here) here.push(slot);
+				else slotsByMeasure.set(measure.index, [slot]);
+			}
+		}
+	}
+
+	const connectors: LyricConnector[] = [];
+	for (const chain of chains.values()) {
+		const sung = chain.filter((slot) => slot.lyric.text !== '');
+		sung.forEach((slot, i) => {
+			const next = sung[i + 1];
+			if (next && lyricContinuesWord(slot.lyric)) {
+				connectors.push({ kind: 'hyphen', start: slot, endMeasure: next.measureIndex, endEvent: next.event, endSlot: next });
+			}
+			if (!lyricStartsExtender(slot.lyric)) return;
+			const events = voiceEvents.get(slot.voice)!;
+			let end = events[slot.at]!;
+			for (let j = slot.at + 1; j < events.length; j++) {
+				const candidate = events[j]!;
+				if (candidate.event[0]!.pitch === null) break;
+				const own = eventLyrics(candidate.event).find((l) => l.verse === slot.lyric.verse);
+				if (own && own.text !== '') break;
+				end = candidate;
+				if (own?.extend === 'stop') break;
+			}
+			connectors.push({ kind: 'extender', start: slot, endMeasure: end.measureIndex, endEvent: end.event, endSlot: null });
+		});
+	}
+	return { slotsByMeasure, connectors };
+}
+
+/**
+ * The verse lines a row of `staffIndex` (measures `first..last`) draws, in
+ * order: every verse sung in it, plus any whose hyphen or extender reaches
+ * into it from an earlier system. Empty for a row without lyrics, which then
+ * takes the old, lyric-free path everywhere.
+ */
+function rowLyricVerses(index: StaffLyricIndex | null, first: number, last: number): readonly string[] {
+	if (!index) return NO_VERSES;
+	const verses = new Set<string>();
+	for (let m = first; m <= last; m++) for (const slot of index.slotsByMeasure.get(m) ?? []) verses.add(slot.lyric.verse);
+	for (const c of index.connectors) {
+		if (c.start.measureIndex < first && c.endMeasure >= first) verses.add(c.start.lyric.verse);
+	}
+	return verses.size === 0 ? NO_VERSES : [...verses].sort(compareVerses);
+}
+
+const NO_VERSES: readonly string[] = Object.freeze([]);
+
+/** One staff's measures in one system, as the lyric pass needs them (cf.
+ *  `DirectionRow`). Only the measures' regions, notes and `inkExtent` are
+ *  read, so cached measures that already carry lyric ops serve as well. */
+interface LyricRow {
+	readonly staffIndex: number;
+	readonly measures: readonly LaidOutMeasure[];
+	readonly staffTopY: number;
+	readonly ss: number;
+	readonly systemOf: readonly number[];
+	readonly index: StaffLyricIndex;
+	readonly verses: readonly string[];
+}
+
+/** Verse 1's baseline for a row: `firstBaseline` below the staff, or lower
+ *  when a measure carrying a syllable has ink reaching further down. */
+function lyricBaseline(row: LyricRow): number {
+	const { ss } = row;
+	const staffBottom = row.staffTopY + 4 * ss;
+	let baseline = staffBottom + LYRIC.firstBaseline * ss;
+	for (const laid of row.measures) {
+		const slots = row.index.slotsByMeasure.get(laid.index);
+		if (!slots || !slots.some((slot) => slot.lyric.text !== '')) continue;
+		const bottom = laid.inkExtent?.bottom ?? staffBottom;
+		baseline = Math.max(baseline, bottom + (LYRIC.inkClearance + LYRIC.ascent) * ss);
+	}
+	return baseline;
+}
+
+/** The lowest point of a row's last verse line's text. */
+function lyricBlockBottom(row: LyricRow, baseline: number): number {
+	return baseline + ((row.verses.length - 1) * LYRIC.lineSpacing + LYRIC.descent) * row.ss;
+}
+
+/** A syllable's laid-out extent in `row` (canvas x), kept inside its
+ *  measure's band, or `null` when its measure is not in the row. */
+function slotSpanInRow(
+	row: LyricRow,
+	slot: LyricSlot
+): { readonly left: number; readonly right: number; readonly x: number; readonly align: 'left' | 'center' } | null {
+	const laid = row.measures.find((m) => m.index === slot.measureIndex);
+	const anchor = slot.event[0]!;
+	const box = laid?.notes.find((n) => n.id === anchor.id)?.bounds;
+	if (!laid || !box) return null;
+	const { ss } = row;
+	const head = headOfBox(box, anchor, ss);
+	const span = syllableSpan(slot.lyric, head.left, head.width, ss);
+	// The spacing passes keep it inside already; this only guards against an
+	// estimate gone wrong, since ink outside the band would leak into a
+	// neighbour's region.
+	const minLeft = laid.region.x + (LYRIC.edgeMargin / 2) * ss;
+	const maxRight = laid.region.x + laid.region.width - (LYRIC.edgeMargin / 2) * ss;
+	const dx = span.left < minLeft ? minLeft - span.left : span.right > maxRight ? Math.max(minLeft - span.left, maxRight - span.right) : 0;
+	return { left: span.left + dx, right: span.right + dx, x: span.x + dx, align: span.align };
+}
+
+/** The right edge of an event's head in `row`, or `null` if not in it. */
+function headRightInRow(row: LyricRow, measureIndex: number, event: readonly Note[]): number | null {
+	const laid = row.measures.find((m) => m.index === measureIndex);
+	const anchor = event[0]!;
+	const box = laid?.notes.find((n) => n.id === anchor.id)?.bounds;
+	if (!box) return null;
+	const head = headOfBox(box, anchor, row.ss);
+	return head.left + head.width;
+}
+
+/**
+ * A connector's stretch of this row, canvas x, or `null` when it does not
+ * reach the row. A hyphen or extender crossing a system break is drawn on
+ * both systems: after its syllable to the end of the first, and on the next
+ * from the start of its music (an extender) or as one more hyphen just before
+ * the continuing syllable (a hyphen, the usual engraving).
+ */
+function connectorSpanInRow(row: LyricRow, c: LyricConnector): { readonly x0: number; readonly x1: number } | null {
+	const { ss, systemOf } = row;
+	const first = row.measures[0]!;
+	const last = row.measures[row.measures.length - 1]!;
+	const here = systemOf[first.index]!;
+	const startSystem = systemOf[c.start.measureIndex]!;
+	const endSystem = systemOf[c.endMeasure]!;
+	if (startSystem > here || endSystem < here) return null;
+	const rowStart = Math.min(first.region.x + first.region.width, ...first.notes.map((n) => n.bounds.x));
+	const rowEnd = last.region.x + last.region.width - 0.5 * ss;
+	if (c.kind === 'hyphen') {
+		const from = startSystem === here ? slotSpanInRow(row, c.start)?.right : undefined;
+		const to = endSystem === here && c.endSlot ? slotSpanInRow(row, c.endSlot)?.left : undefined;
+		if (from !== undefined && to !== undefined) return { x0: from, x1: to };
+		if (from !== undefined) return { x0: from, x1: rowEnd };
+		// Under the clef if need be: nothing else sits that low there.
+		if (to !== undefined && startSystem < here) return { x0: Math.max(first.region.x + 0.5 * ss, to - LYRIC.breakHyphenRoom * ss), x1: to };
+		return null;
+	}
+	const fromSpan = startSystem === here ? slotSpanInRow(row, c.start) : null;
+	const x0 = fromSpan ? fromSpan.right + LYRIC.extenderGap * ss : rowStart;
+	const x1 = endSystem === here ? (headRightInRow(row, c.endMeasure, c.endEvent) ?? rowEnd) : rowEnd;
+	return { x0, x1 };
+}
+
+/** The ops one measure of `row` draws: its syllables, and its pieces of
+ *  every hyphen and extender line crossing it. */
+function lyricOpsForMeasure(row: LyricRow, baseline: number, laid: LaidOutMeasure): DrawOp[] {
+	const { ss } = row;
+	const ops: DrawOp[] = [];
+	const fontSizePx = LYRIC.fontSpaces * ss;
+	const lineOf = (verse: string): number => baseline + Math.max(0, row.verses.indexOf(verse)) * LYRIC.lineSpacing * ss;
+	const left = laid.region.x;
+	const right = laid.region.x + laid.region.width;
+
+	for (const slot of row.index.slotsByMeasure.get(laid.index) ?? []) {
+		if (slot.lyric.text === '') continue;
+		const span = slotSpanInRow(row, slot);
+		if (!span) continue;
+		ops.push({ kind: 'text', text: lyricDisplayText(slot.lyric), x: span.x, y: lineOf(slot.lyric.verse), fontSizePx, align: span.align });
+	}
+
+	for (const c of row.index.connectors) {
+		if (c.start.measureIndex > laid.index || c.endMeasure < laid.index) continue;
+		const stretch = connectorSpanInRow(row, c);
+		if (!stretch) continue;
+		const y = lineOf(c.start.lyric.verse);
+		if (c.kind === 'extender') {
+			if (stretch.x1 - stretch.x0 < LYRIC.extenderMin * ss) continue;
+			const x0 = Math.max(stretch.x0, left);
+			const x1 = Math.min(stretch.x1, right);
+			if (x1 <= x0) continue;
+			const thickness = LYRIC.extenderThickness * ss;
+			ops.push({ kind: 'rect', x: x0, y: y - thickness, width: x1 - x0, height: thickness });
+			continue;
+		}
+		const gap = stretch.x1 - stretch.x0;
+		if (gap < LYRIC.hyphenMinGap * ss) continue;
+		const width = LYRIC.hyphenWidth * ss;
+		const thickness = LYRIC.hyphenThickness * ss;
+		const count = Math.max(1, Math.floor(gap / (LYRIC.hyphenSpacing * ss)));
+		for (let k = 0; k < count; k++) {
+			const centre = stretch.x0 + (gap * (k + 0.5)) / count;
+			// Each hyphen belongs to the measure its centre falls in, kept
+			// inside that measure's band so its region covers it.
+			if (centre < left || centre >= right) continue;
+			const x = Math.max(left + 0.1 * ss, Math.min(right - 0.1 * ss - width, centre - width / 2));
+			ops.push({ kind: 'rect', x, y: y - LYRIC.hyphenRise * ss - thickness / 2, width, height: thickness });
+		}
+	}
+	return ops;
+}
+
+/** Every measure of `row` with its lyric ops added, the row's verse-1
+ *  baseline, and the bottom of its lyric block. */
+function layoutLyricRow(row: LyricRow): { measures: LaidOutMeasure[]; baseline: number; bottom: number } {
+	const baseline = lyricBaseline(row);
+	return {
+		measures: row.measures.map((laid) => withDirectionOps(laid, lyricOpsForMeasure(row, baseline, laid), row.staffTopY, row.ss)),
+		baseline,
+		bottom: lyricBlockBottom(row, baseline)
+	};
+}
+
+/** The rightmost x a measure's syllables need its barline at (their
+ *  estimated right edge plus margin), from the heads just laid out; `-Infinity`
+ *  when it has none. */
+function lyricRightEdge(measure: Measure, notes: readonly LaidOutNote[], ss: number): number {
+	let edge = Number.NEGATIVE_INFINITY;
+	if (!measure.notes.some((n) => n.lyrics.length > 0)) return edge;
+	const boxes = new Map(notes.map((n) => [n.id, n.bounds]));
+	for (const event of noteEvents(measure.notes)) {
+		const lyrics = eventLyrics(event);
+		const box = lyrics.length > 0 ? boxes.get(event[0]!.id) : undefined;
+		if (!box) continue;
+		const head = headOfBox(box, event[0]!, ss);
+		for (const lyric of lyrics) {
+			if (lyric.text === '') continue;
+			edge = Math.max(edge, syllableSpan(lyric, head.left, head.width, ss).right + lyricRightMargin(lyric) * ss);
+		}
+	}
+	return edge;
 }
 
 function pushGlyph(
@@ -4869,15 +5580,12 @@ function measureRegion(
 			top = Math.min(top, op.y0, op.cy0, op.cy1, op.y1);
 			bottom = Math.max(bottom, op.y0, op.cy0, op.cy1, op.y1);
 		} else if (op.kind === 'text') {
-			// Not reachable today: a `text` op only ever exists in
-			// `LaidOutScore.partDecorations` (M2 Slice 5), never inside a
-			// measure's own `ops`, so no measure's region needs to account for
-			// one. Handled explicitly anyway, rather than falling into the
-			// `glyph` branch below (which would misread `op`'s fields), so this
-			// function stays correct if that ever changes rather than silently
-			// wrong.
+			// Lyric syllables (M6 Slice 9) are the one `text` a measure owns
+			// (part names live in `LaidOutScore.partDecorations`). A full em above
+			// the baseline covers any ascender, and 0.3 em below it any
+			// descender (the "g" of "sing").
 			top = Math.min(top, op.y - op.fontSizePx);
-			bottom = Math.max(bottom, op.y);
+			bottom = Math.max(bottom, op.y + 0.3 * op.fontSizePx);
 		} else {
 			const scale = op.fontSizePx !== undefined ? op.fontSizePx / (STAFF_SPACES_PER_EM * ss) : 1;
 			const { bBoxSW, bBoxNE } = GLYPH_METRICS[op.glyph];

@@ -888,7 +888,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       (the renderer's selection/redraw API in particular), slices 4-6 may
       need a light re-check.
 
-### M6 — Phase 6: Real-world edge cases [~]
+### M6 — Phase 6: Real-world edge cases [?]
 
 Open-ended; this pass scopes the first 9 slices. Scoped 2026-10-14
 (Claude, with the human picking the fidelity strategy) while M2-M5 are
@@ -1049,7 +1049,7 @@ element by Slice 3 and stays there.
       principal. Acceptance: unit tests for zero duration contribution,
       layout size/position, round trip; corpus `<grace>` notes now in the
       model.
-- [ ] **Slice 9: Lyrics.** Model per-note lyric syllables (verse number,
+- [x] **Slice 9: Lyrics.** Model per-note lyric syllables (verse number,
       syllabic begin/middle/end/single, extender) promoted from
       passthrough; layout places verse lines below the staff, centres
       syllables under noteheads, draws hyphens between split syllables
@@ -3199,3 +3199,128 @@ Slice 1 + Slice 7 (the misread itself is upstream OMR).
   merge with its principal's; `<type size="cue">` and `print-object="no"`
   rests the graces precede are not honoured (the latter pre-existing); no
   edit op inserts a grace (by scope).
+- 2026-10-14: M6 Slice 9 (lyrics) done, via subagent. Model (new
+  `src/model/lyrics.ts`): `Note.lyrics: readonly Lyric[]`, at most one per
+  verse, `Lyric { verse, syllabic, text, elisions, extend, source }`: `verse`
+  is MusicXML's `number` verbatim (`'1'` when unstated; `compareVerses` puts
+  numeric verses first, by value), `syllabic` `single|begin|middle|end`
+  (`single` when unstated), `text` `''` for an extend-only lyric, `elisions`
+  the further `{ syllabic, text }` syllables of a MusicXML `<elision>` (drawn
+  joined by an undertie), `extend` `start|stop|continue|untyped` or null.
+  Lossless round trip by keeping the whole source `<lyric>` as `source`
+  (formatting such as `placement`, `default-y`, `name`, `justify`, font
+  attributes and `xml:lang` on `<text>`, `<end-line/>` sits on the very
+  elements the model reads, so a cut-down residual would have to remember it
+  all anyway); export writes `source` verbatim whenever reading it again
+  gives the lyric's fields (always, until an op edits lyrics), else a
+  regenerated `<lyric>` keeping the source's attributes and trailers. A
+  `<lyric>` in exactly the plain shape export writes gets `source: null`, so
+  built scores round-trip equivalent (the Slice 6 direction rule). Lyrics stay
+  on the head they were read from (a chord member's too); layout reads the
+  event's union (`eventLyrics`, first head wins per verse). `buildScore`
+  `extra.lyrics` (anchor only), `clone`/`specOf` (shared frozen list),
+  `assertScoresEquivalent` (per head, in order, source key included) cover
+  it. Correction ops: `noteToRest` drops the note's lyrics (a rest is not
+  sung, and which neighbour should take them is not an op's call; undo
+  restores them); on a chord head, and `removeChordMember`, the removed
+  head's lyrics merge into the remaining anchor (`mergeLyrics`: a verse the
+  anchor already has keeps the anchor's syllable). Playback ignores lyrics
+  (documented in `lyrics.ts`): the engine does not sing.
+  Import/export (new `src/io/lyric-xml.ts`, `readLyric`/`lyricElement`,
+  shared so "unchanged" means the same both ways): a `<lyric>` is promoted
+  when its content is `(<syllabic>?, <text>, (<elision>, <syllabic>?,
+  <text>)*, <extend>?)` or a lone `<extend>`, followed only by
+  `<end-line>`/`<end-paragraph>`/`<footnote>`/`<level>`; `<humming>`,
+  `<laughing>`, out-of-order content and a second lyric for a verse the note
+  already has stay in `Note.passthrough`. Export writes model lyrics at the
+  `<lyric>` slot (after `<notations>`), unpromoted passthrough lyrics right
+  after them: the one reordering a round trip can make, only between a
+  promoted and an unpromoted verse on one note (tested). Corpus untouched (no
+  `<lyric>` in it); snapshot unchanged.
+  Fixture: `src/test/fixtures/satb-lyrics.musicxml`, hand-written (generated
+  once by a scratch script): SATB as 4 parts, 8 measures of 4/4, two verses
+  on the soprano, begin/middle/end syllables, "ev-'ry" across measures 4/5
+  (a system break at 1200px, staff space 10), "light," and "sing" melismas
+  with extenders (one ended by an explicit extend-only `stop`), elisions
+  ("in_a"), a low bass E2, an F#4 in the alto, a default-placed p and
+  crescendo on the soprano and an explicit `placement="below"` mf on the alto.
+  117 lyrics, all promoted, and they round-trip as the same elements in order.
+  Layout (`layout.ts` lyric section): verse lines below the staff, verse 1
+  nearest, 2.6 spaces apart, verse 1's baseline shared per system row:
+  `firstBaseline` 4.6 spaces under the bottom line, or lower so the text
+  clears the lowest ink of every measure in the row carrying a syllable
+  (0.9 + 1.45 ascent). Text 2 spaces, drawn through the existing `text` op /
+  label-font path with a new optional `align: 'center'` that the renderer
+  honours (`ctx.textAlign`), so a syllable is centred under its notehead by
+  real metrics; a syllable that starts an extender is left-aligned with the
+  head (simple Gould rule). Widths are estimated per character class
+  (`estimateLyricWidthSpaces`, sans-serif em widths), keeping layout
+  renderer-free as `estimateTextWidthPx` does. Hyphens: rects (0.65 x 0.13
+  spaces, 0.6 above the baseline) centred in the gap to the word's next
+  syllable, one per ~6 spaces of a long gap, none below a 1-space gap; at a
+  system break one after the syllable to the system's end and one more
+  before the continuing syllable on the next system. Extenders: from 0.25
+  after the syllable to the right edge of the melisma's last note (the
+  voice's following pitched events singing nothing in that verse, stopping
+  before the next syllable, a rest, or after an explicit extend `stop`),
+  across measures and systems (continuing from the next system's first
+  note); shorter than 0.8 spaces not drawn. Both cut at barlines, each
+  measure owning its piece (a hyphen the measure holding its centre), so
+  `measureRegion` covers them; `measureRegion` now gives a `text` op 0.3 em
+  of descent. Horizontal spacing: `lyricColumnExtras` (model-only, run by
+  `layoutMeasure`/`systemSpacingScale` so probes, justification, the real
+  pass and a scoped relayout agree) estimates every staff's syllables at this
+  measure index (head offset including an accidental wherever an alter
+  differs from the key) and widens a shared onset grid until adjacent
+  syllables of a verse keep 0.8 spaces between words and 1.6 inside a word,
+  spreading each shortfall over the time between them; `measureColumns` adds
+  each grid stretch to the columns covering it, so homophonic staves stay
+  aligned (tested). Extra lead-in (unjustified) keeps the first syllable off
+  the left barline; the barline moves right past the last syllable measured
+  on the laid-out heads. Vertical: barlines are no longer joined below a
+  staff carrying lyrics in that row (vocal-score practice, and the gap there
+  is no longer fixed), and the next staff's top becomes max(fixed gap, row's
+  lowest ink incl. lyrics and any dynamic under them + 4.5 spaces).
+  Dynamics: on a row with lyrics, a dynamic or hairpin with no placement goes
+  above (Slice 6's deferred rule), an explicit `below` one goes under the
+  lyrics (`DirectionRow.lyricBottom`). `LaidOutScore.systems[]` gains
+  optional `lyricVerses`/`lyricBaseline`; `relayoutMeasure` returns `null`
+  when the row's verse set or baseline changed, or when any other measure of
+  the row would draw a different hyphen/extender piece (a moved head, e.g.
+  an added accidental), so no lyric ink goes stale.
+  Demo: an "Open SATB lyrics sample" button imports the fixture through the
+  Open MusicXML path. Verified headlessly in system Chrome (Playwright,
+  `channel: 'chrome'`): the sample opens (4 systems of 4 staves at the demo width),
+  verses, hyphens, extenders, elisions, p and hairpin above, mf below the
+  alto lyrics; selecting C5 "ia," and transposing works (full relayout,
+  since the sharp moves the head); no page errors besides the pre-existing
+  404. Also checked offline via node-canvas at 900px (extender across the
+  break) and unbroken.
+  Tests: 662 -> 696 (model 10 in new `src/model/lyrics.test.ts`, io 7 in new
+  `src/io/lyrics.test.ts`, layout 16 in new `src/layout/lyric-layout.test.ts`,
+  renderer region 1; three existing io tests now expect `<lyric>` promoted
+  rather than passthrough); `check`/`build` green. Bench scoped edit
+  0.350/0.292/0.292/0.339 ms at 4/16/64/124 measures, full redraw 31.1 ms at
+  124, i.e. unchanged.
+  Noticed, not fixed: the staff gap is sized from what the row drew, but the
+  gap *above* a lyric staff is still the fixed one, so its above-placed
+  dynamics plus high ledger notes can still crowd the previous staff's
+  lowest notes; the system-level gap only grows, never reserves per system
+  for the next staff's above-dynamics; text widths are estimates for a
+  sans-serif face (lyrics are drawn in the label font, sans-serif, not the
+  usual serif), so gaps can be a little loose or tight; lyrics on a
+  whole-measure rest or a grace note are not drawn; `placement="above"`
+  lyrics are drawn below; two voices of one staff singing the same verse at
+  the same onset draw overlapping text; a cross-staff beam on a lyric staff
+  still uses the fixed-gap barline split; multi-staff `relayoutMeasure`
+  still skips column sharing (pre-existing), so an edit on a staff that was
+  not the widest at its column may fall back to a full layout; no op edits lyrics (by scope).
+- 2026-10-14: M6 first pass (Slices 1-9) complete, each slice built by a
+  fresh subagent and re-verified in the main session (check/test/build
+  green before every commit). 696 tests (up from 429 at M5's close). On
+  all 7 SFCC scores every source note is in the model, nothing is in the
+  `dropped` tally, and import -> export is lossless modulo the documented
+  normalization list. M6 is `[?]` pending the human scoping review and a
+  manual demo pass; repeats/endings/codas, cross-page ties beyond
+  `editTie`, staff-count divisi splits and general vertical spacing remain
+  for a later M6 pass.
