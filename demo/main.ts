@@ -586,8 +586,16 @@ canvas.addEventListener('pointerdown', (event) => {
 		(event.clientX - rect.left) / scoreScale + view.x,
 		(event.clientY - rect.top) / scoreScale + view.y
 	);
-	const changed = renderer.setSelection(hit ? hit.noteId : null);
-	selected = hit ? hit.noteId : null;
+	selectNote(hit ? hit.noteId : null);
+});
+
+/**
+ * Select `noteId` (or clear the selection), repaint what changed, sound the
+ * note, and report it. Shared by a click and Left/Right stepping.
+ */
+function selectNote(noteId: NoteId | null): void {
+	const changed = renderer.setSelection(noteId);
+	selected = noteId;
 	if (selected !== null) auditionNote(selected);
 	// A selection change touches at most two measures (the old note's and the
 	// new one's), and in principle those can sit on two different staves, so
@@ -598,10 +606,46 @@ canvas.addEventListener('pointerdown', (event) => {
 	for (const { staffIndex, index } of changed) renderer.redrawMeasure(index, staffIndex);
 	upButton.disabled = selected === null;
 	downButton.disabled = selected === null;
-	status.textContent = hit
-		? `Selected note ${hit.noteId} in measure ${hit.measureIndex + 1}.`
+	const measure = noteId === null ? undefined : history.current.measureOfNote(noteId);
+	status.textContent = measure
+		? `Selected note ${noteId} in measure ${measure.index + 1}.`
 		: 'Nothing selected. Click a notehead or a rest.';
-});
+}
+
+/**
+ * Move the selection to the next (`+1`) or previous (`-1`) event in the
+ * selected note's own staff and voice, across barlines, and scroll it into
+ * view. A chord counts as one event: stepping lands on its anchor, and
+ * stepping from any of its heads moves past the whole chord. Stays put at
+ * either end of the voice.
+ */
+function stepSelection(direction: 1 | -1): void {
+	if (selected === null) return;
+	const score = history.current;
+	const note = score.findNote(selected);
+	const measure = score.measureOfNote(selected);
+	if (!note || !measure) return;
+	const events = score.staves[measure.staffIndex]!.measures.flatMap((m) =>
+		m.notes.filter((n) => n.voice === note.voice && !n.chordWithPrevious)
+	);
+	// A chord member's position is its anchor's: the nearest earlier head in
+	// its measure and voice that does not join the previous note.
+	let current = note;
+	if (note.chordWithPrevious) {
+		const inMeasure = measure.notes.filter((n) => n.voice === note.voice);
+		const at = inMeasure.indexOf(note);
+		for (let i = at - 1; i >= 0; i--) {
+			if (!inMeasure[i]!.chordWithPrevious) {
+				current = inMeasure[i]!;
+				break;
+			}
+		}
+	}
+	const next = events[events.indexOf(current) + direction];
+	if (!next) return;
+	selectNote(next.id);
+	followPlaybackCursor(next.id);
+}
 
 /**
  * Which canvas's own `EditHistory` the keyboard undo/redo shortcuts step
@@ -623,7 +667,10 @@ window.addEventListener('keydown', (event) => {
 	else if (modifier && key === 'y') step('redo');
 	else if (event.shiftKey && event.key === 'ArrowUp') addThirdSelected(1);
 	else if (event.shiftKey && event.key === 'ArrowDown') addThirdSelected(-1);
-	else if (event.key === 'ArrowUp') transposeSelected(1);
+	else if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+		if (selected === null || modifier || event.altKey) return;
+		stepSelection(event.key === 'ArrowRight' ? 1 : -1);
+	} else if (event.key === 'ArrowUp') transposeSelected(1);
 	else if (event.key === 'ArrowDown') transposeSelected(-1);
 	// M6 Slice 7 correction shortcuts (listed in index.html), on the main
 	// canvas's selection; a modified key is the browser's, not ours.
