@@ -24,12 +24,12 @@
 // instead, and a host that serves its own copy passes that URL.
 //
 // Headless (Node + node-canvas): `loadSmuflFont` needs a document, so register
-// the bundled file with the rasterizer directly:
+// the font with the rasterizer directly. node-canvas cannot parse WOFF2, so it
+// needs an OTF copy of Bravura (`redist/otf/Bravura.otf` in Steinberg's
+// repository; the bench uses `assets/bravura/Bravura.otf`):
 //
 //   import { registerFont } from 'canvas';
-//   import { fileURLToPath } from 'node:url';
-//   import { bravuraFontUrl } from 'notation-engine';
-//   registerFont(fileURLToPath(bravuraFontUrl), { family: 'Bravura' });
+//   registerFont('./Bravura.otf', { family: 'Bravura' });
 
 import { BRAVURA_FAMILY } from './glyph-metrics.js';
 
@@ -53,7 +53,7 @@ export async function loadSmuflFont(
 	if (typeof FontFace === 'undefined' || typeof document === 'undefined') {
 		throw new Error(
 			'loadSmuflFont needs a browser document. In Node, register the font with the ' +
-				'rasterizer directly (node-canvas exposes registerFont; see bravuraFontUrl).'
+				'rasterizer directly (node-canvas: registerFont with an OTF copy of Bravura).'
 		);
 	}
 	try {

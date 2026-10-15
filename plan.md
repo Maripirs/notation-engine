@@ -2,10 +2,10 @@
 
 **Current milestone:** M7
 
-Roadmap and full decision record: `OMR_EDITOR_PLAN.md` milestone E13 in the
-`divisi-omr-editor` worktree. This file tracks notation-engine's own
-build-out; that one is Divisi's plan and stays the source of truth for why
-this project exists.
+The engine was started to replace OpenSheetMusicDisplay (OSMD) in an
+OMR-correction editor ("the host editor" below), whose own plan held the
+original decision record. This file is notation-engine's own roadmap and
+design record: milestones, slices, decisions and the backlog.
 
 ## Testing policy
 
@@ -60,7 +60,7 @@ region-scoped redraw of just the touched measure. Proves the core
       packing) so the demo wraps instead of CSS-shrinking one long system
 
 **Tasks — Human:**
-- [x] Confirm go/no-go to proceed to Phase 1 (per `OMR_EDITOR_PLAN.md` E13,
+- [x] Confirm go/no-go to proceed to Phase 1 (per the host editor's plan,
       recommendation is go; confirmed)
 
 ### M1 — Phase 1: Single-voice engraving [x]
@@ -494,7 +494,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
 ### M4 — Phase 4: Interaction layer [?]
 
 Est. 1-2 months. Own hit-testing, selection/playback cursors, follow-scroll,
-zoom, replacing what E2/E4/E7 currently read off OSMD
+zoom, replacing what the original OSMD-based editor reads off OSMD
 (`GetNearestNote`/`osmd.cursors`/`MeasureList`). Playback cursors depend on
 M3's audio engine existing (built, all 6 slices, `[?]` pending the human's
 own by-ear verification per M3's own closing report above; that
@@ -509,15 +509,15 @@ the original scanned PDF, play/interact in this engine's own engraved
 score, and wants the cursor to eventually work on the PDF too, i.e. a
 synced position marker on a separate PDF reference pane as playback/
 selection advances in the engraved score. This engine stays PDF/format-
-agnostic per E13's own decisions, so it does not render or align to a PDF
+agnostic per its founding decisions, so it does not render or align to a PDF
 itself; its job here is exposing enough position/timing data (measure
 index, onset time, note bounding box) for a host app to drive that sync
 externally. The host-side half of this (rendering the PDF pane, page-level
-scroll-to-sync, and any finer note-level pixel mapping) is Divisi's own
-`divisi-omr-editor` plan, not this repo's — see that plan's E9 (per-page
-measure offsets) and E12 (playback follows the PDF, page-level only for
-now; true note-level position on the scan is a separate, harder backlog
-item there, blocked on pixel-box data the OMR pipeline currently discards).
+scroll-to-sync, and any finer note-level pixel mapping) is the host
+editor's job, not this repo's (per-page measure offsets, and playback
+following the PDF, page-level only for now; true note-level position on
+the scan is a separate, harder backlog item there, blocked on pixel-box
+data the OMR pipeline currently discards).
 
 Scoped 2026-09-06 (Claude, "on your own" per the human's explicit
 instruction) against M0-M3's real, built code rather than a plan. A survey
@@ -543,7 +543,7 @@ closes the gaps left around it.
   single id with one tint color; a playback cursor needs to highlight
   however many notes are sounding at once (a full SATB chord can be four,
   across four staves, on one onset), in a color distinct from an editor's
-  own live selection so the two don't collide once M4 sits inside E2's
+  own live selection so the two don't collide once M4 sits inside the host
   editor (which keeps its own selection running while a piece plays back
   for preview). Slice 2 below adds this as its own tracked set, not a
   reuse of `selectedNoteId`.
@@ -599,10 +599,10 @@ answer. Slice 1's and Slice 2's task text below reflect this directly rather
 than leaving it for slice time to improvise.
 
 Not in scope, confirmed against the milestone breakdown above: measure-range
-selection and undo/redo are M5's job ("Reparity with E2-E12"), not this
-one; drawing/aligning a PDF pane is Divisi's own job per the scope
+selection and undo/redo are M5's job ("Reparity with the host editor"), not this
+one; drawing/aligning a PDF pane is the host editor's job per the scope
 paragraph above, this milestone only exposes the position/region data a
-PDF-sync host would consume; seam markers (E4) are also M5 territory (an
+PDF-sync host would consume; seam markers are also M5 territory (an
 overlay reparity item), this milestone does not add seam-specific
 concepts, only the general region-lookup primitive (Slice 4) a seam
 overlay could later be built on.
@@ -706,11 +706,10 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       audio playback, now performable via the dev demo controls added
       2026-09-06.
 
-### M5 — Phase 5: Reparity with E2-E12 [?]
+### M5 — Phase 5: Reparity with the host editor [?]
 
-Est. 1-2 months. Re-port the editor features Divisi currently runs on OSMD
-(`OMR_EDITOR_PLAN.md` E4 seam markers, E7 bar-range clef change, E8 undo/
-redo) onto this engine's own model, plus MusicXML import (Audiveris output)
+Est. 1-2 months. Re-port the editor features the original OSMD-based editor
+runs (seam markers, bar-range clef change, undo/redo) onto this engine's own model, plus MusicXML import (Audiveris output)
 and export, the format bridge nothing in M0-M4 needed. Scoped 2026-09-07
 (Claude, solo per the standing "keep making progress" instruction), `[ ]`
 not `[~]` since M4 is still `[?]` pending review. Scoped against M0-M4's
@@ -736,8 +735,8 @@ is fresh and each later slice only depends on earlier ones:
   playback), the same one-way layering `playback` already follows;
   `src/index.ts`'s "four layers" header comment updates to five, the way M3
   Slice 1 updated it when `playback` landed.
-- **Undo/redo is structural, not a MusicXML snapshot.** E8 (the OSMD
-  editor's undo) snapshots the `workingXml` string because that editor is
+- **Undo/redo is structural, not a MusicXML snapshot.** The original OSMD
+  editor's undo snapshots the `workingXml` string because that editor is
   MusicXML-native; this engine is model-native, so undo/redo snapshots the
   `Score` itself (a deep, id-preserving clone) and does not route through
   `src/io/` at all. This keeps undo independent of export/import
@@ -749,13 +748,13 @@ is fresh and each later slice only depends on earlier ones:
   selection needs point -> `(staffIndex, measureIndex)` (click a measure
   body) plus a range-state primitive on `CanvasRenderer` with its own
   tint, distinct from both note-selection and the playback cursor so the
-  three never collide once this sits inside E2's editor. Slice 4 builds the
-  primitive; slice 5 is E7's actual payload (change a bar range's clef),
+  three never collide once this sits inside the host editor. Slice 4 builds the
+  primitive; slice 5 is the host editor's actual payload (change a bar range's clef),
   which is also the first per-measure clef change the model has ever had
   and follows the exact `keyFifthsAt`/`timeAt`/`endBarlineAt`
   per-measure-override-plus-walk-back precedent M1 Slices 7-8 set.
-- **Seam markers are a pure overlay, never model state.** Per E4, a seam
-  marker is anchored to a measure boundary (E3's report gains a
+- **Seam markers are a pure overlay, never model state.** In the host editor, a seam
+  marker is anchored to a measure boundary (its page-join report gains a
   `boundary_measure` per segment) and is "overlay DOM only, never written
   into the MusicXML" so a saved draft stays clean. Here that is a
   `CanvasRenderer.setSeamMarkers(boundaries)` layer painted outside every
@@ -771,7 +770,7 @@ cases (British rests, divisi splits) are M6, so MusicXML import is
 deliberately import-*tolerant* (it skips `<lyric>`, `<articulations>`,
 `<grace>`, and unknown elements without failing) rather than
 import-*complete*. The host-side PDF pane and page-level scroll-sync stay
-Divisi's own `divisi-omr-editor` job per M4's intro; this milestone still
+the host editor's job per M4's intro; this milestone still
 only exposes position data (`regionForNote` from M4 Slice 4, plus slice
 6's boundary-region lookup). Note-level pixel mapping onto the scan stays
 blocked on OMR data the pipeline discards, tracked in that plan, not here.
@@ -849,7 +848,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       diff-and-return-affected-measures shape but over a contiguous run,
       with its own `CanvasRendererOptions.measureRange` tint distinct from
       `selection` and `playbackCursor`. Range is single-staff and
-      contiguous (matching E7's "bar range"); an out-of-order `from`/`to`
+      contiguous (matching the host editor's "bar range"); an out-of-order `from`/`to`
       normalizes. Acceptance: unit tests for `hitTestMeasure` resolving a
       click to the right `(staffIndex, measureIndex)` including on a
       non-zero staff and in a later system after cast-off, the
@@ -860,7 +859,7 @@ pass; `npm run check`/`test`/`build` stay green throughout.
       (`createGrandStaffShowcaseScore`, from M4 Slice 1) highlights the
       contiguous range, and only the measures whose membership changed
       repaint.
-- [x] **Slice 5: Range clef change (E7 payload).** `Measure` gains an
+- [x] **Slice 5: Range clef change (host editor payload).** `Measure` gains an
       optional `clef` field, `undefined` meaning "same as the previous
       measure" (or the staff's own `Staff.clef` for measure 0), with
       `Score.clefAt(staffIndex, measureIndex)` walking back to the nearest
@@ -918,40 +917,40 @@ still `[?]`; the human chose to start M6 rather than block on those
 reviews. Slices 12-15 (repeats and voltas) were scoped 2026-10-15 as the
 second pass, the human picking repeats + voltas over also modelling
 navigation marks (segno, coda, D.C./D.S./Fine). The corpus barely
-exercises this: only Frost Myth has a repeat (one measure, m65) and no
-SFCC score has an ending, so these slices lean on a hand-built fixture.
+exercises this: only one score has a repeat (one measure, m65) and no
+corpus score has an ending, so these slices lean on a hand-built fixture.
 
-**Driven by measurement, not the roadmap list.** Every SFCC choral score
-in `divisi-omr-editor/Backend/fixtures/SFCC/` (7 real Audiveris-era
-MusicXML files, the scores the SFCC board's feedback is about) was run
+**Driven by measurement, not the roadmap list.** Every score in a
+private corpus of 7 real Audiveris-exported choral scores (MusicXML
+files of the kind the host editor corrects) was run
 through `importMusicXml` + `layoutScore`. All 7 import and lay out without
 throwing, but:
 
 - **Chords are the biggest loss by far.** The model has no chord concept,
   so the importer drops every `<chord/>` note: 1,842 of 8,416 notes (22%)
-  in Brahms "Der Abend", 1,018 of 3,751 in Elgar "Challenge of Thor", 876
-  of 4,551 in Faure "Les Djinns" (the board's named benchmark). Choral
-  divisi is notated as 2-note chords in one voice (Divisi's own
-  `splitChordalDivisi` relies on it), so this is the core choral case, not
+  in the largest corpus score (337 measures, 6 staves), 1,018 of 3,751 in
+  another, 876 of 4,551 in the 124-measure benchmark score. Choral
+  divisi is notated as 2-note chords in one voice (the host editor's own
+  divisi splitting relies on it), so this is the core choral case, not
   a piano-only one.
 - **Everything else unmodelled is silently dropped,** and a save
   re-exports from the model, so engine-edit-then-save would strip an OMR
-  draft of its dynamics (306 in Brahms), hairpins (479), articulations
-  (872) and fermatas. Divisi's OSMD editor avoids this by mutating the XML
-  DOM in place (E2's "leave every element we don't touch exactly as-is");
+  draft of its dynamics (306 in the largest score), hairpins (479), articulations
+  (872) and fermatas. The original OSMD editor avoids this by mutating the XML
+  DOM in place ("leave every element we don't touch exactly as-is");
   this engine is model-native, so it needs its own answer.
-- Tenor C clef (`<sign>C</sign><line>4</line>`, the board's "tenor line
+- Tenor C clef (`<sign>C</sign><line>4</line>`, a reported "tenor line
   alternating bass <-> tenor clef") falls back to treble; whole-measure
-  rests (`<rest measure="yes"/>`, 392 in Brahms) hit the "no `<type>`,
+  rests (`<rest measure="yes"/>`, 392 in the largest score) hit the "no `<type>`,
   using quarter" fallback.
-- The only note-level edit op is `transposeNote`. E2's OSMD editor also
+- The only note-level edit op is `transposeNote`. The original OSMD editor also
   had delete-to-rest and planned duration edits; fixing "British rests all
   over page 1" needs rest-focused ops.
-- Brahms (5 `<part>`s) imports as 7 `Part`s, an import bug. Its full
+- The largest score (5 `<part>`s) imports as 7 `Part`s, an import bug. Its full
   layout takes ~1.1s (the others 11-67ms).
 - Lyrics, grace notes and repeats are rare in this corpus (zero `<lyric>`
-  in all 7 files and in every Audiveris output in Divisi's local storage;
-  11 `<grace>` total; repeats only in Frost Myth), so they sit last.
+  in all 7 files and in every Audiveris output the host editor had stored;
+  11 `<grace>` total; repeats only in one score), so they sit last.
 
 **Fidelity decision (human, 2026-10-14): model the common things, pass
 the rest through.** Chords, C clefs, articulations/fermatas, dynamics and
@@ -971,10 +970,9 @@ must count a chord once; Slice 2 enumerates and tests those sites. The
 alternative (one `Note` with `pitches[]`) was rejected because it breaks
 per-head identity everywhere M4/M5 already rely on it.
 
-**Real fixtures live in the repo.** Slice 1 copies the 7 SFCC
-`.musicxml` files (~6MB, PDFs excluded) into `src/test/fixtures/sfcc/`
-(private learning-tool use, per the board's copyright note in Divisi's
-memory), and a corpus test becomes every later slice's regression net.
+**Real fixtures live in the repo.** Slice 1 copies the 7 corpus
+`.musicxml` files (~6MB, PDFs excluded) into the test fixtures (private
+use only; M7 Slice 1 removed them again), and a corpus test becomes every later slice's regression net.
 
 **Acceptance criteria (whole milestone):** each slice's criteria below
 pass; `npm run check`/`test`/`build` stay green; the corpus test's
@@ -982,12 +980,12 @@ dropped-element count reaches zero for every modelled-or-passthrough
 element by Slice 3 and stays there.
 
 **Tasks — Claude:**
-- [x] **Slice 1: Real-corpus harness + import fixes.** Copy the 7 SFCC
+- [x] **Slice 1: Real-corpus harness + import fixes.** Copy the 7 corpus
       fixtures in; add a corpus test that imports and lays out each and
       records, per file, source `<note>` count vs model note count, part
       and staff counts, and a per-element-name tally of what was dropped
       (the importer reports drops through a structured collector instead
-      of only `console.warn`). Fix the Brahms part-count bug (5 `<part>`
+      of only `console.warn`). Fix the largest score's part-count bug (5 `<part>`
       must yield 5 `Part`s), import `<rest measure="yes"/>` as a
       whole-measure rest that fills its measure for any time signature
       (layout centres it, the standard engraving), and make the "no
@@ -1011,8 +1009,8 @@ element by Slice 3 and stays there.
       duration-walking site counting a chord once, round-trip
       `import(export(s))` with chords, and the corpus test's dropped
       `<chord>` count at 0 with note counts matching source except
-      remaining grace notes. Demo: a chord showcase score plus Les Djinns
-      loadable in `npm run dev`.
+      remaining grace notes. Demo: a chord showcase score plus the benchmark
+      score loadable in `npm run dev`.
 - [x] **Slice 3: Lossless passthrough.** Unmodelled elements are kept
       on import as opaque XML subtrees anchored where they appeared: on a
       `Note` (e.g. `<notations>` children, `<lyric>`, `<notehead>`), on a
@@ -1027,12 +1025,12 @@ element by Slice 3 and stays there.
       transpose + undo; unit tests for each anchor kind.
 - [x] **Slice 4: C clefs** (extended to mid-measure clef changes). `ClefType` gains `alto` (C3) and `tenor` (C4)
       with their position tables and Bravura glyphs; import/export map
-      them; `setClefRange` (M5 Slice 5) accepts them so the board's
+      them; `setClefRange` (M5 Slice 5) accepts them so the reported
       bass <-> tenor alternation is fixable with the existing tool.
       Acceptance: unit tests for middle C's position under each clef,
       key-signature placement under alto/tenor (the tenor-clef sharp
       pattern differs from treble/bass), a mid-staff bass -> tenor ->
-      bass range, and the Les Djinns C3 warning gone from the corpus
+      bass range, and the benchmark score's C3 warning gone from the corpus
       test. Demo: switch a range to tenor clef and back.
 - [x] **Slice 5: Articulations + fermatas.** Model staccato, staccatissimo,
       accent, strong accent (marcato), tenuto and fermata on `Note`
@@ -1055,9 +1053,9 @@ element by Slice 3 and stays there.
       redraw of one of them repaints its segment (tested). Acceptance:
       layout/collision unit tests, cross-system wedge test, corpus
       `<dynamics>`/`<wedge>` promoted, round trip preserved.
-- [x] **Slice 7: Correction ops (E2 parity).** Model edit ops, each
+- [x] **Slice 7: Correction ops (host editor parity).** Model edit ops, each
       recording one `EditHistory` entry and returning the touched
-      measures for scoped redraw: `noteToRest` (E2's delete, keeps
+      measures for scoped redraw: `noteToRest` (the host editor's delete, keeps
       duration so nothing shifts), `restToNote(pitch)`, `setDuration`
       (value/dots; refuses or reports when the measure would overflow,
       never silently shifts the next measure), `addChordMember` /
@@ -1065,9 +1063,9 @@ element by Slice 3 and stays there.
       tie lost at a page join can be re-added. Acceptance: unit tests per
       op incl. undo restoring the exact prior model, measure-capacity
       enforcement on `setDuration`, removing a chord's anchor promoting
-      the next member (the rough edge E2's spike hit). Demo: keyboard
-      shortcuts for each in `npm run dev`, fixing a mis-read rest in Les
-      Djinns' first page.
+      the next member (the rough edge the host editor's spike hit). Demo: keyboard
+      shortcuts for each in `npm run dev`, fixing a mis-read rest on the
+      benchmark score's first page.
 - [x] **Slice 8: Grace notes.** Model a grace note (with/without slash)
       attached before its principal note, taking no measure time; layout
       draws it cue-sized with its own small stem/flag/slash, spacing
@@ -1084,7 +1082,7 @@ element by Slice 3 and stays there.
       system break, collision-driven widening, round trip, plus a
       hand-written SATB-with-lyrics fixture (the corpus has none).
 - [x] **Slice 10: Shared multi-staff system breaks.** Found 2026-10-15
-      reviewing Les Djinns in the demo: each staff is cast off into
+      reviewing the benchmark score in the demo: each staff is cast off into
       systems on its own and columns are widened to the widest staff
       afterwards, so at `systemWidthPx: 958` 70 of 124 measures end past
       the system's right edge (layout.width 1765) and `layout.systems`
@@ -1098,7 +1096,7 @@ element by Slice 3 and stays there.
       over-wide measure) and every staff shares the same break points;
       scoped `relayoutMeasure` still matches full layout.
 - [x] **Slice 11: Viewport-sized rendering.** One canvas the size of
-      the whole score (Les Djinns: 1982x43530 CSS px, capped to a
+      the whole score (the benchmark score: 1982x43530 CSS px, capped to a
       1492x32767 backing store at ~0.75x density) is blurry on retina
       and takes 33-65ms to reach the screen after a selection click,
       though the handler itself runs under 1ms. Render only what is
@@ -1106,8 +1104,8 @@ element by Slice 3 and stays there.
       canvas per system) at full device-pixel ratio, keeping scoped
       redraw, hit-testing, the playback cursor and follow-scroll
       working. Acceptance: backing store never exceeds the viewport
-      (or one system) times DPR; Les Djinns renders at full DPR; a
-      selection click on Les Djinns paints within one or two frames in
+      (or one system) times DPR; the benchmark score renders at full DPR; a
+      selection click on it paints within one or two frames in
       the headless probe; existing renderer tests green.
 - [x] **Slice 12: Volta model + IO.** Bring `<ending>` out of
       passthrough into per-measure model fields, mirroring
@@ -1116,7 +1114,7 @@ element by Slice 3 and stays there.
       `discontinue` (open). Read a backward `<repeat>`'s `times`. A
       malformed ending (start with no stop) stays passthrough.
       Acceptance: a hand-built fixture with 1st/2nd endings round-trips;
-      SFCC corpus snapshots unchanged.
+      corpus snapshots unchanged.
 - [x] **Slice 13: Volta layout + render.** Brackets above each system's
       top staff: hooked start, number label, hooked or open end, and a
       continuation across a system break (no left hook on the continued
@@ -1129,7 +1127,7 @@ element by Slice 3 and stays there.
       match. The timeline plays measures in that order, so a note id can
       appear in several events. A tie chain ends at a jump; fermatas,
       dynamics and graces apply per pass. Acceptance: timeline tests on
-      the hand-built fixture; Frost Myth m65 plays twice.
+      the hand-built fixture; the corpus score's one-measure repeat (m65) plays twice.
 - [x] **Slice 15: Cursor and seek across repeats.** The playback cursor
       and follow-scroll jump back with the music; pause/resume keeps the
       current pass; seeking from a note starts at its first pass.
@@ -1140,12 +1138,12 @@ element by Slice 3 and stays there.
       passthrough approach) before or during Slice 1, the same convention
       as M1-M5.
 - [ ] Get a real Audiveris output that contains lyrics, if Audiveris can
-      produce one from an SFCC PDF, so Slice 9 has a real fixture.
+      produce one from one of the corpus PDFs, so Slice 9 has a real fixture.
 
 **Not yet scoped (later M6 passes):** cross-page ties beyond Slice 7's
-manual re-tie (the page join itself is Divisi's E3/E10); divisi splits
-where the staff count changes between pages (Divisi's segmentation
-problem; the engine side is covered by chords); British rests beyond
+manual re-tie (the page join itself is the host editor's job); divisi splits
+where the staff count changes between pages (the host editor's
+segmentation problem; the engine side is covered by chords); British rests beyond
 Slice 1 + Slice 7 (the misread itself is upstream OMR).
 
 ### M7: Open-source release [~]
@@ -1158,7 +1156,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 **Decisions (human, 2026-10-15):**
 - **License: MIT.** Bravura stays under its own SIL OFL, shipped with
   its `OFL.txt`.
-- **SFCC fixtures: delete going forward, keep history.** The 7 scores
+- **Corpus fixtures: delete going forward, keep history.** The 7 scores
   stay recoverable from `e311ab6` in any clone; the human accepted that.
   Switching to a history rewrite stays possible only until the first
   public push.
@@ -1168,30 +1166,30 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   public; no keybindings or edit UI policy go into the library.
 
 **Acceptance criteria (whole milestone):**
-- [x] No SFCC file in the working tree; `npm test` green on a clean
+- [x] No private corpus file in the working tree; `npm test` green on a clean
       clone without them
-- [ ] `npm pack` tarball installs into a fresh scratch Vite app, and the
+- [x] `npm pack` tarball installs into a fresh scratch Vite app, and the
       README quickstart, pasted verbatim, renders and plays a score with
       no extra font or asset wiring
-- [ ] README, LICENSE, CONTRIBUTING and CHANGELOG present and current;
-      no private-project references (Divisi plan paths, SFCC, the board)
-      left in shipped source or docs
+- [x] README, LICENSE, CONTRIBUTING and CHANGELOG present and current;
+      no private-project references (host-editor plan paths, private
+      corpus names) left in shipped source or docs
 - [ ] CI runs `check`/`test`/`build` on every push and PR
 - [ ] `npm run check`/`test`/`build` green throughout
 
 **Tasks — Claude:**
 - [x] **Slice 1: Fixture removal + license.** Delete
-      `src/test/fixtures/sfcc/`. The corpus test and the four other
-      tests that read SFCC files (`lyrics`, `passthrough`,
+      the private corpus fixtures directory. The corpus test and the four other
+      tests that read corpus files (`lyrics`, `passthrough`,
       `correction-ops`, `repeats-playback`) either move to a local-only
       opt-in (`NOTATION_CORPUS_DIR` env var, skipped when unset, so the
       human keeps the regression net locally) or switch to hand-built
       fixtures where the test is about one behaviour, not the corpus.
-      The demo's Les Djinns loader goes behind the same local path or
+      The demo's benchmark-score loader goes behind the same local path or
       is dropped. Add `LICENSE` (MIT); `package.json` gets `license:
       MIT`, drops `private`, gains `repository`/`homepage`/`bugs`/
       `keywords`/`author`. Acceptance: green suite on a tree with no
-      `sfcc/`; corpus tests still pass with the env var pointed at a
+      corpus directory; corpus tests still pass with the env var pointed at a
       local copy.
 - [x] **Slice 2: Ship the font.** Package `Bravura.woff2` and `OFL.txt`
       in the published files; `loadSmuflFont()` gets a default URL
@@ -1240,16 +1238,23 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       `src/io/corpus.test.ts`, and `npm run smoke` (`scripts/pack-smoke.mjs`:
       build, pack allowlist, install into a temp ESM project, import both
       entries in Node, type-check a consumer with `skipLibCheck` off).
-- [ ] **Slice 5: Docs + examples.** Rewrite `README.md` for outsiders:
+- [x] **Slice 5: Docs + examples.** Rewrite `README.md` for outsiders:
       what it is, a GIF/screenshot, install, a ~10-line `mountScore`
       quickstart, a feature list and a "known limitations" section
       condensed from the Backlog, the lower-level API in brief, and the
-      design principles (kept, with the Divisi motivation as one
+      design principles (kept, with the host-editor motivation as one
       sentence of background). Add `CONTRIBUTING.md` (architecture
       layers, this plan's testing policy, scripts) and `CHANGELOG.md`
       starting at 0.1.0. Add `examples/vanilla/` (a single HTML file
       using the package) and a short React wrapper snippet in the README.
       Acceptance: quickstart pasted into the scratch app works verbatim.
+      Done with a screenshot in `docs/` (not published), the README's
+      quickstart verified verbatim in a fresh Vite 6 app on the packed
+      tarball (dev and build), its CDN snippet and `examples/vanilla/`
+      verified against the tarball served CDN-style from another origin,
+      and the private names scrubbed from plan.md and source comments.
+      node-canvas turned out unable to read the shipped WOFF2, so the
+      headless docs point at an OTF copy instead (see Backlog).
 - [ ] **Slice 6: CI + live demo.** GitHub Actions: `check`/`test`/
       `build` plus the pack smoke test on push and PR; a Pages workflow
       that builds and deploys the demo so the README can link a live
@@ -1265,13 +1270,11 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 
 ## Backlog
 
-- [M7] An esbuild `--bundle` without `--splitting` folds the 431KB font
-  fallback chunk into the host bundle; say so in the Slice 5 README.
-- Full layout of Brahms "Der Abend" (337 measures, 6 staves) takes ~1.1s,
-  vs 11-67ms for the other SFCC scores; profile once chords land (M6
+- Full layout of the largest corpus score (337 measures, 6 staves) takes
+  ~1.1s, vs 11-67ms for the other corpus scores; profile once chords land (M6
   Slice 2), since first paint on open is the user-visible cost.
--  (compressed MusicXML) import: Divisi's Mozart Lacrymosa fixture
-  is `.mxl`; the importer only takes an XML string today.
+- `.mxl` (compressed MusicXML) import: the importer only takes an XML
+  string today.
 - `assertScoresEquivalent` ignores cross-staff beams: a clone with a beam
   removed still compares equal (found during the 2026-10-14 test trim).
 - [Layout] Beams are flat, not angled to the notes' contour; accidental
@@ -1281,14 +1284,14 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 - [Layout] Casting-off is greedy and justification a single linear
   estimate (can land a hair short); a narrower staff's column is padded,
   not re-justified; label width is a character-count heuristic.
-- [Layout] Natural spacing is loose for dense multi-staff music: Les
-  Djinns at 958px (ss 11) casts off 114 systems for 124 measures, about
+- [Layout] Natural spacing is loose for dense multi-staff music: the
+  124-measure benchmark score at 958px (ss 11) casts off 114 systems, about
   79k CSS px tall.
 - [Demo] The staff-select canvas still pins its height and width.
 - [Ties/slurs] Each tie/slur half picks its direction from its own note,
   so halves can bulge oppositely around a beamed note; `slurRoofY` and
   slur direction use the downbeat clef, so a slur across a clef change
-  arches oddly (Les Djinns P5 m55-56); slurs and articulations ignore
+  arches oddly (seen in a corpus score, P5 m55-56); slurs and articulations ignore
   each other (marks are not placed inside a slur).
 - [Cross-staff beams] No x-coordination; only two adjacent staves with 2+
   notes per side (no beamlet stub); chord anchors draw only the anchor's
@@ -1301,7 +1304,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   staff's later columns, so staves' rhythmic columns drift apart; small
   gap in the barline joining the two grand-staff staves.
 - [Vertical spacing] Staff gap is fixed except below a lyric staff:
-  neighbouring staves' hairpins/dynamics can meet (Fay's Song) and their
+  neighbouring staves' hairpins/dynamics can meet (seen in a corpus score) and their
   regions overlap by a few px; the gap above a lyric staff stays fixed,
   and a system's gap only grows, never reserving room for the next
   staff's above-dynamics.
@@ -1313,7 +1316,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   layout; dynamics and hairpins do not avoid each other horizontally; a
   neighbour's hairpin piece can go stale after a scoped edit that moves
   note x without changing width; playback ignores grand-staff sharing.
-- [Grace] Source `<stem>` is not kept (Les Djinns' LH graces draw down);
+- [Grace] Source `<stem>` is not kept (a corpus score's LH graces draw down);
   dots and articulations on graces are not drawn; grace ledger lines can
   merge with the principal's; `<type size="cue">` is not honoured.
 - [Lyrics] Widths are estimated for the sans-serif label font (gaps can
@@ -1373,12 +1376,15 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
   can eat into `VOLTA.systemClearance` without falling back (only overlap
   is caught). Playback drops a hairpin cut by a jump back (its stop measure
   not reached before the repeat), and a tie into a measure entered by a
-  jump is re-struck rather than held (Frost Myth m65 is all such ties).
+  jump is re-struck rather than held (the corpus repeat at m65 is all such ties).
   `firstOnsetSeconds` is wired in only as `ScoreView.seekToNote`; the demo
   has no play-from-note control.
 - [M7] `vitest.bench.config.ts` lacks the `__NOTATION_ENGINE_VERSION__`
   `define`, so a benchmark that imports `src/index.ts` would throw a
   ReferenceError; share the define with `vite.config.ts` if one ever does.
-- [M7] plan.md's Backlog still names Divisi/SFCC specifics (the Lacrymosa
-  `.mxl`, per-score SFCC timings, Frost Myth); decide before the public
-  push whether plan.md ships as is or gets a neutral pass.
+- [M7] node-canvas cannot parse WOFF2, so `bravuraFontUrl` is no use for
+  headless rendering; the README tells Node users to fetch `Bravura.otf`
+  themselves. Shipping the OTF (889KB) or a `bravuraOtfUrl` would make it
+  zero-setup, at the cost of package size.
+- [Layout] Tuplets are timing only: no bracket or number is drawn (export
+  keeps source brackets as passthrough).

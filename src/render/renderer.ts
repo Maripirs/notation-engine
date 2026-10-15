@@ -296,14 +296,15 @@ export class CanvasRenderer {
 	 * Slice 11), or `null` (the default) to paint the whole layout at its own
 	 * coordinates, as before this existed.
 	 *
-	 * A canvas big enough for a whole real score does not work: Les Djinns
-	 * lays out about 79,000 CSS px tall, past the ~32k device-pixel ceiling
-	 * browsers allow a canvas, so the backing store had to drop well below
-	 * 1x density, and compositing it cost 33-65ms per selection click. With
-	 * a viewport the host can size its canvas to the visible window instead:
-	 * the renderer translates every draw by `-viewport.x, -viewport.y` (on
-	 * top of whatever transform the host already set, e.g. its pixel-ratio
-	 * scale), `drawAll` paints only the measures intersecting the window, and
+	 * A canvas big enough for a whole real score does not work: the largest
+	 * real score tried lays out about 79,000 CSS px tall, past the ~32k
+	 * device-pixel ceiling browsers allow a canvas, so the backing store had
+	 * to drop well below 1x density, and compositing it cost 33-65ms per
+	 * selection click. With a viewport the host can size its canvas to the
+	 * visible window instead: the renderer translates every draw by
+	 * `-viewport.x, -viewport.y` (on top of whatever transform the host
+	 * already set, e.g. its pixel-ratio scale), `drawAll` paints only the
+	 * measures intersecting the window, and
 	 * `redrawMeasure`/`redrawMeasures` skip a measure outside it entirely,
 	 * since none of its pixels exist on the canvas. A skipped measure needs
 	 * no bookkeeping: the host repaints with `drawAll` whenever it moves the

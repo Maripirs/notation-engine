@@ -260,7 +260,7 @@ describe('passthrough in the score header and part list', () => {
 			`<score-instrument id="P1-I1"><instrument-name>Voice</instrument-name></score-instrument><part-abbreviation>V.</part-abbreviation><midi-instrument id="P1-I1"><midi-program>53</midi-program></midi-instrument>`
 		).replace(
 			'<part-list>',
-			'<work><work-title>Der Abend</work-title></work><identification><encoding><software>Audiveris</software></encoding></identification><part-list>'
+			'<work><work-title>Evening Song</work-title></work><identification><encoding><software>Audiveris</software></encoding></identification><part-list>'
 		);
 		const { score, root } = roundTrip(xml);
 		expect(score.headerPassthrough.map((e) => e.name)).toEqual(['work', 'identification']);

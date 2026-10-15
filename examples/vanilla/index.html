@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>notation-engine: vanilla example</title>
+		<style>
+			body {
+				font-family: system-ui, sans-serif;
+				margin: 0 auto;
+				max-width: 960px;
+				padding: 16px;
+			}
+			.toolbar {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 8px;
+				align-items: center;
+				margin-bottom: 12px;
+			}
+			/* mountScore needs a bounded height: the container is the scroll area. */
+			#score {
+				height: 60vh;
+				border: 1px solid #ddd;
+			}
+		</style>
+	</head>
+	<body>
+		<h1>notation-engine</h1>
+		<div class="toolbar">
+			<button id="play">Play</button>
+			<button id="pause">Pause</button>
+			<button id="stop">Stop</button>
+			<label>Open MusicXML <input id="file" type="file" accept=".musicxml,.xml" /></label>
+			<span id="status">Loading&hellip;</span>
+		</div>
+		<div id="score"></div>
+
+		<script type="module">
+			import { mountScore } from 'https://cdn.jsdelivr.net/npm/notation-engine@0.1/dist/index.js';
+
+			// A short tune to show before a file is opened, so the page works on its own.
+			const DEFAULT_SCORE = `<?xml version="1.0" encoding="UTF-8"?>
+<score-partwise version="4.0">
+	<part-list>
+		<score-part id="P1"><part-name>Melody</part-name></score-part>
+	</part-list>
+	<part id="P1">
+		<measure number="1">
+			<attributes>
+				<divisions>2</divisions>
+				<key><fifths>1</fifths></key>
+				<time><beats>4</beats><beat-type>4</beat-type></time>
+				<clef><sign>G</sign><line>2</line></clef>
+			</attributes>
+			<sound tempo="96"/>
+			<note><pitch><step>G</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+			<note><pitch><step>A</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+			<note><pitch><step>B</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+			<note><pitch><step>D</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+		</measure>
+		<measure number="2">
+			<note><pitch><step>C</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>eighth</type><beam number="1">begin</beam></note>
+			<note><pitch><step>B</step><octave>4</octave></pitch><duration>1</duration><voice>1</voice><type>eighth</type><beam number="1">end</beam></note>
+			<note><pitch><step>A</step><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+			<note><pitch><step>B</step><octave>4</octave></pitch><duration>4</duration><voice>1</voice><type>half</type></note>
+		</measure>
+		<measure number="3">
+			<note><pitch><step>E</step><octave>5</octave></pitch><duration>3</duration><voice>1</voice><type>quarter</type><dot/></note>
+			<note><pitch><step>D</step><octave>5</octave></pitch><duration>1</duration><voice>1</voice><type>eighth</type></note>
+			<note><pitch><step>C</step><octave>5</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+			<note><pitch><step>F</step><alter>1</alter><octave>4</octave></pitch><duration>2</duration><voice>1</voice><type>quarter</type></note>
+		</measure>
+		<measure number="4">
+			<note><pitch><step>G</step><octave>4</octave></pitch><duration>8</duration><voice>1</voice><type>whole</type></note>
+			<barline location="right"><bar-style>light-heavy</bar-style></barline>
+		</measure>
+	</part>
+</score-partwise>`;
+
+			const status = document.getElementById('status');
+			const view = await mountScore(document.getElementById('score'), DEFAULT_SCORE);
+			status.textContent = 'Ready.';
+
+			// Browsers only allow audio after a user gesture, so playback starts from a click.
+			document.getElementById('play').onclick = () => view.play();
+			document.getElementById('pause').onclick = () => view.pause();
+			document.getElementById('stop').onclick = () => view.stop();
+			view.on('end', () => (status.textContent = 'Finished.'));
+
+			document.getElementById('file').onchange = async (event) => {
+				const file = event.target.files[0];
+				if (!file) return;
+				try {
+					view.load(await file.text());
+					status.textContent = file.name;
+				} catch (error) {
+					status.textContent = `Could not open ${file.name}: ${error.message}`;
+				}
+			};
+		</script>
+	</body>
+</html>

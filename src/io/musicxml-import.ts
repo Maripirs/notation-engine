@@ -311,8 +311,8 @@ export function importMusicXml(xml: string, options: ImportOptions = {}): Score 
 	// The `Score` constructor seeds one default part (`{ staffIndices: [0] }`)
 	// so a hand-built single-staff score has a part without asking. An import
 	// states its own parts, so that seed is dropped first, the same thing
-	// `Score.clone` does. Leaving it in is what made a 5-part file (Brahms
-	// "Der Abend") come back as 7 `Part`s: the seed, the 5 real parts and the
+	// `Score.clone` does. Leaving it in is what made a real 5-part file
+	// come back as 7 `Part`s: the seed, the 5 real parts and the
 	// bracket group. The part-group itself is a `Part` on purpose (it is how
 	// the model records a bracket; see `computePartGroupDecorations`), so the
 	// honest count for such a file is 5 instrument parts plus 1 group.
@@ -1359,7 +1359,7 @@ function buildNote(
 	// `<rest measure="yes"/>` (M6 Slice 1): a rest that fills its measure
 	// whatever the time signature. Its `<type>`, when present, is ignored on
 	// purpose: OMR output writes `<type>whole</type>` on a 3/4 bar's measure
-	// rest (Brahms "Der Abend" does, 392 times), and reading that literally
+	// rest (one real choral score does, 392 times), and reading that literally
 	// would make the bar a quarter too long. The duration it fills comes from
 	// the time signature in force here, already applied to this measure by the
 	// `<attributes>` pass above, rather than from `<duration>`, so a measure

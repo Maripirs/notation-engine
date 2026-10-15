@@ -1050,7 +1050,7 @@ export function createDynamicsShowcaseScore(): Score {
  *
  * 1. An acciaccatura (slashed eighth) before a quarter, an appoggiatura
  *    (plain eighth) before a quarter, and one before a half.
- * 2. A beamed pair of grace 16ths (the Brahms shape) and a slashed beamed
+ * 2. A beamed pair of grace 16ths (a shape real choral scores use) and a slashed beamed
  *    pair of grace eighths before high notes.
  * 3. Cue-size accidentals and ledger lines: a sharp grace before its
  *    principal (which states its own sharp again), a flat grace below the

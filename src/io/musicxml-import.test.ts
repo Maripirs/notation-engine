@@ -216,9 +216,9 @@ describe('importMusicXml: malformed input', () => {
 });
 
 describe('importMusicXml: part count (M6 Slice 1)', () => {
-	// Brahms "Der Abend" once imported 5 <part>s as 7 `Part`s: the `Score`
+	// A real 5-part choral score once imported its 5 <part>s as 7 `Part`s: the `Score`
 	// constructor's seed part survived next to the file's own. A two-staff
-	// <part> plus a bracket <part-group> is the Brahms shape (choir + piano).
+	// <part> plus a bracket <part-group> is that score's shape (choir + piano).
 	it('yields one Part per <part> (plus the bracket group), never the constructor seed', () => {
 		const measure = (staves: string) =>
 			`<measure number="1"><attributes><divisions>1</divisions><time><beats>4</beats><beat-type>4</beat-type></time>${staves}</attributes>${rest(4, 'whole')}</measure>`;
