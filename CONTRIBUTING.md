@@ -15,9 +15,10 @@ npm run dev   # the demo page, a hands-on view of most features
 | Script          | What it does |
 | --------------- | ------------ |
 | `npm run dev`   | Vite dev server for `demo/`, which drives the engine directly. |
-| `npm test`      | Vitest. No DOM or canvas needed; renderer tests use a recording context. |
+| `npm test`      | Vitest in Node, no DOM. Renderer tests use a recording context; the view tests rasterize through node-canvas (a devDependency). |
 | `npm run check` | `tsc --noEmit` over sources and tests. |
 | `npm run build` | Library build to `dist/` (JS, `.d.ts`, the font and its license). |
+| `npm run build:demo` | The demo as a static site in `demo-dist/`, built for the GitHub Pages path `/notation-engine/`. |
 | `npm run smoke` | Builds, checks the `npm pack` file list, installs the tarball into a temp project, imports every entry point in Node and type-checks a consumer. |
 | `npm run bench` | Redraw timings, rasterized for real through node-canvas. |
 | `npm run glyphs`| Regenerates `src/render/glyph-metrics.ts` from `assets/bravura/`. |
@@ -136,6 +137,9 @@ change that settles a backlog item should remove or update its line.
   ```bash
   npm run check && npm test && npm run smoke
   ```
+
+  CI (`.github/workflows/ci.yml`) runs the same three on Node 20.11, 22
+  and 24 for every push to `main` and every pull request.
 
 - Mention anything you noticed but did not fix; it may belong in the
   backlog.

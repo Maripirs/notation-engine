@@ -40,9 +40,13 @@
 		"dist"
 	],
 	"sideEffects": false,
+	"engines": {
+		"node": ">=20.11"
+	},
 	"scripts": {
 		"dev": "vite",
 		"build": "vite build && tsc -p tsconfig.build.json --emitDeclarationOnly",
+		"build:demo": "vite build --mode demo",
 		"test": "vitest run",
 		"bench": "vitest run --config vitest.bench.config.ts",
 		"glyphs": "node scripts/extract-glyph-metrics.mjs",

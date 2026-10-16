@@ -1174,7 +1174,8 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 - [x] README, LICENSE, CONTRIBUTING and CHANGELOG present and current;
       no private-project references (host-editor plan paths, private
       corpus names) left in shipped source or docs
-- [ ] CI runs `check`/`test`/`build` on every push and PR
+- [ ] CI runs `check`/`test`/`build` on every push and PR (workflow
+      written; verify on first push)
 - [ ] `npm run check`/`test`/`build` green throughout
 
 **Tasks — Claude:**
@@ -1255,10 +1256,22 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       and the private names scrubbed from plan.md and source comments.
       node-canvas turned out unable to read the shipped WOFF2, so the
       headless docs point at an OTF copy instead (see Backlog).
-- [ ] **Slice 6: CI + live demo.** GitHub Actions: `check`/`test`/
+- [x] **Slice 6: CI + live demo.** GitHub Actions: `check`/`test`/
       `build` plus the pack smoke test on push and PR; a Pages workflow
       that builds and deploys the demo so the README can link a live
       demo. Acceptance: workflows pass on the human's first public push.
+      Done as `.github/workflows/ci.yml` (Node 20.11, 22, 24; `npm ci`,
+      `check`, `test`, `smoke`) and `pages.yml` (`npm run build:demo`,
+      deployed with `upload-pages-artifact` + `deploy-pages`), with
+      `engines.node >=20.11` in package.json. `build:demo` is
+      `vite build --mode demo`: an app build of `demo/` into `demo-dist/`
+      with base `/notation-engine/`, without `shipBravura` so the font is
+      a hashed Vite asset, plus `examples/vanilla/` copied alongside.
+      Verified locally: the CI steps in a fresh clone on Node 20.11 and
+      22, and a Playwright probe of `demo-dist/` served under
+      `/notation-engine/` (renders, Bravura loads from the woff2 asset,
+      no inline chunk fetched, Play moves the cursor). The workflows
+      themselves run only on GitHub.
 
 **Tasks — Human:**
 - [x] Review this scoping.
@@ -1270,6 +1283,13 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 
 ## Backlog
 
+- Node 20 reached end of life in April 2026; consider raising `engines`
+  to `>=22` and dropping 20.11 from the CI matrix. Likewise
+  `actions/checkout`/`setup-node` have newer majors (v5, Node 24 runtime)
+  than the pinned v4.
+- `demo-dist/` also ships `assets/Bravura-inline.js` (431KB), which the
+  demo never fetches since the woff2 asset loads; harmless, but could be
+  left out of the demo build.
 - Full layout of the largest corpus score (337 measures, 6 staves) takes
   ~1.1s, vs 11-67ms for the other corpus scores; profile once chords land (M6
   Slice 2), since first paint on open is the user-visible cost.

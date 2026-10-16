@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # 20.11 is the floor in package.json `engines` (the tests use
+        # `import.meta.dirname`); 22 and 24 are the current LTS lines.
+        node: ['20.11', '22', '24']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+      # canvas (a devDependency for the tests and the bench) downloads a
+      # prebuilt linux-x64 binary in its install script, so no apt packages.
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      # Builds the library, then packs and installs it like a user would.
+      - run: npm run smoke

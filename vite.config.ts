@@ -4,11 +4,12 @@ import { defineConfig, type Plugin } from 'vite';
 
 // Ship Bravura next to `dist/index.js` instead of inlining it. Vite's library
 // mode always inlines `new URL(..., import.meta.url)` assets as base64 (323KB of
-// font in the JS), so for the build only this plugin points font.ts's URL at the
-// shipped copy, hides it from Vite's asset rewrite with `@vite-ignore`, strips
-// that marker again from the output (a downstream Vite would honour it and skip
-// the file), and emits the font and its license under stable names. In dev and
-// tests the source URL into `assets/bravura/` is used as is.
+// font in the JS), so for the library build only this plugin points font.ts's
+// URL at the shipped copy, hides it from Vite's asset rewrite with
+// `@vite-ignore`, strips that marker again from the output (a downstream Vite
+// would honour it and skip the file), and emits the font and its license under
+// stable names. In dev, tests and the demo build the source URL into
+// `assets/bravura/` is used as is.
 const FONT_SOURCE_URL = "'../../assets/bravura/Bravura.woff2'";
 const FONT_DIST_NAME = 'Bravura.woff2';
 const VITE_IGNORE = '/* @vite-ignore */ ';
@@ -52,7 +53,7 @@ function shipBravura(): Plugin {
 // on disk.
 const INLINE_ID = 'virtual:bravura-inline';
 
-function inlineBravura(): Plugin {
+function inlineBravura(chunkDir = ''): Plugin {
 	const resolved = `\0${INLINE_ID}`;
 	return {
 		name: 'inline-bravura',
@@ -67,7 +68,7 @@ function inlineBravura(): Plugin {
 		outputOptions(options) {
 			// A readable, stable name next to Bravura.woff2 instead of `_virtual_...-[hash].js`.
 			options.chunkFileNames = (chunk) =>
-				chunk.facadeModuleId === resolved ? 'Bravura-inline.js' : '[name]-[hash].js';
+				chunk.facadeModuleId === resolved ? `${chunkDir}Bravura-inline.js` : `${chunkDir}[name]-[hash].js`;
 			return options;
 		}
 	};
@@ -80,7 +81,30 @@ const { version } = JSON.parse(readFileSync(new URL('./package.json', import.met
 	version: string;
 };
 
-export default defineConfig({
+// The static demo site for GitHub Pages (`npm run build:demo`, which is
+// `vite build --mode demo`): an app build of demo/ into demo-dist/, served
+// from the project page's `/notation-engine/` path. No `shipBravura` there:
+// an app build already emits the font behind font.ts's `new URL(...)` as a
+// hashed asset, while the library rewrite would point it at a file that is
+// not next to the page's chunks. `examples/vanilla/` rides along, since it
+// imports the published package from jsDelivr and runs as is.
+const DEMO_BASE = '/notation-engine/';
+
+function vanillaExample(): Plugin {
+	return {
+		name: 'vanilla-example',
+		apply: 'build',
+		generateBundle() {
+			this.emitFile({
+				type: 'asset',
+				fileName: 'examples/vanilla/index.html',
+				source: readFileSync(new URL('./examples/vanilla/index.html', import.meta.url))
+			});
+		}
+	};
+}
+
+export default defineConfig(({ mode }) => ({
 	// `npm run dev` serves the demo page (a plain Vite app rooted at demo/)
 	// against the library source directly, no build step. `npm run build`
 	// switches to library mode and bundles two entries: `src/index.ts` (the
@@ -88,22 +112,26 @@ export default defineConfig({
 	// Code both reach (the model, which the showcase scores are built with)
 	// lands in a shared chunk rather than in both files.
 	root: 'demo',
-	plugins: [shipBravura(), inlineBravura()],
+	base: mode === 'demo' ? DEMO_BASE : '/',
+	plugins: mode === 'demo' ? [inlineBravura('assets/'), vanillaExample()] : [shipBravura(), inlineBravura()],
 	define: {
 		__NOTATION_ENGINE_VERSION__: JSON.stringify(version)
 	},
-	build: {
-		outDir: '../dist',
-		emptyOutDir: true,
-		lib: {
-			entry: {
-				index: '../src/index.ts',
-				examples: '../src/examples.ts'
-			},
-			formats: ['es'],
-			fileName: (_format, name) => `${name}.js`
-		}
-	},
+	build:
+		mode === 'demo'
+			? { outDir: '../demo-dist', emptyOutDir: true }
+			: {
+					outDir: '../dist',
+					emptyOutDir: true,
+					lib: {
+						entry: {
+							index: '../src/index.ts',
+							examples: '../src/examples.ts'
+						},
+						formats: ['es'],
+						fileName: (_format, name) => `${name}.js`
+					}
+				},
 	test: {
 		root: '.',
 		// Node, not jsdom. Nothing in model/, layout/ or render/ touches the DOM:
@@ -117,4 +145,4 @@ export default defineConfig({
 		environment: 'node',
 		include: ['src/**/*.test.ts']
 	}
-});
+}));

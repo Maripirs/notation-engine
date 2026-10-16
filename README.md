@@ -1,5 +1,9 @@
 # notation-engine
 
+[![CI](https://github.com/Maripirs/notation-engine/actions/workflows/ci.yml/badge.svg)](https://github.com/Maripirs/notation-engine/actions/workflows/ci.yml)
+
+**[Live demo](https://maripirs.github.io/notation-engine/)**
+
 A from-scratch music notation engine for the web: MusicXML import and
 export, engraving, a canvas renderer and Web Audio playback, around an
 editable score model. Edits are region-scoped: change one note and only
@@ -337,9 +341,10 @@ Safari). It needs Canvas 2D, Web Audio, the `FontFace` API and
 ```bash
 npm install
 npm run dev     # demo page (demo/) at the printed localhost URL
-npm test        # vitest, no DOM or canvas needed
+npm test        # vitest in Node, no DOM
 npm run check   # tsc --noEmit
 npm run build   # library build to dist/
+npm run build:demo  # the demo as a static site in demo-dist/ (GitHub Pages)
 npm run smoke   # build, pack, install the tarball and import it like a user
 npm run bench   # redraw timings, rasterized through node-canvas
 npm run glyphs  # regenerate glyph metrics from assets/bravura/
