@@ -1146,7 +1146,7 @@ where the staff count changes between pages (the host editor's
 segmentation problem; the engine side is covered by chords); British rests beyond
 Slice 1 + Slice 7 (the misread itself is upstream OMR).
 
-### M7: Open-source release [~]
+### M7: Open-source release [?]
 
 Make the engine a plug-and-play open-source library: a stranger can
 `npm install` it, paste a few lines, and see a score render and play.
@@ -1174,8 +1174,8 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 - [x] README, LICENSE, CONTRIBUTING and CHANGELOG present and current;
       no private-project references (host-editor plan paths, private
       corpus names) left in shipped source or docs
-- [ ] CI runs `check`/`test`/`build` on every push and PR (workflow
-      written; verify on first push)
+- [x] CI runs `check`/`test`/`build` on every push and PR (workflow
+      written; first runs green 2026-10-15)
 - [ ] `npm run check`/`test`/`build` green throughout
 
 **Tasks — Claude:**
@@ -1275,14 +1275,16 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 
 **Tasks — Human:**
 - [x] Review this scoping.
-- [ ] Create the public GitHub repo and push (the last moment a history
+- [x] Create the public GitHub repo and push (the last moment a history
       rewrite is still possible, per the fixtures decision above).
-- [ ] Enable GitHub Pages for the demo workflow.
+- [x] Enable GitHub Pages for the demo workflow.
 - [ ] `npm login` and publish `0.1.0` (`notation-engine` was free on npm
       as of 2026-10-15).
 
 ## Backlog
 
+- [Demo] The live demo page (Pages) is the dev page: titled "Phase 0 spike"
+  with long slice-by-slice prose. Give it a short public intro for visitors.
 - Node 20 reached end of life in April 2026; consider raising `engines`
   to `>=22` and dropping 20.11 from the CI matrix. Likewise
   `actions/checkout`/`setup-node` have newer majors (v5, Node 24 runtime)
