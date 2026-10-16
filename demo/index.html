@@ -3,28 +3,67 @@
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1" />
-		<title>notation-engine demo</title>
+		<title>notation-engine: MusicXML engraving, canvas rendering and playback in the browser</title>
 		<style>
 			:root {
 				color-scheme: light;
 				font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
 			}
 			body {
-				margin: 0;
-				padding: 2rem 1.5rem;
+				margin: 0 auto;
+				padding: 2rem 1rem;
 				max-width: 60rem;
 				color: #111;
 				background: #fafafa;
 			}
 			h1 {
-				font-size: 1.25rem;
-				margin: 0 0 0.25rem;
+				font-size: 1.5rem;
+				margin: 0 0 0.5rem;
 			}
-			p.lede {
-				margin: 0 0 1.5rem;
+			h1 .tagline {
+				display: block;
+				font-size: 1rem;
+				font-weight: 400;
 				color: #555;
+				margin-top: 0.2rem;
+			}
+			h2 {
+				font-size: 1.1rem;
+				margin: 2rem 0 0.5rem;
+			}
+			p.pitch,
+			p.note,
+			ul.try {
+				color: #444;
 				max-width: 44rem;
 				line-height: 1.5;
+			}
+			p.pitch {
+				margin: 0 0 0.5rem;
+			}
+			p.note {
+				margin: 0 0 0.75rem;
+			}
+			p.links {
+				display: flex;
+				gap: 1.25rem;
+				flex-wrap: wrap;
+				margin: 0;
+				font-weight: 600;
+			}
+			a {
+				color: #1d4ed8;
+			}
+			ul.try {
+				margin: 0 0 1rem;
+				padding-left: 1.25rem;
+			}
+			ul.try li {
+				margin: 0.2rem 0;
+			}
+			.canvas-scroll {
+				overflow-x: auto;
+				max-width: 100%;
 			}
 			.demo-canvas {
 				display: block;
@@ -32,10 +71,9 @@
 				border: 1px solid #ddd;
 				border-radius: 4px;
 				cursor: pointer;
-				max-width: 100%;
 			}
 			/*
-			 * The container `mountScore` renders into (M7 Slice 3): it scrolls,
+			 * The container `mountScore` renders into: it scrolls,
 			 * and the view keeps a window-sized canvas stuck to its top. max-height
 			 * is deliberately smaller than the full demo score, so the score
 			 * overflows and playback's follow-scroll has something to show.
@@ -77,21 +115,27 @@
 			#dirty.dirty {
 				color: #b45309;
 			}
-			#shortcuts {
-				margin: 0 0 0.75rem;
+			details {
+				margin: 0.75rem 0;
 				font-size: 0.9rem;
 			}
-			#shortcuts summary {
+			details summary {
 				cursor: pointer;
 				font-weight: 600;
+			}
+			details > p.note {
+				margin: 0.5rem 0 0;
+			}
+			details .controls {
+				margin: 0.5rem 0 0;
 			}
 			#shortcuts ul {
 				margin: 0.25rem 0 0;
 				padding-left: 1.25rem;
 				line-height: 1.7;
 			}
-			#shortcuts p.lede {
-				margin: 0.5rem 0 0;
+			label.open input {
+				max-width: 100%;
 			}
 			#status {
 				margin: 0;
@@ -118,58 +162,50 @@
 		</style>
 	</head>
 	<body>
-		<h1>notation-engine, Phase 0 spike</h1>
-		<p class="lede">
-			Own model, own layout, own canvas renderer, Bravura for glyph shapes. The score below is one
-			<code>mountScore</code> call (M7 Slice 3); the editing on it is the demo's own, built on
-			the view's escape hatches. Click a notehead or
-			rest to select it, then transpose it with the buttons or <kbd>&uarr;</kbd> /
-			<kbd>&darr;</kbd>. Each edit re-lays-out and repaints only the measure that changed; the
-			timings below compare that against repainting the whole system. The score is capped at its
-			box's width, so it casts measures off onto a new system (a new staff line) rather than
-			shrinking to fit; each system repeats the clef and key signature, as real engraving does.
-			Zoom in/out (M4 Slice 3) re-lays-out the whole score at a different <code>staffSpacePx</code>,
-			the single knob that scales the whole render: whatever note is currently selected or under
-			the playback cursor stays correctly highlighted through the rescale, with no extra call
-			telling it to. The score sits in a height-capped scrolling box, so it does not all fit
-			on screen at once; during playback (below) the box auto-scrolls to keep the playback
-			cursor's current measure in view as it moves into later systems (M4 Slice 4). Every transpose is recorded in an
-			<code>EditHistory</code>, so Undo / Redo (or <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>,
-			<kbd>Shift</kbd>+<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>) step back and forth through
-			it with a whole-score re-layout, and Save downloads the current score as MusicXML and
-			clears the unsaved-changes flag. Show seam markers (M5 Slice 6) overlays red strips at a
-			few measure boundaries, one of them at a system break, the way an OMR host would mark
-			where stitched scan fragments meet; they are render-only, and survive a transpose's
-			scoped redraw of a neighbouring measure. The score ends with M6 Slice 2's chord showcase
-			(triads, seconds on both sides of the stem, stacked accidentals, divisi thirds, beamed and
-			tied chords, two chordal voices); Open MusicXML replaces it with any MusicXML file, such as
-			an OMR export or a score saved from MuseScore. Every
-			chord head is its own note: click one and transpose it alone.
-		</p>
+		<header>
+			<h1>notation-engine <span class="tagline">MusicXML engraving, canvas rendering and playback in the browser</span></h1>
+			<p class="pitch">
+				A from-scratch music notation engine: it imports and exports MusicXML, engraves it onto a
+				canvas, plays it back, and lets you edit it. Edits are region-scoped, so changing one note
+				lays out and repaints only its measure, not the whole score.
+			</p>
+			<p class="links">
+				<a href="https://github.com/Maripirs/notation-engine">GitHub</a>
+				<a href="https://www.npmjs.com/package/notation-engine">npm</a>
+				<a href="https://github.com/Maripirs/notation-engine#quickstart">Quickstart</a>
+			</p>
+		</header>
+
+		<h2>Try it</h2>
+		<ul class="try">
+			<li>Click a note, then press <kbd>&uarr;</kbd> / <kbd>&darr;</kbd> to transpose it. Only that measure repaints; the timing readout below the score compares it with a full repaint.</li>
+			<li>Undo and redo with <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd> and <kbd>Shift</kbd>+<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>, or the buttons.</li>
+			<li>Zoom in and out: the whole score re-engraves at the new size and reflows onto new lines.</li>
+			<li>Press Play in the Playback section: the score scrolls to follow a moving cursor.</li>
+			<li>Open your own MusicXML file (for example one exported from MuseScore), edit it, then Save to download it.</li>
+		</ul>
+
 		<div id="score-scroll"></div>
 		<div class="controls">
 			<button id="down" disabled>&darr; semitone</button>
 			<button id="up" disabled>&uarr; semitone</button>
-			<button id="full">Redraw whole score</button>
-			<button id="flash">Flash redrawn region</button>
-			<button id="seams">Show seam markers</button>
 			<button id="zoom-out">Zoom out</button>
 			<button id="zoom-in">Zoom in</button>
 			<button id="undo" disabled>Undo</button>
 			<button id="redo" disabled>Redo</button>
 			<button id="save">Save (download MusicXML)</button>
-			<label>Open MusicXML <input id="open" type="file" accept=".musicxml,.xml,application/vnd.recordare.musicxml+xml" /></label>
+			<label class="open">Open MusicXML <input id="open" type="file" accept=".musicxml,.xml,application/vnd.recordare.musicxml+xml" /></label>
 			<button id="open-lyrics">Open SATB lyrics sample</button>
 			<span id="dirty">Saved</span>
 		</div>
-		<details id="shortcuts" open>
-			<summary>Correction shortcuts (M6 Slice 7), on the selected note</summary>
-			<p class="lede">
-				For fixing rough OMR output opened with Open MusicXML. Every one is a single undoable step
-				(<kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>), and repaints only the measures it
-				touched unless the measure's width changed. Nothing ever shifts into the next measure: a
-				shorter value is padded with rests, a longer one takes time from the rests right after it
-				(and is refused if a note is in the way).
+		<p id="status">Loading Bravura&hellip;</p>
+		<pre id="timings"></pre>
+		<details id="shortcuts">
+			<summary>More editing shortcuts (on the selected note)</summary>
+			<p class="note">
+				Handy for fixing rough scanned (OMR) output. Each is one undoable step, and notes never
+				spill into the next measure: a shorter value is padded with rests, a longer one takes time
+				from the rests after it.
 			</p>
 			<ul>
 				<li><kbd>Delete</kbd> / <kbd>Backspace</kbd>: note to rest of the same length (on a chord head: remove that head)</li>
@@ -182,18 +218,23 @@
 				<li><kbd>&larr;</kbd> / <kbd>&rarr;</kbd>: select and play the previous / next note in the same voice</li>
 			</ul>
 		</details>
-		<p id="status">Loading Bravura&hellip;</p>
-		<pre id="timings"></pre>
+		<details class="devtools">
+			<summary>Developer tools</summary>
+			<p class="note">
+				The score above is a single <a href="https://github.com/Maripirs/notation-engine#quickstart"><code>mountScore</code></a>
+				call; the editing is built on top of it. These buttons show what the renderer does under the hood.
+			</p>
+			<div class="controls">
+				<button id="full">Redraw whole score</button>
+				<button id="flash">Flash redrawn region</button>
+				<button id="seams">Show seam markers</button>
+			</div>
+		</details>
 
 		<h2>Playback</h2>
-		<p class="lede">
-			Plays the same score shown above, at its own tempo, including the independent simultaneous
-			voices from its two-voice and voice-clash showcase measures. This exercises
-			<code>PlaybackEngine</code> end to end (M3 Slices 4-6): oscillator synthesis, the
-			play/pause/stop transport, and the position/onset hook below. The onset hook also drives a
-			playback cursor (M4 Slice 2) on the score above: watch it move note to note as playback
-			runs, jointly highlighting more than one note whenever a two-voice or voice-clash measure
-			lands a simultaneous onset.
+		<p class="note">
+			Plays the score above with a built-in synthesizer. A cursor follows along, highlighting every
+			note that sounds at once, and the score scrolls to keep it in view.
 		</p>
 		<div class="controls">
 			<button id="playback-play">Play</button>
@@ -204,26 +245,15 @@
 		<p id="playback-onset">no notes played yet</p>
 
 		<h2>Multi-staff selection</h2>
-		<p class="lede">
-			Renders <code>createGrandStaffShowcaseScore</code> (a two-staff piano score, treble over
-			bass) on its own canvas to demonstrate M4 Slice 1's fix: clicking a note on the lower
-			(bass) staff now correctly redraws only that staff's own measure, not staff 0's
-			same-numbered one, which is what the pre-fix <code>setSelection</code> would have done
-			instead. The button below is M4 Slice 2's own debug control: it calls
-			<code>setPlaybackCursor</code> directly with a hand-picked chord spanning both staves, with
-			no audio attached, to confirm the highlight lands on the right staff without needing a
-			second <code>PlaybackEngine</code>. M5 Slice 4 adds measure-range selection: shift-click a
-			second measure, or drag across measures, to tint a contiguous range on one staff. Only
-			the measures that join or leave the range repaint. M5 Slice 5 adds range clef changes:
-			with a range selected, a clef button changes those measures' clef (drawing a smaller
-			change clef where it lands mid-system, and restoring the old clef right after the range),
-			and this canvas's own Undo restores it in one step. <kbd>Cmd</kbd>/<kbd>Ctrl</kbd>+<kbd>Z</kbd>
-			steps whichever canvas you last clicked. M6 Slice 4 adds the alto and tenor C clefs, e.g.
-			to switch a stretch of the bass staff to tenor clef and back.
-		</p>
-		<canvas id="staff-select-demo" class="demo-canvas"></canvas>
+		<ul class="try">
+			<li>Click a note or rest on either staff of this piano score to select it.</li>
+			<li>Shift-click another measure, or drag across measures, to select a range on one staff.</li>
+			<li>With a range selected, pick a clef to change it for just those measures. Undo restores it.</li>
+		</ul>
+		<div class="canvas-scroll">
+			<canvas id="staff-select-demo" class="demo-canvas"></canvas>
+		</div>
 		<div class="controls">
-			<button id="staff-select-cursor-demo">Highlight sample chord across staves</button>
 			<button data-clef="treble">Treble clef</button>
 			<button data-clef="bass">Bass clef</button>
 			<button data-clef="treble8">Treble 8vb clef</button>
@@ -233,6 +263,13 @@
 			<button id="staff-select-redo" disabled>Redo</button>
 		</div>
 		<p id="staff-select-status">Click a notehead or a rest on either staff to select it, or shift-click/drag across measures to select a range.</p>
+		<details class="devtools">
+			<summary>Developer tools</summary>
+			<p class="note">Highlights a fixed chord spanning both staves, without audio, to check the playback cursor lands on the right staff.</p>
+			<div class="controls">
+				<button id="staff-select-cursor-demo">Highlight sample chord across staves</button>
+			</div>
+		</details>
 
 		<script type="module" src="./main.ts"></script>
 	</body>

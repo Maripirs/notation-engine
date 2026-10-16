@@ -1283,8 +1283,6 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
 
 ## Backlog
 
-- [Demo] The live demo page (Pages) is the dev page: titled "Phase 0 spike"
-  with long slice-by-slice prose. Give it a short public intro for visitors.
 - Node 20 reached end of life in April 2026; consider raising `engines`
   to `>=22` and dropping 20.11 from the CI matrix. Likewise
   `actions/checkout`/`setup-node` have newer majors (v5, Node 24 runtime)
