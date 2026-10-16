@@ -1176,7 +1176,7 @@ below). M2-M6 are still `[?]`; this milestone does not block on them.
       corpus names) left in shipped source or docs
 - [x] CI runs `check`/`test`/`build` on every push and PR (workflow
       written; first runs green 2026-10-15)
-- [ ] `npm run check`/`test`/`build` green throughout
+- [x] `npm run check`/`test`/`build` green throughout
 
 **Tasks — Claude:**
 - [x] **Slice 1: Fixture removal + license.** Delete
