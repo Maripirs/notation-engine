@@ -1,6 +1,6 @@
 # Project Plan: notation-engine
 
-**Current milestone:** M7
+**Current milestone:** M7 (approved; npm publish pending)
 
 The engine was started to replace OpenSheetMusicDisplay (OSMD) in an
 OMR-correction editor ("the host editor" below), whose own plan held the
@@ -1146,7 +1146,7 @@ where the staff count changes between pages (the host editor's
 segmentation problem; the engine side is covered by chords); British rests beyond
 Slice 1 + Slice 7 (the misread itself is upstream OMR).
 
-### M7: Open-source release [?]
+### M7: Open-source release [x]
 
 Make the engine a plug-and-play open-source library: a stranger can
 `npm install` it, paste a few lines, and see a score render and play.
